@@ -12,7 +12,10 @@ let package = Package(
         .library(name: "ThresholdCore", targets: ["ThresholdCore"]),
         .library(name: "ThresholdShaderIR", targets: ["ThresholdShaderIR"]),
         .library(name: "ThresholdRender", targets: ["ThresholdRender"]),
+        .library(name: "ThresholdUI", targets: ["ThresholdUI"]),
+        .library(name: "ThresholdInputs", targets: ["ThresholdInputs"]),
         .executable(name: "threshold-render", targets: ["threshold-render"]),
+        .executable(name: "threshold-app", targets: ["threshold-app"]),
     ],
     targets: [
         // C header target: the single source of truth for structs shared Swift ↔ MSL.
@@ -36,10 +39,29 @@ let package = Package(
             dependencies: ["ThresholdShaderABI", "ThresholdShaderIR", "ThresholdCore"],
             resources: [.copy("Resources")]
         ),
+        // SwiftUI derived from the catalog; client of the render session.
+        .target(
+            name: "ThresholdUI",
+            dependencies: ["ThresholdCore", "ThresholdShaderIR", "ThresholdRender"]
+        ),
+        // Input sources: audio analysis (AVAudioEngine + vDSP) publishing
+        // into the SignalTable. Hand tracking/gestures land here later.
+        .target(
+            name: "ThresholdInputs",
+            dependencies: ["ThresholdCore"]
+        ),
         // Headless CLI renderer + perf/regression harness (macOS).
         .executableTarget(
             name: "threshold-render",
             dependencies: ["ThresholdCore", "ThresholdShaderIR", "ThresholdRender"]
+        ),
+        // Interactive Mac dev shell: live render view + catalog-derived panels.
+        .executableTarget(
+            name: "threshold-app",
+            dependencies: [
+                "ThresholdCore", "ThresholdShaderIR", "ThresholdRender",
+                "ThresholdUI", "ThresholdInputs",
+            ]
         ),
         .testTarget(
             name: "ThresholdCoreTests",
@@ -52,6 +74,14 @@ let package = Package(
         .testTarget(
             name: "ThresholdRenderTests",
             dependencies: ["ThresholdRender", "ThresholdShaderIR", "ThresholdCore"]
+        ),
+        .testTarget(
+            name: "ThresholdUITests",
+            dependencies: ["ThresholdUI", "ThresholdCore", "ThresholdRender"]
+        ),
+        .testTarget(
+            name: "ThresholdInputsTests",
+            dependencies: ["ThresholdInputs", "ThresholdCore"]
         ),
     ]
 )
