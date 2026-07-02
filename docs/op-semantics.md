@@ -266,7 +266,10 @@ Adjacent-only, applied repeatedly until fixpoint:
 
 1. **Drop no-ops**: strength == 0, or kind == None.
 2. **Coalesce idempotent adjacent duplicates** at FULL strength (s == 1) with
-   identical payloads: Mirror, ScaleRepeat, Shells only.
+   identical payloads: Mirror and ScaleRepeat only. (The shipping app also
+   coalesced Shells, but under THIS document's Shells formula a double
+   application is the identity on the fundamental domain — an involution, not
+   idempotent — so the rule is mathematically false here and is excluded.)
 3. **Sum adjacent parallel Twists**: same normalized axis (dot of normalized axes
    > 1 - 1e-6): strengths add, single op remains.
 
