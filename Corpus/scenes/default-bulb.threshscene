@@ -1,0 +1,52 @@
+{
+  "abiVersion" : 1,
+  "camera" : {
+    "fovYRadians" : 1.0471975,
+    "orientation" : [
+      0,
+      0,
+      0,
+      1
+    ],
+    "position" : [
+      0,
+      0,
+      3
+    ]
+  },
+  "fractalTypeKey" : "mandelbulb",
+  "name" : "default",
+  "params" : {
+    "de.mandelbox.fixedRadius" : [
+      1
+    ],
+    "de.mandelbox.foldLimit" : [
+      1
+    ],
+    "de.mandelbox.minRadius" : [
+      0.25
+    ],
+    "de.mandelbox.scale" : [
+      2
+    ],
+    "de.mandelbulb.power" : [
+      8
+    ],
+    "engine.aoStrength" : [
+      0.5
+    ],
+    "engine.iterations" : [
+      12
+    ],
+    "engine.maxDist" : [
+      64
+    ],
+    "engine.shadowSoft" : [
+      8
+    ]
+  },
+  "version" : 1,
+  "warpStack" : [
+
+  ]
+}

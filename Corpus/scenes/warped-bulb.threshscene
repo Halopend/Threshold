@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "kaleido-twisted bulb",
+  "fractalTypeKey": "mandelbulb",
+  "params": { "de.mandelbulb.power": [8] },
+  "warpStack": [
+    { "kind": 7, "flags": 0, "strength": 1.0, "a": [6, 0, 0, 0], "b": [0, 0, 0, 0] },
+    { "kind": 1, "flags": 0, "strength": 0.6, "a": [0, 1, 0, 0], "b": [0, 0, 0, 0] },
+    { "kind": 1, "flags": 0, "strength": 0.4, "a": [0, 1, 0, 0], "b": [0, 0, 0, 0] }
+  ],
+  "camera": { "position": [0, 0, 3], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}
