@@ -130,7 +130,11 @@ func writePNG(_ result: RenderResult, to path: String) {
         width: result.width, height: result.height,
         bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: result.width * 4,
         space: colorSpace,
-        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        // Straight (non-premultiplied) alpha: the kernel's NaN sentinel is
+        // RGB(255,0,255) with alpha 0, which is INVALID premultiplied data —
+        // declaring premultiplied would let ImageIO zero it out and hide the
+        // sentinel from golden diffs.
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
         provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     else { die("could not build CGImage") }
 
@@ -196,6 +200,11 @@ if let path = opts.writeDefaultScenePath {
     }
 }
 
+if envelope.embeddedDE != nil {
+    // The envelope contract says fractalTypeKey is IGNORED when embeddedDE is
+    // set — silently rendering the wrong DE would violate it.
+    die("this harness does not support embedded DEs yet (scene declares one)")
+}
 guard let descriptor = DERegistry.descriptor(forKey: envelope.fractalTypeKey) else {
     die("unknown fractal type '\(envelope.fractalTypeKey)' "
         + "(known: \(DERegistry.builtin.map(\.key).joined(separator: ", ")))")
@@ -210,6 +219,14 @@ if !opts.quiet {
     if !report.foreignParams.isEmpty {
         print("warning: foreign-shaped params preserved: "
             + report.foreignParams.joined(separator: ", "))
+    }
+    if !report.skippedNonScene.isEmpty {
+        print("warning: non-scene-persisted params skipped by policy: "
+            + report.skippedNonScene.joined(separator: ", "))
+    }
+    if !report.componentMismatches.isEmpty {
+        print("warning: component-count mismatches not applied: "
+            + report.componentMismatches.joined(separator: ", "))
     }
 }
 
@@ -253,9 +270,15 @@ for frame in 0..<opts.frames {
     uniforms.camPosFov = SIMD4(
         camera.position[0], camera.position[1], camera.position[2],
         tan(camera.fovYRadians * 0.5))
-    uniforms.camQuat = SIMD4(
+    // The kernel's quatRotate requires a unit quaternion; scene files carry
+    // arbitrary floats. Degenerate orientations fall back to identity.
+    let rawQuat = SIMD4(
         camera.orientation[0], camera.orientation[1],
         camera.orientation[2], camera.orientation[3])
+    let quatLength = (rawQuat * rawQuat).sum().squareRoot()
+    uniforms.camQuat = quatLength > 1e-6 && quatLength.isFinite
+        ? rawQuat / quatLength
+        : SIMD4(0, 0, 0, 1)
     uniforms.scaleCtx = SIMD4(Float(clock.now), 1e-3, 1, 1)
     uniforms.meta = SIMD4(
         UInt32(ops.count), descriptor.index,

@@ -52,21 +52,30 @@ extension JSONValue: Codable {
 extension JSONValue {
     /// Interpret this value as a float component array: a numeric array
     /// (`[1, 2, 3]`) or a bare number (`8` → `[8]`). Returns nil for any
-    /// other shape — such values stay in the foreign sidecar untouched.
+    /// other shape OR for values outside Float's finite range — such values
+    /// stay in the foreign sidecar untouched. (A Double beyond Float range
+    /// would silently become .infinity, which JSONEncoder later refuses to
+    /// encode — making a loaded scene permanently unsaveable.)
     public var asFloatComponents: [Float]? {
         switch self {
         case .number(let n):
-            return [Float(n)]
+            guard let f = Self.finiteFloat(n) else { return nil }
+            return [f]
         case .array(let items):
             var out = [Float]()
             out.reserveCapacity(items.count)
             for item in items {
-                guard case .number(let n) = item else { return nil }
-                out.append(Float(n))
+                guard case .number(let n) = item, let f = Self.finiteFloat(n) else { return nil }
+                out.append(f)
             }
             return out
         default:
             return nil
         }
+    }
+
+    private static func finiteFloat(_ n: Double) -> Float? {
+        let f = Float(n)
+        return f.isFinite ? f : nil
     }
 }

@@ -265,8 +265,15 @@ public final class ModulationEngine {
     ///
     /// Values are stored UNCLAMPED — writes outside the param's range are not
     /// rejected; clamping happens exactly once, at resolution.
+    ///
+    /// Non-finite values are DROPPED at ingress: NaN passes `min(max(v,lo),hi)`
+    /// untouched (Swift's Comparable min/max return the first argument when a
+    /// NaN comparison is false), and once in lane state it self-sustains —
+    /// smoothing arithmetic keeps producing NaN and music decay never
+    /// converges. One 0/0 from an input source must not poison the GPU table.
     public func write(lane: Lane, slot: Int, value: Float) {
         precondition(slot >= 0 && slot < layout.slotCount, "slot \(slot) out of bounds")
+        guard value.isFinite else { return }
         let li = lane.rawValue
         if !hasValue[li].contains(slot) {
             hasValue[li].insert(slot)
@@ -396,6 +403,14 @@ public final class ModulationEngine {
                     finished.append(slot)
                     return
                 }
+                // Defense in depth behind the ingress guard: a non-finite
+                // current value can never converge (|NaN - neutral| < ε is
+                // false forever) — clear it immediately so "music is ALWAYS
+                // transient" (plan §3.2) holds even if one slips through.
+                guard current[musicLane][slot].isFinite else {
+                    finished.append(slot)
+                    return
+                }
                 let neutral: Float
                 switch compositionBySlot[slot] {
                 case .additive: neutral = 0
@@ -447,19 +462,30 @@ public final class ModulationEngine {
             if dt > 0 {
                 // The rate is consumed at its RESOLVED value, i.e. clamped to
                 // its own range (same range step 5 applies to the output).
+                // A non-finite rate freezes the phase for the frame — the
+                // phase is persistent state (Invariant 17) and one bad frame
+                // must not poison it (NaN survives clamp AND wrap).
                 let rateSlot = integrators[i].rateSlot
                 let rate = min(max(values[rateSlot], rangeLo[rateSlot]), rangeHi[rateSlot])
-                integrators[i].phase = Self.wrap(
-                    integrators[i].phase + rate * scaledDt,
-                    lo: integrators[i].lo, hi: integrators[i].hi)
+                if rate.isFinite {
+                    integrators[i].phase = Self.wrap(
+                        integrators[i].phase + rate * scaledDt,
+                        lo: integrators[i].lo, hi: integrators[i].hi)
+                }
             }
             values[integrators[i].phaseSlot] = integrators[i].phase
         }
 
         // 5. Clamp — THE single clamp site (plan §2.2 "Range validation:
         //    clamping happens in exactly one place"). Per component.
+        //    NaN-proof: min/max pass NaN through (first-argument semantics),
+        //    and this table is uploaded VERBATIM to the GPU — a non-finite
+        //    composition result falls back to the param default.
         for slot in 0..<layout.slotCount where registered[slot] {
-            values[slot] = min(max(values[slot], rangeLo[slot]), rangeHi[slot])
+            let v = values[slot]
+            values[slot] = v.isFinite
+                ? min(max(v, rangeLo[slot]), rangeHi[slot])
+                : defaults[slot]
         }
 
         generation &+= 1
@@ -467,7 +493,10 @@ public final class ModulationEngine {
     }
 
     /// Wrap `x` into `[lo, hi)`; degenerate ranges collapse to `lo`.
+    /// Non-finite `x` collapses to `lo` — `setIntegratorPhase` routes through
+    /// here, so persistent phase state can never store NaN.
     static func wrap(_ x: Float, lo: Float, hi: Float) -> Float {
+        guard x.isFinite else { return lo }
         let span = hi - lo
         guard span > 0 else { return lo }
         let r = (x - lo).truncatingRemainder(dividingBy: span)

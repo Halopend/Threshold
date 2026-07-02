@@ -91,7 +91,15 @@ public enum SceneCodec {
         guard case .number(let rawVersion)? = tree["version"] else {
             throw SceneCodecError.malformed("scene envelope missing numeric version")
         }
-        var version = Int(rawVersion)
+        // Int(Double) TRAPS out of range; a corrupt {"version": 1e300} must
+        // throw, not kill the process ("never trust-and-crash", plan §7.2).
+        guard rawVersion.isFinite,
+              let version0 = Int(exactly: rawVersion.rounded(.towardZero)),
+              version0 >= 0
+        else {
+            throw SceneCodecError.malformed("scene version \(rawVersion) is not a valid version number")
+        }
+        var version = version0
         guard version <= currentVersion else {
             throw SceneCodecError.unsupportedVersion(version)
         }
@@ -105,7 +113,12 @@ public enum SceneCodec {
             tree["version"] = .number(Double(version))
         }
 
-        let migrated = try JSONEncoder().encode(JSONValue.object(tree))
+        // The writer's nesting limit is stricter than the reader's — a
+        // maximally-nested parseable file must map to `malformed`, not leak
+        // a raw EncodingError.
+        guard let migrated = try? JSONEncoder().encode(JSONValue.object(tree)) else {
+            throw SceneCodecError.malformed("scene tree not re-encodable after migration")
+        }
         do {
             return try JSONDecoder().decode(SceneEnvelope.self, from: migrated)
         } catch let error as DecodingError {
@@ -133,17 +146,20 @@ public enum SceneCodec {
         var params: [String: [Float]] = [:]
         var phases: [String: Float] = [:]
 
+        // Lane storage is deliberately unclamped and JSONEncoder throws on
+        // non-finite floats — sanitize at the persistence boundary so one bad
+        // value can never make every save fail (non-finite → spec default).
         for entry in layout.entries where entry.spec.persistence == .scene {
             var components = [Float]()
             components.reserveCapacity(entry.kind.slotWidth)
             for (i, slot) in entry.slotRange.enumerated() {
-                components.append(
-                    engine.currentValue(lane: .scene, slot: slot) ?? entry.spec.defaultValue[i])
+                let raw = engine.currentValue(lane: .scene, slot: slot) ?? entry.spec.defaultValue[i]
+                components.append(raw.isFinite ? raw : entry.spec.defaultValue[i])
             }
             params[entry.key.rawValue] = components
 
             if entry.spec.integratorRateKey != nil,
-                let phase = engine.readIntegratorPhase(slot: entry.slot) {
+                let phase = engine.readIntegratorPhase(slot: entry.slot), phase.isFinite {
                 phases[entry.key.rawValue] = phase
             }
         }

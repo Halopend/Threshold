@@ -152,6 +152,14 @@ public final class SignalTable: @unchecked Sendable {
             observed = original
         }
 
+        // StoreStore barrier: the odd version MUST become visible before any
+        // payload store does, or a reader can pair a stale even version with
+        // half-new payload and accept a torn read. The CAS's `.acquiring`
+        // success ordering does not provide this (it orders the CAS's load,
+        // not its store, against the stores below). Mirror of the reader's
+        // `.acquiring` fence.
+        atomicMemoryFence(ordering: .releasing)
+
         (payloads + i).pointee = Payload(
             value: value, confidence: confidence, _pad: 0, timestamp: timestamp)
 

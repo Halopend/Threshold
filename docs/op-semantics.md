@@ -138,8 +138,13 @@ Rank-3 reflection group fold. Mirror normals derived from the Gram matrix
 ```
 n₁ = (1, 0, 0)
 n₂ = (-cos(π/P), sin(π/P), 0)
-n₃ = (0, -cos(π/Q)/sin(π/P), sqrt(max(ε, 1 - (cos(π/Q)/sin(π/P))²)))
+n₃ = normalize( (0, -cos(π/Q)/sin(π/P), sqrt(max(ε, 1 - (cos(π/Q)/sin(π/P))²))) )
 ```
+The explicit `normalize` is load-bearing: for Euclidean/hyperbolic symbols
+(1/P + 1/Q ≤ 1/2, e.g. {5,4}) the inner term exceeds 1, the ε-clamp yields a
+non-unit vector, and a non-unit mirror makes the reflection expansive — the
+fold loop diverges. Normalized, the fold is the true {P,Q} group on the
+spherical domain and a deterministic, isometric (safe) fold outside it.
 Fold: iterate up to 24 times: for each nᵢ, if `dot(p, nᵢ) < 0` reflect
 `p -= 2·dot(p, nᵢ)·nᵢ`; stop early when all three dots ≥ 0. Then
 `p' = lerp(p_in, p_folded, s)`. Isometric at s = 1.

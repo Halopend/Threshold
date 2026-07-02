@@ -150,7 +150,9 @@ static float3 applyPointOps(float3 p, device const ThreshWarpOp* ops, uint count
             float c = cos(M_PI_F / op.a.y) / sp;
             float3 n1 = float3(1.0f, 0.0f, 0.0f);
             float3 n2 = float3(-cos(M_PI_F / op.a.x), sp, 0.0f);
-            float3 n3 = float3(0.0f, -c, sqrt(max(1e-6f, 1.0f - c * c)));
+            // Normalized (op-semantics): non-spherical {P,Q} (c > 1) would
+            // otherwise yield a non-unit mirror -> expansive, divergent fold.
+            float3 n3 = normalize(float3(0.0f, -c, sqrt(max(1e-6f, 1.0f - c * c))));
             float3 q = p;
             for (int it = 0; it < 24; ++it) {
                 bool reflected = false;

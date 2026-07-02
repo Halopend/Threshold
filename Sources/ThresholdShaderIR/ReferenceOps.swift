@@ -151,7 +151,12 @@ public enum ReferenceOps {
             let n1 = SIMD3<Float>(1, 0, 0)
             let n2 = SIMD3<Float>(-cosf(.pi / symP), sinP, 0)
             let c = cosf(.pi / symQ) / sinP
-            let n3 = SIMD3<Float>(0, -c, (max(1e-6, 1 - c * c)).squareRoot())
+            // Normalized (op-semantics): for Euclidean/hyperbolic {P,Q}
+            // (c > 1) the ε-clamp yields a NON-unit vector, and a non-unit
+            // mirror makes the "reflection" expansive — the fold loop can
+            // diverge. Normalized, every reflection is a true isometry for
+            // ANY payload a scene file can carry.
+            let n3 = simd_normalize(SIMD3<Float>(0, -c, (max(1e-6, 1 - c * c)).squareRoot()))
             var q = p
             for _ in 0..<24 {
                 var reflected = false
