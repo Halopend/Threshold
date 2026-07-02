@@ -199,10 +199,15 @@ public final class ModulationEngine {
 
     private var generation: UInt64 = 0
 
-    public init(layout: CatalogLayout, clock: any AppClock) {
+    /// `mailbox` is injectable so a session can hand the (Sendable) mailbox to
+    /// clients BEFORE the engine exists on the render thread (the engine is
+    /// created on the render thread; its ingress must not wait for it). The
+    /// default preserves the original always-fresh behavior for existing call
+    /// sites.
+    public init(layout: CatalogLayout, clock: any AppClock, mailbox: LaneMailbox = LaneMailbox()) {
         self.layout = layout
         self.clock = clock
-        self.mailbox = LaneMailbox()
+        self.mailbox = mailbox
 
         let n = layout.slotCount
         var registered = [Bool](repeating: false, count: n)
