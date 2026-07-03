@@ -3,11 +3,10 @@
 // `layer` and presents into it; this file owns ONLY presentation plumbing
 // (layer config, contentsScale-aware drawableSize) — no frame logic, no time.
 //
-// NOTE: the pinned `InteractiveSession.configure(layer:)` API from the
-// concurrent session agent has not landed in ThresholdRender yet, so the
-// layer is configured here directly with the pinned defaults
-// (`framebufferOnly = false`, `pixelFormat = .bgra8Unorm`, default device).
-// When InteractiveSession lands, init should call it instead.
+// The compute-into-drawable layer contract (`framebufferOnly = false`,
+// `pixelFormat = .bgra8Unorm`) is owned by `InteractiveSession.configure`, the
+// single source of truth — `init` calls it so the surface and the session can
+// never disagree. The device is the system default (matching GPUContext).
 
 #if os(macOS)
 
@@ -15,6 +14,7 @@ import AppKit
 import Metal
 import QuartzCore
 import SwiftUI
+import ThresholdRender
 
 // MARK: - RenderSurface
 
@@ -30,9 +30,7 @@ public final class RenderSurface {
 
     public init() {
         let layer = CAMetalLayer()
-        // Inline InteractiveSession.configure(layer:) stand-in — see header.
-        layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = false
+        InteractiveSession.configure(layer: layer)  // single source of truth
         layer.device = MTLCreateSystemDefaultDevice()
         self.layer = layer
         self.view = MetalLayerHostView(metalLayer: layer)
