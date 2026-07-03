@@ -19,6 +19,26 @@
             "target": "threshold-render",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release threshold-render"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Threshold}",
+            "name": "Debug threshold-app",
+            "target": "threshold-app",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug threshold-app"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Threshold}",
+            "name": "Release threshold-app",
+            "target": "threshold-app",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release threshold-app"
         }
     ]
 }

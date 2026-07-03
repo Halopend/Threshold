@@ -6,6 +6,14 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		000000000000000000000201 /* ThresholdCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000301 /* ThresholdCore */; };
+		000000000000000000000202 /* ThresholdShaderIR in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000302 /* ThresholdShaderIR */; };
+		000000000000000000000203 /* ThresholdRender in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000303 /* ThresholdRender */; };
+		000000000000000000000204 /* ThresholdUI in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000304 /* ThresholdUI */; };
+		000000000000000000000205 /* ThresholdInputs in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000305 /* ThresholdInputs */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Threshold.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Threshold.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -22,6 +30,11 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				000000000000000000000201 /* ThresholdCore in Frameworks */,
+				000000000000000000000202 /* ThresholdShaderIR in Frameworks */,
+				000000000000000000000203 /* ThresholdRender in Frameworks */,
+				000000000000000000000204 /* ThresholdUI in Frameworks */,
+				000000000000000000000205 /* ThresholdInputs in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -60,6 +73,13 @@
 				000000000000000000000010 /* Threshold */,
 			);
 			name = Threshold;
+			packageProductDependencies = (
+				000000000000000000000301 /* ThresholdCore */,
+				000000000000000000000302 /* ThresholdShaderIR */,
+				000000000000000000000303 /* ThresholdRender */,
+				000000000000000000000304 /* ThresholdUI */,
+				000000000000000000000305 /* ThresholdInputs */,
+			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Threshold.app */;
 			productType = "com.apple.product-type.application";
@@ -90,6 +110,9 @@
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
+			packageReferences = (
+				000000000000000000000400 /* XCLocalSwiftPackageReference "." */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -349,6 +372,36 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		000000000000000000000400 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		000000000000000000000301 /* ThresholdCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ThresholdCore;
+		};
+		000000000000000000000302 /* ThresholdShaderIR */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ThresholdShaderIR;
+		};
+		000000000000000000000303 /* ThresholdRender */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ThresholdRender;
+		};
+		000000000000000000000304 /* ThresholdUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ThresholdUI;
+		};
+		000000000000000000000305 /* ThresholdInputs */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ThresholdInputs;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

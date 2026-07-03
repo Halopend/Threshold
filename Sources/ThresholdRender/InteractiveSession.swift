@@ -7,11 +7,13 @@
 // The display-link callback is a thin shell over SessionCore.step(now:) —
 // the same per-frame body tests drive manually against OffscreenRenderer.
 //
-// macOS-only for now: the display-link plumbing is gated below; iPadOS uses
-// the same CAMetalDisplayLink API and visionOS uses the Compositor frame loop
-// (both later phases).
+// macOS + iOS/iPadOS: both drive the SAME CAMetalDisplayLink loop (ADR-001:
+// one compute shell; presentation differences live in the layer host, not
+// here). visionOS is gated out — it renders through the Compositor Services
+// frame loop, which needs the on-device spike ADR-001 action items call for
+// before that shell is written.
 
-#if os(macOS)
+#if os(macOS) || os(iOS)
 
 import Foundation
 import Metal

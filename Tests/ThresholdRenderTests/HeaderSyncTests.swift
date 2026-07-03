@@ -20,12 +20,12 @@ struct HeaderSyncTests {
         let canonical = repoRoot
             .appendingPathComponent("Sources/ThresholdShaderABI/include/ThresholdShaderABI.h")
         let bundledCopy = repoRoot
-            .appendingPathComponent("Sources/ThresholdRender/Resources/ThresholdShaderABI.h")
+            .appendingPathComponent("Sources/ThresholdRender/MSL/ThresholdShaderABI.h")
 
         let canonicalData = try Data(contentsOf: canonical)
         let copyData = try Data(contentsOf: bundledCopy)
         #expect(!canonicalData.isEmpty)
         #expect(canonicalData == copyData,
-                "Resources/ThresholdShaderABI.h has drifted from the canonical ABI header — re-copy it byte-for-byte")
+                "MSL/ThresholdShaderABI.h has drifted from the canonical ABI header — re-copy it byte-for-byte")
     }
 }

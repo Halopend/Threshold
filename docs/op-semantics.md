@@ -2,7 +2,7 @@
 
 This document defines the exact math for every `ThreshWarpKind`. The CPU reference
 (`ThresholdShaderIR/ReferenceOps.swift`) and the MSL interpreter
-(`ThresholdRender/Resources/RaymarchCore.metal`) BOTH implement this document,
+(`ThresholdRender/MSL/RaymarchCore.metal`) BOTH implement this document,
 independently, and are cross-checked by sampled-equivalence tests. If either
 implementation disagrees with this document, the implementation is wrong. If this
 document is wrong, change it and both implementations in one commit.

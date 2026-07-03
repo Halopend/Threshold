@@ -1,6 +1,6 @@
 // ReferenceOps.swift — the CPU reference implementation of the warp op
 // semantics. docs/op-semantics.md is NORMATIVE: this file and the MSL
-// interpreter (ThresholdRender/Resources/RaymarchCore.metal) both implement
+// interpreter (ThresholdRender/MSL/RaymarchCore.metal) both implement
 // that document independently and are cross-checked by sampled-equivalence
 // tests. If this file disagrees with the document, this file is wrong.
 //

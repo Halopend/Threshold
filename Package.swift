@@ -37,7 +37,7 @@ let package = Package(
         .target(
             name: "ThresholdRender",
             dependencies: ["ThresholdShaderABI", "ThresholdShaderIR", "ThresholdCore"],
-            resources: [.copy("Resources")]
+            resources: [.copy("MSL")]
         ),
         // SwiftUI derived from the catalog; client of the render session.
         .target(

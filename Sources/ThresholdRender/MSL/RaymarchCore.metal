@@ -5,7 +5,7 @@
 //
 // IMPORTANT: this file deliberately does NOT #include the ABI header.
 // The Swift side (GPUContext) prepends the byte-identical header copy at
-// Resources/ThresholdShaderABI.h to this source before
+// MSL/ThresholdShaderABI.h to this source before
 // device.makeLibrary(source:options:) — matching the external-DE compile
 // path exactly. All ABI structs (ThreshWarpOp, ThreshFrameUniforms,
 // ThreshDEContext) and the THRESH_* constants come from that prepended text.

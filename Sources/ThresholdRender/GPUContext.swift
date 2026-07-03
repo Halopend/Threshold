@@ -1,8 +1,8 @@
 // GPUContext.swift — device, runtime-compiled march library, cached pipelines.
 //
 // The MSL is compiled at RUNTIME from bundled plain-text resources: the
-// byte-identical ABI header copy (Resources/ThresholdShaderABI.h) is prepended
-// to Resources/RaymarchCore.metal and handed to makeLibrary(source:options:).
+// byte-identical ABI header copy (MSL/ThresholdShaderABI.h) is prepended
+// to MSL/RaymarchCore.metal and handed to makeLibrary(source:options:).
 // This is deliberately the same path external DEs will use, so a shader that
 // compiles for the built-ins compiles for external content too.
 
@@ -84,12 +84,12 @@ public final class GPUContext: @unchecked Sendable {
         // --- load resources: ABI header copy + march core source -----------
         guard let headerURL = Bundle.module.url(
             forResource: "ThresholdShaderABI", withExtension: "h",
-            subdirectory: "Resources")
-        else { throw RenderError.missingResource("Resources/ThresholdShaderABI.h") }
+            subdirectory: "MSL")
+        else { throw RenderError.missingResource("MSL/ThresholdShaderABI.h") }
         guard let sourceURL = Bundle.module.url(
             forResource: "RaymarchCore", withExtension: "metal",
-            subdirectory: "Resources")
-        else { throw RenderError.missingResource("Resources/RaymarchCore.metal") }
+            subdirectory: "MSL")
+        else { throw RenderError.missingResource("MSL/RaymarchCore.metal") }
 
         let header = try String(contentsOf: headerURL, encoding: .utf8)
         let core = try String(contentsOf: sourceURL, encoding: .utf8)
