@@ -533,38 +533,40 @@ struct SessionCoreTests {
         #expect(reopened.params[ParamKey.engineAOStrength.rawValue] == [1.25])
     }
 
-    @Test func qualityGovernorHoldsBudgetAndRespectsTheUserCeiling() {
+    @Test func qualityGovernorDrivesResolutionOnlyAndNeverTouchesTheFractal() {
         var h = Harness()
         h.step()
         let maxStepsSlot = Int(THRESH_SLOT_MAX_STEPS)
-        let authored = h.step().resolved.values[maxStepsSlot]  // catalog default 256
+        let iterationsSlot = Int(THRESH_SLOT_ITERATIONS)
+        let authoredSteps = h.step().resolved.values[maxStepsSlot]
+        let authoredIters = h.step().resolved.values[iterationsSlot]
+        #expect(h.step().request.renderScale == 1, "no governor → native scale")
 
-        // Enable and feed a blown budget: quality backs off.
+        // Enable and feed a blown budget: the RESOLUTION backs off…
         h.commands.publish(.setQualityGovernor(QualityGovernorConfig(
-            targetMilliseconds: 8, floor: 0.25)))
+            targetMilliseconds: 8, minRenderScale: 0.5)))
         for _ in 0..<120 { h.step(gpuMilliseconds: 24) }
-        let throttled = h.step().resolved.values[maxStepsSlot]
-        #expect(throttled < authored * 0.5,
-                "sustained 3× overshoot must reduce quality (got \(throttled) vs \(authored))")
-        #expect(throttled >= authored * 0.25 - 1, "never below the floor")
+        let throttled = h.step()
+        #expect(throttled.request.renderScale < 1,
+                "sustained 3× overshoot must reduce resolution")
+        #expect(throttled.request.renderScale >= 0.5, "never below the floor")
 
-        // Headroom: quality creeps back up.
+        // …and ONLY the resolution: the fractal's shape params stay authored
+        // (the removed iterations/maxSteps lever visibly morphed the DE —
+        // docs/perf-notes.md perf block 5).
+        #expect(throttled.resolved.values[maxStepsSlot] == authoredSteps)
+        #expect(throttled.resolved.values[iterationsSlot] == authoredIters)
+
+        // Headroom: resolution creeps back up.
         for _ in 0..<600 { h.step(gpuMilliseconds: 2) }
-        let recovered = h.step().resolved.values[maxStepsSlot]
-        #expect(recovered > throttled, "recovers with headroom")
+        let recovered = h.step()
+        #expect(recovered.request.renderScale > throttled.request.renderScale,
+                "recovers with headroom")
 
-        // The user's slider is a ceiling the governor cannot raise past:
-        // user writes a LOW multiplicative factor; resolved follows the user.
-        h.commands.publish(.userEdit(slot: maxStepsSlot, targetResolved: 32))
-        for _ in 0..<10 { h.step(gpuMilliseconds: 2) }
-        let userCapped = h.step().resolved.values[maxStepsSlot]
-        #expect(userCapped <= 33, "user can lower below the governor (got \(userCapped))")
-
-        // Disabling clears the system lane entirely.
-        h.commands.publish(.clearUserEdit(slot: maxStepsSlot))
+        // Disabling returns to native resolution.
         h.commands.publish(.setQualityGovernor(nil))
         h.step()
-        #expect(h.step().resolved.values[maxStepsSlot] == authored)
+        #expect(h.step().request.renderScale == 1)
     }
 
     // MARK: Octave rebase (plan §6.3, infinite-zoom phase 2)

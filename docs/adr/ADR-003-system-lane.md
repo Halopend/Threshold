@@ -65,3 +65,19 @@ contradicts any below-music lane position.
 1. [ ] Encode "registered system writers" as a small enum; reject unregistered writes.
 2. [ ] Property-test grab-what-you-see inversion with nonzero system lane.
 3. [ ] Specify the flashing-risk limiter as final-clamp narrowing, not a lane write.
+
+## Update — 2026-07-03 (perf block 5)
+
+The quality governor no longer writes the system lane at all. Its
+iterations/maxSteps writes were removed after live testing showed them
+visibly reshaping the DE (the mandelbulb's detail threshold jumped
+discontinuously under load); the governor now emits only a resolution scale
+(`SessionFrame.request.renderScale`), applied through each platform's native
+mechanism — visionOS compositor `renderQuality`, Mac/iOS MetalFX temporal
+upscaling (docs/perf-notes.md perf block 5). Resolution softens; it never
+reshapes the fractal, and it lives outside the param/lane system entirely
+(it is not a param a user could bind or animate).
+
+The lane itself stands: it remains the home for future automated
+param-writers (safety clamps, platform caps), and the `.multiplicative`
+quality-class composition documented above is unchanged for them.

@@ -35,9 +35,13 @@ public struct SpecializedMarch: @unchecked Sendable {
 
 extension GPUContext {
     /// Compile the march variant that calls `deFunctionName` directly.
+    /// `auxOutputs` additionally bakes THRESH_AUX true (the temporal-upscale
+    /// input variant — the live path pairs specialization with upscaling).
     /// EXPENSIVE (a full library compile, ~100–400 ms) — call off the render
     /// thread; the OS Metal compiler cache makes warm relaunches fast.
-    public func makeSpecializedMarch(deFunctionName: String) throws -> SpecializedMarch {
+    public func makeSpecializedMarch(
+        deFunctionName: String, auxOutputs: Bool = false
+    ) throws -> SpecializedMarch {
         guard DERegistry.builtin.contains(where: { $0.mslFunctionName == deFunctionName })
         else { throw RenderError.missingFunction("not a built-in DE: \(deFunctionName)") }
 
@@ -63,7 +67,7 @@ extension GPUContext {
 
         let pipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "march_offscreen",
-            deFunctions: builtinDEFunctions)
+            deFunctions: builtinDEFunctions, auxOutputs: auxOutputs)
         let table = try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized(\(deFunctionName)) DE table")
@@ -89,27 +93,30 @@ public final class SpecializationCache: Sendable {
 
     /// The specialized pipeline for a built-in DE function name, if compiled.
     /// A miss schedules the compile (once) and returns nil — render generic.
-    public func lookup(deFunctionName: String) -> SpecializedMarch? {
+    /// `auxOutputs` selects the temporal-upscale input variant (cached
+    /// separately — the live path needs both while the scale crosses 1).
+    public func lookup(deFunctionName: String, auxOutputs: Bool = false) -> SpecializedMarch? {
+        let key = auxOutputs ? "\(deFunctionName)#aux" : deFunctionName
         let shouldCompile: Bool = state.withLock { s in
-            if s.ready[deFunctionName] != nil { return false }
-            return s.inFlight.insert(deFunctionName).inserted
+            if s.ready[key] != nil { return false }
+            return s.inFlight.insert(key).inserted
         }
-        if let hit = state.withLock({ $0.ready[deFunctionName] }) { return hit }
+        if let hit = state.withLock({ $0.ready[key] }) { return hit }
 
         if shouldCompile {
             let context = context
             Task.detached(priority: .utility) { [self] in
                 let compiled = try? context.makeSpecializedMarch(
-                    deFunctionName: deFunctionName)
+                    deFunctionName: deFunctionName, auxOutputs: auxOutputs)
                 state.withLock { s in
-                    s.inFlight.remove(deFunctionName)
+                    s.inFlight.remove(key)
                     // A failed compile leaves no entry: the generic pipeline
                     // simply keeps rendering (and we do not retry-storm — the
                     // name goes back to compile-once on the next lookup miss
                     // only because inFlight was cleared; failures are
                     // permanent per session for a bad name, transient OOM
                     // retries are acceptable).
-                    if let compiled { s.ready[deFunctionName] = compiled }
+                    if let compiled { s.ready[key] = compiled }
                 }
             }
         }

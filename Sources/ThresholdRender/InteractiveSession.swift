@@ -264,7 +264,10 @@ public final class InteractiveSession: @unchecked Sendable {
 
         let encodeStart = Mono.now()
         let encodeState = sp.beginInterval("encode")
-        gpu.encode(frame.request, program: frame.externalProgram, to: drawable)
+        // An octave rebase rescales world coordinates between frames, which
+        // invalidates the temporal upscaler's reprojection — reset history.
+        gpu.encode(frame.request, program: frame.externalProgram, to: drawable,
+                   resetHistory: gpu.noteOctave(frame.scaleOctave))
         sp.endInterval("encode", encodeState)
         let encodeMs = Mono.ms(encodeStart, Mono.now())
 
@@ -325,9 +328,25 @@ final class SessionGPUEncoder {
     /// Direct-call DE pipeline variants (Specialization.swift). `lookup` is
     /// non-blocking: frames render generic until a variant compiles.
     private let specializations: SpecializationCache
-    /// Cached intermediate target for the render-scale path — reallocated
-    /// only when the (quantized) scaled size changes.
-    private var scaledTarget: MTLTexture?
+    /// MetalFX temporal upscaling — the platform mechanism behind the
+    /// governor's renderScale on Mac/iOS (visionOS uses the compositor's
+    /// renderQuality instead). nil on devices without MetalFX temporal
+    /// support: those render at full resolution and the scale is ignored.
+    private let upscaler: TemporalUpscaler?
+    /// Halton(2,3) sequence position for the temporal jitter.
+    private var jitterIndex: UInt32 = 0
+    /// Previous frame's camera — the motion-vector reprojection input.
+    private var prevUniforms: ThreshFrameUniforms?
+    /// Previous frame's zoom-rebase octave (see noteOctave).
+    private var lastOctave: Int32?
+
+    /// Swift mirror of RaymarchCore.metal's ThreshAuxUniforms (private
+    /// live-path contract, buffer 7 / textures 1–2 — not ABI).
+    private struct AuxUniforms {
+        var prevCamPosFov: SIMD4<Float>
+        var prevCamQuat: SIMD4<Float>
+        var jitter: SIMD4<Float>
+    }
 
     init(context: GPUContext) throws {
         guard let queue = context.device.makeCommandQueue() else {
@@ -348,6 +367,10 @@ final class SessionGPUEncoder {
         self.queue = queue
         self.statsRing = ring
         self.specializations = SpecializationCache(context: context)
+        // Layer contract is .bgra8Unorm (configure(layer:)) — the scaler's
+        // formats are fixed to match. nil = MetalFX temporal unsupported.
+        self.upscaler = TemporalUpscaler(
+            device: context.device, colorFormat: .bgra8Unorm)
     }
 
     /// Stats of the most recently COMPLETED frame (zeros until one finishes).
@@ -355,11 +378,34 @@ final class SessionGPUEncoder {
         statsSlot.load()
     }
 
+    /// Record this frame's zoom-rebase octave; returns true when it changed
+    /// (world coordinates rescaled → temporal history must reset).
+    func noteOctave(_ octave: Int32) -> Bool {
+        defer { lastOctave = octave }
+        return lastOctave != nil && lastOctave != octave
+    }
+
+    /// Halton low-discrepancy sequence — the standard temporal-AA jitter
+    /// pattern (bases 2 and 3 for x/y).
+    private static func halton(_ index: UInt32, base: UInt32) -> Float {
+        var result: Float = 0
+        var f: Float = 1
+        var i = index
+        while i > 0 {
+            f /= Float(base)
+            result += f * Float(i % base)
+            i /= base
+        }
+        return result
+    }
+
     /// Encode one frame into the drawable's texture and present it. A failed
     /// allocation drops the frame (the drawable returns to the pool) — the
-    /// live loop must never crash or block.
+    /// live loop must never crash or block. `resetHistory` discards the
+    /// temporal upscaler's accumulated frames (octave rebase, camera cut —
+    /// anything that invalidates last frame's world coordinates).
     func encode(_ request: RenderRequest, program: ExternalDEProgram? = nil,
-                to drawable: CAMetalDrawable) {
+                to drawable: CAMetalDrawable, resetHistory: Bool = false) {
         let texture = drawable.texture
         guard texture.width > 0, texture.height > 0,
               request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
@@ -396,45 +442,42 @@ final class SessionGPUEncoder {
         blit.fill(buffer: statsBuffer, range: 0..<MemoryLayout<UInt32>.stride, value: 0)
         blit.endEncoding()
 
+        // Render scale (the governor's ONLY lever): march at reduced
+        // resolution into the MetalFX pass's inputs, temporal-upscale, copy
+        // to the drawable. Any reason it can't engage — external DE (no aux
+        // pipeline variant yet), unsupported device, scale out of MetalFX
+        // range — falls back to a full-resolution direct render; never a
+        // dropped frame.
+        let scale = min(max(request.renderScale, 0), 1)
+        var fx: TemporalUpscaler.Pass?
+        if program == nil, scale < 0.985, let upscaler {
+            fx = upscaler.prepare(
+                inputWidth: max(Int((Float(texture.width) * scale).rounded()), 1),
+                inputHeight: max(Int((Float(texture.height) * scale).rounded()), 1),
+                outputWidth: texture.width,
+                outputHeight: texture.height)
+        }
+        let auxOutputs = fx != nil
+        let marchTarget = fx?.color ?? texture
+
         // Built-in DE with no external program active: render through the
-        // specialized (direct-call, inlined) variant once it has compiled.
+        // specialized (direct-call, inlined) variant once it has compiled —
+        // the aux (temporal-input) twin when upscaling.
         var specialized: SpecializedMarch?
         if program == nil {
             let deIndex = Int(uniforms.meta.y)
             if DERegistry.builtin.indices.contains(deIndex) {
                 specialized = specializations.lookup(
-                    deFunctionName: DERegistry.builtin[deIndex].mslFunctionName)
-            }
-        }
-
-        // Render-scale (governor lever): march into a smaller intermediate,
-        // then bilinear-upscale into the drawable. Allocation failure falls
-        // back to full resolution — never a dropped frame.
-        var marchTarget = texture
-        let scale = min(max(request.renderScale, 0.05), 1)
-        if scale < 0.999 {
-            let sw = max(Int((Float(texture.width) * scale).rounded()), 1)
-            let sh = max(Int((Float(texture.height) * scale).rounded()), 1)
-            if let cached = scaledTarget, cached.width == sw, cached.height == sh {
-                marchTarget = cached
-            } else {
-                let desc = MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat: texture.pixelFormat, width: sw, height: sh,
-                    mipmapped: false)
-                desc.usage = [.shaderWrite, .shaderRead]
-                desc.storageMode = .private
-                if let t = context.device.makeTexture(descriptor: desc) {
-                    t.label = "session scaled target"
-                    scaledTarget = t
-                    marchTarget = t
-                }
+                    deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
+                    auxOutputs: auxOutputs)
             }
         }
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.label = "session march"
         encoder.setComputePipelineState(
-            program?.marchPipeline ?? specialized?.pipeline ?? context.marchPipeline)
+            program?.marchPipeline ?? specialized?.pipeline
+                ?? (auxOutputs ? context.marchAuxPipeline : context.marchPipeline))
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setBytes(
                 raw.baseAddress!, length: raw.count, index: Int(THRESH_BUFFER_UNIFORMS))
@@ -443,7 +486,8 @@ final class SessionGPUEncoder {
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
         encoder.setVisibleFunctionTable(
-            program?.marchDETable ?? specialized?.deTable ?? context.marchDETable,
+            program?.marchDETable ?? specialized?.deTable
+                ?? (auxOutputs ? context.marchAuxDETable : context.marchDETable),
             bufferIndex: GPUContext.deTableBufferIndex)
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in
@@ -451,6 +495,27 @@ final class SessionGPUEncoder {
                              index: Int(THRESH_BUFFER_PALETTE))
         }
         encoder.setTexture(marchTarget, index: Int(THRESH_TEXTURE_OUTPUT))
+
+        // Temporal-input bindings (aux pipeline only): previous camera for
+        // motion vectors, this frame's Halton(2,3) sub-pixel jitter, and the
+        // depth/motion targets. Private contract with RaymarchCore's
+        // THRESH_AUX variant (buffer 7, textures 1–2).
+        var jitter = SIMD2<Float>(0, 0)
+        if let fx {
+            jitterIndex &+= 1
+            jitter = SIMD2(Self.halton(jitterIndex, base: 2) - 0.5,
+                           Self.halton(jitterIndex, base: 3) - 0.5)
+            let prev = prevUniforms ?? uniforms  // first frame: zero motion
+            var aux = AuxUniforms(
+                prevCamPosFov: prev.camPosFov,
+                prevCamQuat: prev.camQuat,
+                jitter: SIMD4(jitter.x, jitter.y, 0, 0))
+            withUnsafeBytes(of: &aux) { raw in
+                encoder.setBytes(raw.baseAddress!, length: raw.count, index: 7)
+            }
+            encoder.setTexture(fx.depth, index: 1)
+            encoder.setTexture(fx.motion, index: 2)
+        }
 
         let threadsPerGroup = MTLSize(width: 8, height: 8, depth: 1)
         let groups = MTLSize(
@@ -460,19 +525,18 @@ final class SessionGPUEncoder {
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerGroup)
         encoder.endEncoding()
 
-        if marchTarget !== texture {
-            guard let upscale = commandBuffer.makeComputeCommandEncoder() else { return }
-            upscale.label = "session upscale"
-            upscale.setComputePipelineState(context.upscalePipeline)
-            upscale.setTexture(marchTarget, index: 0)
-            upscale.setTexture(texture, index: 1)
-            let fullGroups = MTLSize(
-                width: (texture.width + 7) / 8,
-                height: (texture.height + 7) / 8,
-                depth: 1)
-            upscale.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: threadsPerGroup)
-            upscale.endEncoding()
+        if let fx {
+            upscaler?.encode(
+                commandBuffer: commandBuffer,
+                jitterPixels: jitter,
+                forceReset: resetHistory)
+            // Same size and format — a plain copy into the drawable.
+            guard let copy = commandBuffer.makeBlitCommandEncoder() else { return }
+            copy.label = "session fx copy"
+            copy.copy(from: fx.output, to: texture)
+            copy.endEncoding()
         }
+        prevUniforms = request.uniforms
 
         commandBuffer.present(drawable)
 

@@ -92,7 +92,11 @@ Metal-side:
   expansion as a top lever since the renderer measured **ALU-bound (~68–70%
   of GPU time)**.
 - **MetalFX spatial + temporal upscalers** (Mac) — present but NOT in the
-  default path (required resolutionScale < 1, not default).
+  default path (required resolutionScale < 1, not default). PORTED
+  2026-07-03 (perf block 5): temporal only (spatial deliberately dropped),
+  governor-driven, with async scaler builds fixing the old synchronous
+  build hitch; motion vectors computed in-kernel from hit t instead of the
+  old separate depth-reconstruct fragment pass.
 - **CPU precompute of frame-uniform transcendentals**, `rsqrt` intrinsics,
   early miss-skip, shared shadow evaluation, reduced shadow iterations.
 

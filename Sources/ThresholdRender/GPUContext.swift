@@ -69,15 +69,19 @@ public final class GPUContext: @unchecked Sendable {
     let builtinDEFunctions: [MTLFunction]
 
     let marchPipeline: MTLComputePipelineState
+    /// `march_offscreen` with THRESH_AUX baked true: writes depth + motion
+    /// aux textures and jitters ray-gen — the input pass for MetalFX
+    /// temporal upscaling (live Mac/iOS path only; the offscreen/golden
+    /// path never touches it).
+    let marchAuxPipeline: MTLComputePipelineState
     let evalOpsPipeline: MTLComputePipelineState
     let evalDistPipeline: MTLComputePipelineState
     let evalDEPipeline: MTLComputePipelineState
-    /// Bilinear stretch for the render-scale lever (live path): march into a
-    /// smaller intermediate, upscale into the drawable. No DE linkage.
-    let upscalePipeline: MTLComputePipelineState
 
     /// DE table for `march_offscreen`: index 0 = mandelbox, 1 = mandelbulb.
     let marchDETable: MTLVisibleFunctionTable
+    /// DE table matched to the aux pipeline (tables are per-pipeline).
+    let marchAuxDETable: MTLVisibleFunctionTable
     /// DE table for `eval_de`: index 0 = mandelbox, 1 = mandelbulb.
     let evalDETable: MTLVisibleFunctionTable
 
@@ -162,19 +166,14 @@ public final class GPUContext: @unchecked Sendable {
         self.evalDEPipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "eval_de",
             deFunctions: deFunctions)
-        guard let upscaleKernel = library.makeFunction(name: "upscale_bilinear") else {
-            throw RenderError.missingFunction("upscale_bilinear")
-        }
-        do {
-            self.upscalePipeline = try device.makeComputePipelineState(
-                function: upscaleKernel)
-        } catch {
-            throw RenderError.pipelineCreationFailed(
-                "upscale_bilinear: \(String(describing: error))")
-        }
+        self.marchAuxPipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "march_offscreen",
+            deFunctions: deFunctions, auxOutputs: true)
 
         self.marchDETable = try Self.makeDETable(
             marchPipeline, functions: deFunctions, label: "march_offscreen DE table")
+        self.marchAuxDETable = try Self.makeDETable(
+            marchAuxPipeline, functions: deFunctions, label: "march aux DE table")
         self.evalDETable = try Self.makeDETable(
             evalDEPipeline, functions: deFunctions, label: "eval_de DE table")
     }
@@ -183,15 +182,36 @@ public final class GPUContext: @unchecked Sendable {
 
     /// A compute pipeline for `kernelName` with `deFunctions` linked as
     /// visible functions (built-ins, plus an external DE when loading one).
+    /// `auxOutputs` bakes the THRESH_AUX function constant true — the
+    /// temporal-upscale input variant (depth/motion writes + jittered
+    /// ray-gen). False compiles exactly the pre-aux kernel (constant
+    /// defaults false; the aux arguments are eliminated).
     static func makeLinkedPipeline(
         device: MTLDevice, library: MTLLibrary, kernelName: String,
-        deFunctions: [MTLFunction]
+        deFunctions: [MTLFunction], auxOutputs: Bool = false
     ) throws -> MTLComputePipelineState {
-        guard let kernel = library.makeFunction(name: kernelName) else {
+        let kernel: MTLFunction
+        if kernelName == "march_offscreen" {
+            // The march kernel references the THRESH_AUX function constant,
+            // so Metal requires the specialized-function creation path even
+            // for the default (false) variant.
+            let constants = MTLFunctionConstantValues()
+            var aux = auxOutputs
+            constants.setConstantValue(&aux, type: .bool, index: 0)
+            do {
+                kernel = try library.makeFunction(
+                    name: kernelName, constantValues: constants)
+            } catch {
+                throw RenderError.missingFunction(
+                    "\(kernelName) (aux=\(auxOutputs)): \(String(describing: error))")
+            }
+        } else if let plain = library.makeFunction(name: kernelName) {
+            kernel = plain
+        } else {
             throw RenderError.missingFunction(kernelName)
         }
         let desc = MTLComputePipelineDescriptor()
-        desc.label = kernelName
+        desc.label = auxOutputs ? "\(kernelName) aux" : kernelName
         desc.computeFunction = kernel
         let linked = MTLLinkedFunctions()
         linked.functions = deFunctions

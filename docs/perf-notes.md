@@ -172,6 +172,53 @@ making resolution the governor's PRIMARY lever over iteration reduction
 (iteration drops change the fractal silhouette; resolution drops only soften
 — cleaner under load, especially in-headset).
 
+## Resolution-only governor + MetalFX temporal — 2026-07-03 (perf block 5)
+
+Three decisions, one unification:
+
+1. **The governor no longer touches iterations/maxSteps.** Live testing
+   showed the multiplicative iteration factor visibly reshaping the DE (the
+   mandelbulb's detail threshold jumped discontinuously and the recovery
+   oscillated). The governor now emits ONE signal — `renderScale` — carried
+   on the frame request. Resolution softens; it never reshapes the fractal
+   (ADR-003 update).
+2. **Mac/iOS resolution mechanism = MetalFX temporal upscaling** (the
+   bilinear spatial kernel is deleted). The march kernel gained a
+   function-constant aux variant (THRESH_AUX, buffer 7 / textures 1–2 —
+   private live-path contract, NOT ABI) that writes linear depth + motion
+   vectors (reprojection through the previous frame's camera, computed
+   in-kernel from hit t — no separate motion pass, unlike the original
+   app's fragment path) and jitters ray-gen by a Halton(2,3) sub-pixel
+   offset. The offscreen/golden path compiles with the constant false —
+   codegen unchanged, corpus byte-identical (verified: full suite green).
+3. **visionOS resolution mechanism = compositor renderQuality** (block 4,
+   unchanged). One governor, one signal, two platform mechanisms; floors
+   come from `QualityGovernorConfig.platformDefault` (Mac 0.35 — MetalFX
+   temporal reconstructs well below half res, max 3×/axis; visionOS 0.5).
+
+TemporalUpscaler (ThresholdRender) is ported from the original app's
+MacTemporalUpscaler with its two hard-won details (size-keyed LRU pool;
+reset-before-texture-assignment) plus one fix the old app didn't have:
+**scaler builds are async** (SpecializationCache pattern). Measured on the
+render thread before the fix: 1960 ms first MetalFX build, 165–368 ms per
+size revisited during the governor's descent — every scale change was a
+hitch. After: `prepare` returns the nearest READY configuration (or nil →
+full-res direct) while the exact size builds off-thread; descent frames
+encode in ~0.1–0.2 ms.
+
+Verified: 372 tests green (incl. golden corpus → aux=false byte-identical),
+Metal validation layer clean through the temporal path, visionOS
+ThresholdRender builds, live run holds ~52 fps at 1.5 Mpx mid-descent.
+NOT yet verified (needs eyes on a visible window): temporal image quality —
+ghosting/shimmer would indicate a motion-vector or jitter sign error; the
+math follows Apple's convention (projection-translate emulated in ray-gen,
+motion = previous − current in input pixels, y-down).
+
+Known gaps: external DEs have no aux pipeline variant yet — they render at
+full resolution regardless of the governor (correct, just ungoverned). The
+CLI `--specialize` path keeps aux=false (byte-identical contract with the
+generic offscreen pipeline preserved).
+
 ## Measured non-problems (decided against, with reasons)
 
 - **Per-frame CPU allocations** (SessionGPUEncoder's params/ops MTLBuffers):

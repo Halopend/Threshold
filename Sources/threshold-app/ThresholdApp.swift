@@ -59,10 +59,12 @@ final class AppModel {
         // "stuttering" out of the box (docs/perf-notes.md, stutter block).
         // THRESHOLD_GOVERNOR=<targetMs> overrides the target (profiling seam);
         // the sidebar's Auto Quality toggle turns it off.
-        let target = ProcessInfo.processInfo.environment["THRESHOLD_GOVERNOR"]
-            .flatMap(Double.init)
-        mirror.setQualityGovernor(QualityGovernorConfig(
-            targetMilliseconds: target ?? QualityGovernorConfig().targetMilliseconds))
+        var config = QualityGovernorConfig.platformDefault
+        if let target = ProcessInfo.processInfo.environment["THRESHOLD_GOVERNOR"]
+            .flatMap(Double.init) {
+            config.targetMilliseconds = target
+        }
+        mirror.setQualityGovernor(config)
     }
 
     func stop() {

@@ -239,7 +239,7 @@ public struct StatsSection: View {
             // governor only modulates below them.
             Toggle("Auto Quality", isOn: $autoQuality)
                 .onChange(of: autoQuality) { _, on in
-                    mirror.setQualityGovernor(on ? QualityGovernorConfig() : nil)
+                    mirror.setQualityGovernor(on ? .platformDefault : nil)
                 }
         }
     }

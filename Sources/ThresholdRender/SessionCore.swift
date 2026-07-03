@@ -137,20 +137,18 @@ final class SessionCore {
             }
         }
 
-        // Quality governor (ADR-003): a registered system-lane writer.
-        // Quality-class params are .multiplicative, so resolved = user ×
-        // factor — the user's slider is a ceiling, not a fight.
+        // Quality governor (ADR-003): resolution is the ONLY lever. The
+        // factor ≈ pixel-cost fraction, so √factor per axis; each shell
+        // applies the scale through its platform mechanism (visionOS:
+        // compositor renderQuality; Mac/iOS: MetalFX temporal upscale).
+        // Quantized to 1/20ths so the additive-recovery creep doesn't
+        // thrash texture/scaler allocations every frame. Iteration/step
+        // writes were deliberately removed — they reshape the fractal
+        // (docs/perf-notes.md perf block 5).
         var renderScale: Float = 1
         if let config = governorConfig {
             let factor = governor.update(gpuMilliseconds: gpuMilliseconds, config: config)
-            engine.write(lane: .system, slot: Int(THRESH_SLOT_MAX_STEPS), value: factor)
-            engine.write(lane: .system, slot: Int(THRESH_SLOT_ITERATIONS), value: factor)
-            // Resolution is the LINEAR cost lever (pixels × per-pixel cost):
-            // sqrt(factor) per axis ≈ pixel count × factor. Quantized to
-            // 1/20ths so the additive-recovery creep doesn't reallocate the
-            // intermediate texture every frame; floored at half resolution —
-            // past that, blur reads as broken, not adaptive.
-            renderScale = max(sqrt(factor), 0.5)
+            renderScale = min(max(sqrt(factor), config.minRenderScale), 1)
             renderScale = (renderScale * 20).rounded() / 20
         }
 
@@ -317,8 +315,6 @@ final class SessionCore {
             governorConfig = config
             if config == nil {
                 governor.reset()
-                engine.clearLane(.system, slot: Int(THRESH_SLOT_MAX_STEPS))
-                engine.clearLane(.system, slot: Int(THRESH_SLOT_ITERATIONS))
             }
 
         case .captureScene(let slot):

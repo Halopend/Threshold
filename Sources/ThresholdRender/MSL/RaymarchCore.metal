@@ -757,6 +757,29 @@ static inline ThreshMarchResult marchShade(
     return result;
 }
 
+// ------------------------- temporal-upscale aux path ------------------------
+//
+// The live Mac/iOS path renders at reduced resolution and reconstructs with
+// MetalFX *temporal* upscaling, which needs per-pixel depth + motion and a
+// sub-pixel-jittered projection. All of it is gated behind one function
+// constant so the offscreen/golden path compiles to EXACTLY the same code as
+// before (constant defaults to false; the aux arguments vanish).
+//
+// Buffer 7 / textures 1–2 are a private contract with SessionGPUEncoder
+// (same standing as THRESH_BUFFER_DE_TABLE = 4) — not part of the ABI header.
+constant bool thresh_aux_defined [[function_constant(0)]];
+constant bool THRESH_AUX = is_function_constant_defined(thresh_aux_defined)
+    ? thresh_aux_defined : false;
+#define THRESH_BUFFER_AUX      7
+#define THRESH_TEXTURE_DEPTH   1
+#define THRESH_TEXTURE_MOTION  2
+
+struct ThreshAuxUniforms {
+    float4 prevCamPosFov;  // xyz previous camera position, w previous fovTan
+    float4 prevCamQuat;    // previous camera orientation
+    float4 jitter;         // xy sub-pixel jitter (input pixels), zw unused
+};
+
 kernel void march_offscreen(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
@@ -765,6 +788,12 @@ kernel void march_offscreen(
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
     constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
     texture2d<float, access::write> outTex   [[texture(THRESH_TEXTURE_OUTPUT)]],
+    constant ThreshAuxUniforms& aux          [[buffer(THRESH_BUFFER_AUX),
+                                               function_constant(THRESH_AUX)]],
+    texture2d<float, access::write> depthTex [[texture(THRESH_TEXTURE_DEPTH),
+                                               function_constant(THRESH_AUX)]],
+    texture2d<float, access::write> motionTex [[texture(THRESH_TEXTURE_MOTION),
+                                                function_constant(THRESH_AUX)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
     const uint w = outTex.get_width();
@@ -773,8 +802,14 @@ kernel void march_offscreen(
 
     const float aspect = float(w) / float(h);
     const float fovTan = U.camPosFov.w;
-    const float2 ndc = float2((float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
-                              1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+    // Aux path: the jitter shifts this frame's sample point within the pixel
+    // (the ray-gen equivalent of MetalFX's expected clip-space projection
+    // translate); the scaler receives the same offset and removes it while
+    // accumulating history into sub-pixel detail.
+    float2 pixel = float2(gid) + 0.5f;
+    if (THRESH_AUX) { pixel -= aux.jitter.xy; }
+    const float2 ndc = float2(pixel.x / float(w) * 2.0f - 1.0f,
+                              1.0f - pixel.y / float(h) * 2.0f);
     const float3 dirLocal = normalize(float3(ndc.x * aspect * fovTan,
                                              ndc.y * fovTan,
                                              -1.0f));
@@ -787,6 +822,34 @@ kernel void march_offscreen(
     atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
 
     outTex.write(m.color, gid);
+
+    if (THRESH_AUX) {
+        // Depth: linear 0 (near) … 1 (far) against the march far threshold —
+        // monotonic is all the scaler's disocclusion logic needs.
+        const float maxDist = max(params[THRESH_SLOT_MAX_DIST], 1e-6f);
+        depthTex.write(float4(saturate(m.t / maxDist), 0.0f, 0.0f, 0.0f), gid);
+
+        // Motion: where this frame's hit point sat LAST frame, in input
+        // pixels (y-down), previous − current, both ends UNJITTERED. A miss
+        // uses the far point along the ray, so camera rotation still tracks
+        // the background instead of tearing history at silhouettes.
+        const float3 worldPos = ro + rd * m.t;
+        const float3 v = worldPos - aux.prevCamPosFov.xyz;
+        const float4 prevQ = aux.prevCamQuat;
+        const float3 local = quatRotate(float4(-prevQ.xyz, prevQ.w), v);
+        float2 motion = float2(0.0f);
+        if (local.z < -1e-6f) {
+            const float prevFovTan = max(aux.prevCamPosFov.w, 1e-6f);
+            const float2 pndc = float2(
+                local.x / (-local.z * aspect * prevFovTan),
+                local.y / (-local.z * prevFovTan));
+            const float2 prevPixel = float2(
+                (pndc.x + 1.0f) * 0.5f * float(w),
+                (1.0f - pndc.y) * 0.5f * float(h));
+            motion = prevPixel - (float2(gid) + 0.5f);
+        }
+        motionTex.write(float4(motion, 0.0f, 0.0f), gid);
+    }
 }
 
 // ========================== stereo raster path ==============================
@@ -929,24 +992,4 @@ kernel void eval_de(
     ctx.time = U.scaleCtx.x;
     ctx.lodScale = U.scaleCtx.w;
     outDE[gid] = deTable[U.meta.y](inPoints[gid].xyz, ctx);
-}
-
-// ---------------------------------------------------------------------------
-// upscale_bilinear — the render-scale lever's second pass (live path only).
-// The march renders into a smaller intermediate texture; this stretches it
-// over the full drawable with hardware bilinear filtering. Texture indices
-// are a private contract with SessionGPUEncoder (0 = source, 1 = dest), not
-// part of the ABI header.
-kernel void upscale_bilinear(
-    texture2d<float, access::sample> src [[texture(0)]],
-    texture2d<float, access::write> dst  [[texture(1)]],
-    uint2 gid                            [[thread_position_in_grid]])
-{
-    const uint w = dst.get_width();
-    const uint h = dst.get_height();
-    if (gid.x >= w || gid.y >= h) { return; }
-    constexpr sampler lin(coord::normalized, address::clamp_to_edge,
-                          filter::linear);
-    const float2 uv = (float2(gid) + 0.5f) / float2(w, h);
-    dst.write(src.sample(lin, uv), gid);
 }

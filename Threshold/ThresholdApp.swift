@@ -30,19 +30,6 @@ enum AppModelShared {
     static let openableTypes: [UTType] =
         ThresholdFile.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
 
-    /// The quality governor is ON by default in the real app (ADR-003): a
-    /// scene heavier than the frame budget otherwise misses vsyncs and reads
-    /// as stutter (docs/perf-notes.md). The target differs by platform budget
-    /// — Vision Pro's 90 fps is an 11.1 ms budget, aimed a little under to
-    /// leave the compositor its present/reproject headroom; Mac holds a
-    /// 120 Hz-friendly 8 ms. The Auto Quality toggle (default on) flips it.
-    static var defaultGovernor: QualityGovernorConfig {
-        #if os(visionOS)
-        QualityGovernorConfig(targetMilliseconds: 10.0)
-        #else
-        QualityGovernorConfig(targetMilliseconds: 8.0)
-        #endif
-    }
 
     /// Same demo set as the dev shell: bass → bulb power, level → AO.
     static let defaultAudioBindings: [ThresholdCore.Binding] = [
@@ -143,7 +130,7 @@ final class AppModel {
     func start() {
         session.start()
         mirror.startPolling()
-        mirror.setQualityGovernor(AppModelShared.defaultGovernor)
+        mirror.setQualityGovernor(.platformDefault)
     }
 
     func stop() {
@@ -398,7 +385,7 @@ final class VisionAppModel {
     func attach(_ layerRenderer: LayerRenderer) {
         session.start(layerRenderer)
         hands.start()
-        mirror.setQualityGovernor(AppModelShared.defaultGovernor)
+        mirror.setQualityGovernor(.platformDefault)
     }
 
     func setAudioReactive(_ on: Bool) {
