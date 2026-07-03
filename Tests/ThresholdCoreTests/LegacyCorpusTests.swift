@@ -120,6 +120,63 @@ struct LegacyCorpusTests {
         #expect(abs(zoom - log2(Float(1.4763585))) < 1e-5)
     }
 
+    // MARK: .threshanim corpus
+
+    private var animsDir: URL {
+        scenesDir.deletingLastPathComponent().appendingPathComponent("anims")
+    }
+
+    @Test("Every legacy animation decodes into tracks and round-trips")
+    func animCorpusReplay() throws {
+        let files = try FileManager.default
+            .contentsOfDirectory(at: animsDir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "threshanim" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        try #require(!files.isEmpty, "legacy anim corpus missing at \(animsDir.path)")
+
+        for file in files {
+            let envelope = try AnimationCodec.decode(try Data(contentsOf: file))
+            let name = Comment(rawValue: file.lastPathComponent)
+            #expect(envelope.version == AnimationCodec.currentVersion, name)
+            // Every corpus anim animates at least the shared engine params.
+            #expect(!envelope.clip.tracks.isEmpty, name)
+            #expect(envelope.clip.effectiveDuration >= 0, name)
+            #expect(envelope.clip.loop == .loop, name)  // all corpus anims loop
+            // Never delete: the raw keyframes survive in `unknown`.
+            #expect(envelope.unknown["keyframes"] != nil, name)
+            // Round-trip: encode → decode is stable.
+            let again = try AnimationCodec.decode(try AnimationCodec.encode(envelope))
+            #expect(again == envelope, name)
+        }
+    }
+
+    @Test("Ambient_Blur: mandelbox tracks with cumulative times and easing")
+    func ambientBlurTracks() throws {
+        let data = try Data(
+            contentsOf: animsDir.appendingPathComponent("Ambient_Blur.threshanim"))
+        let envelope = try AnimationCodec.decode(data)
+        let clip = envelope.clip
+
+        let scaleTrack = try #require(
+            clip.tracks.first { $0.param == .de("mandelbox", "scale") })
+        #expect(scaleTrack.mode == .absolute)
+        #expect(scaleTrack.keyframes.count == 8)
+        // Keyframe 0: duration 0 → time 0; keyframe 1: duration 10 → time 10.
+        #expect(scaleTrack.keyframes[0].time == 0)
+        #expect(scaleTrack.keyframes[1].time == 10)
+        #expect(abs(scaleTrack.keyframes[0].values[0] - 3.0075026) < 1e-5)
+        // Legacy bezier easing → smooth segments.
+        #expect(scaleTrack.keyframes[0].interpolation == .smooth)
+
+        // minDistance is minRadius² here too.
+        let minRadius = try #require(
+            clip.tracks.first { $0.param == .de("mandelbox", "minRadius") })
+        #expect(abs(minRadius.keyframes[0].values[0] - Float(12.501993).squareRoot()) < 1e-4)
+
+        // Shared engine params always track.
+        #expect(clip.tracks.contains { $0.param == .engineIterations })
+    }
+
     @Test("mandelboxSphereProjection maps to mandelbox + sphereProject op")
     func sphereProjectionUnification() throws {
         for file in try corpusFiles() {

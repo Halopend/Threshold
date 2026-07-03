@@ -116,7 +116,12 @@ final class AppModel {
             case .scene(let envelope):
                 apply(scene: envelope, from: url.lastPathComponent)
             case .animation(let envelope):
-                mirror.setAnimationClip(envelope.clip)
+                var clip = envelope.clip
+                if clip.name == nil {
+                    // Legacy files carry no display name — the filename is it.
+                    clip.name = url.deletingPathExtension().lastPathComponent
+                }
+                mirror.setAnimationClip(clip)
                 mirror.animationTransport(.play)
             }
         } catch {

@@ -80,7 +80,7 @@ public enum AnimationCodec {
 
     /// Ordered production migration table (same machinery as scenes,
     /// plan §7.3). Append-only.
-    public static let migrations: [SceneMigration] = []
+    public static let migrations: [SceneMigration] = [LegacyAnimation.migration]
 
     /// Deterministic bytes: pretty-printed, sorted keys — animations are
     /// user-shareable documents and should diff cleanly.
@@ -104,6 +104,11 @@ public enum AnimationCodec {
         }
         guard case .object(var tree) = root else {
             throw SceneCodecError.malformed("animation root is not an object")
+        }
+        // Version-less trees with a `keyframes` array are original-app files —
+        // that signature is version 0 (same convention as SceneCodec).
+        if tree["version"] == nil, LegacyAnimation.isLegacyTree(tree) {
+            tree["version"] = .number(0)
         }
         guard case .number(let rawVersion)? = tree["version"] else {
             throw SceneCodecError.malformed("animation envelope missing numeric version")
