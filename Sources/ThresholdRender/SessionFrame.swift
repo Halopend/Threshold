@@ -26,6 +26,8 @@ struct SessionFrame {
     /// Dynamic-arena registrations (external DE params) — the UI derives
     /// controls for these exactly as for the static layout entries.
     let dynamicEntries: [CatalogEntry]
+    /// Zoom-rebase counter — total zoom depth = octave + resolved scale.zoom.
+    let scaleOctave: Int32
     /// Active external DE program — the encoder binds its pipeline/table
     /// instead of the context's built-in-only ones.
     let externalProgram: ExternalDEProgram?
@@ -44,6 +46,7 @@ struct SessionFrame {
             paused: paused,
             palette: palette,
             animation: animation,
-            dynamicEntries: dynamicEntries)
+            dynamicEntries: dynamicEntries,
+            scaleOctave: scaleOctave)
     }
 }

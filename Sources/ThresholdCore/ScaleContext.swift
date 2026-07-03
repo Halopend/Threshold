@@ -10,9 +10,18 @@
 // bug class of the original ("the fix had to touch three places") cannot
 // recur because there is exactly one derivation site.
 //
-// Octave rebase (infinite-zoom phase 2) will renormalize camera + zoom + DE
-// params atomically on a snapshot boundary and bump `octave`; until then
-// octave is always 0 and `scale.zoom`'s range is the practical float budget.
+// Octave rebase (infinite-zoom phase 2, plan §6.3): when the zoom phase
+// reaches `rebaseThreshold` octaves, the render thread folds the INTEGER part
+// into `octave` and renormalizes the world atomically between frames —
+// phase -= k, camera.position ×= 2^-k. Both rewrites are exact in binary
+// floats (power-of-two scale, exact float−int subtraction at this magnitude),
+// so the rendered image is unchanged while the phase and the camera's world
+// coordinates stay in a healthy float range at ANY zoom depth. Rebase fires
+// zoom-IN only: magnification pushes off-origin features (and the camera
+// chasing them) outward at 2^zoom, which is the coordinate growth that eats
+// mantissa bits; zoom-out collapses features toward the origin with the
+// camera holding still, so no drift accumulates and the −64 range floor
+// remains the honest budget.
 
 import Foundation
 
@@ -33,15 +42,38 @@ extension ParamKey {
 /// Derived per frame from the resolved `scale.zoom` value; consumed by the
 /// uniform builder (and later the presentation shells' proxy geometry).
 public struct ScaleContext: Sendable, Equatable {
-    /// Zoom position in octaves, positive = magnified.
+    /// Zoom phase in octaves, positive = magnified. After a rebase this is
+    /// the FRACTIONAL remainder — kept within `±rebaseThreshold`.
     public let zoomOctaves: Float
-    /// Rebase counter — always 0 until infinite-zoom phase 2.
+    /// Rebase counter: how many integer octaves have been folded out of the
+    /// phase (and out of the world's coordinates). Bookkeeping only — the
+    /// kernel never sees it; `zoomOctaves` + the rebased camera fully
+    /// determine the image.
     public let octave: Int32
+
+    /// Zoom phase magnitude at which the render thread rebases. 8 keeps
+    /// `modelScale` within 2⁻⁸…2⁸ and camera coordinates small enough that
+    /// float absolute precision (~2⁻¹⁵ at magnitude 2⁸·|p₀|) stays well under
+    /// the hit epsilon; legacy scenes migrate with zoom < 8, so their goldens
+    /// never see a rebase.
+    public static let rebaseThreshold: Float = 8
+
+    /// The integer octave step to fold out of `zoomOctaves` at a rebase
+    /// boundary; 0 when the phase is within budget (or zooming OUT — see the
+    /// header: negative zoom accumulates no coordinate drift).
+    public static func rebaseStep(zoomOctaves: Float) -> Int32 {
+        guard zoomOctaves.isFinite, zoomOctaves >= rebaseThreshold else { return 0 }
+        return Int32(zoomOctaves.rounded(.towardZero))
+    }
 
     public init(zoomOctaves: Float, octave: Int32 = 0) {
         self.zoomOctaves = zoomOctaves
         self.octave = octave
     }
+
+    /// Total zoom depth in octaves — what the user has actually zoomed,
+    /// across every rebase. Display/telemetry only.
+    public var totalZoomOctaves: Float { Float(octave) + zoomOctaves }
 
     /// World→model position multiplier: `exp2(-zoom)`. Positive zoom shrinks
     /// model space relative to the world, i.e. the fractal appears LARGER
@@ -65,10 +97,10 @@ extension Catalog {
     ///
     /// `scale.zoom` is `.transient` like all integrator phases: the phase
     /// value persists via the envelope's integratorPhases snapshot, not the
-    /// params walk. The ±64-octave range is a float-budget guard, not a
-    /// design limit — octave rebase (phase 2) lifts it. Wrap-around at the
-    /// rim is accepted until then (unreachable in practice: at the maximum
-    /// rate it is >30 s of sustained zoom from default).
+    /// params walk. Zoom-IN never approaches the +64 rim — octave rebase
+    /// folds the phase back at +8 — so the range effectively bounds zoom-OUT
+    /// only, where −64 is the honest float budget (no rebase; see the
+    /// header).
     public func registerScaleParams() throws {
         try register(ParamSpec(
             key: .scaleZoomSpeed, label: "Zoom Speed",

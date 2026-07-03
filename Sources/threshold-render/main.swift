@@ -327,7 +327,8 @@ for frame in 0..<opts.frames {
     // Zoom (plan §6.3): resolved scale.zoom → ScaleContext, same derivation
     // as the interactive session (SessionCore.step).
     let scaleContext = ScaleContext(
-        zoomOctaves: layout.slot(for: .scaleZoom).map { resolved.values[$0] } ?? 0)
+        zoomOctaves: layout.slot(for: .scaleZoom).map { resolved.values[$0] } ?? 0,
+        octave: envelope.scaleOctave)
     uniforms.scaleCtx = SIMD4(
         Float(clock.now), scaleContext.epsilonBase, scaleContext.modelScale, 1)
     uniforms.meta = SIMD4(

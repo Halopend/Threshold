@@ -31,13 +31,17 @@ public struct RenderSnapshot: Sendable {
     /// UI renders rows for these exactly as for static layout entries. Empty
     /// when no external DE is active.
     public let dynamicEntries: [CatalogEntry]
+    /// Zoom-rebase counter (plan §6.3) — total zoom depth in octaves is
+    /// `Float(scaleOctave)` + the resolved `scale.zoom` value.
+    public let scaleOctave: Int32
 
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
         gpuMilliseconds: Double, totalSteps: UInt64, deKey: String,
         warpStack: [WarpOpDTO], paused: Bool, palette: Palette,
         animation: AnimationPlaybackState = .idle,
-        dynamicEntries: [CatalogEntry] = []
+        dynamicEntries: [CatalogEntry] = [],
+        scaleOctave: Int32 = 0
     ) {
         self.resolved = resolved
         self.frameIndex = frameIndex
@@ -50,6 +54,7 @@ public struct RenderSnapshot: Sendable {
         self.palette = palette
         self.animation = animation
         self.dynamicEntries = dynamicEntries
+        self.scaleOctave = scaleOctave
     }
 }
 

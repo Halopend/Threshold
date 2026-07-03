@@ -67,6 +67,10 @@ final class SessionCore {
     /// structural change, not per frame.
     private(set) var gpuOps: [ThreshWarpOp] = []
     private(set) var camera: CameraDTO = .default
+    /// Zoom-rebase counter (plan §6.3): integer octaves folded out of the
+    /// `scale.zoom` phase, with `camera` living in the correspondingly
+    /// rebased world. Bookkeeping — the kernel never sees it.
+    private(set) var octave: Int32 = 0
     private(set) var paused = false
     /// Active gradient palette (scene content). Defaults to the renderer's
     /// built-in stops until a scene or `setPalette` command replaces it.
@@ -114,6 +118,23 @@ final class SessionCore {
     ) -> SessionFrame {
         for command in commands.drain() {
             handle(command)
+        }
+
+        // Octave rebase (plan §6.3): BEFORE resolution, so the frame renders
+        // from a consistent (phase, camera) pair — never a torn mix. Folding
+        // an integer octave out of the phase and scaling the camera by the
+        // matching power of two are both float-exact, so the image does not
+        // change; the phase and the camera's coordinates stay in a healthy
+        // float range at any zoom depth (ScaleContext header).
+        if let zoomSlot = layout.slot(for: .scaleZoom),
+           let phase = engine.readIntegratorPhase(slot: zoomSlot) {
+            let k = ScaleContext.rebaseStep(zoomOctaves: phase)
+            if k != 0 {
+                engine.setIntegratorPhase(slot: zoomSlot, value: phase - Float(k))
+                let worldScale = exp2(-Float(k))
+                camera.position = camera.position.map { $0 * worldScale }
+                octave &+= k
+            }
         }
 
         // Quality governor (ADR-003): a registered system-lane writer.
@@ -195,7 +216,8 @@ final class SessionCore {
         // Zoom (plan §6.3): resolved scale.zoom (integrator phase driven by
         // scale.zoomSpeed) → ScaleContext, THE scale derivation site.
         let scaleContext = ScaleContext(
-            zoomOctaves: layout.slot(for: .scaleZoom).map { resolved.values[$0] } ?? 0)
+            zoomOctaves: layout.slot(for: .scaleZoom).map { resolved.values[$0] } ?? 0,
+            octave: octave)
         uniforms.scaleCtx = SIMD4(
             Float(clock.now), scaleContext.epsilonBase, scaleContext.modelScale, 1)
         uniforms.meta = SIMD4(
@@ -216,6 +238,7 @@ final class SessionCore {
             palette: palette,
             animation: animationPlayer.playbackState,
             dynamicEntries: dynamicEntries,
+            scaleOctave: octave,
             externalProgram: externalProgram)
     }
 
@@ -302,6 +325,9 @@ final class SessionCore {
                 embeddedDE: externalProgram != nil ? activeEmbeddedDE : nil,
                 abiVersion: EmbeddedDE.currentABIVersion)
             envelope.palette = palette
+            // Camera is saved in the rebased world (the codec snapshotted the
+            // matching rebased phase) — carry the depth counter alongside.
+            envelope.scaleOctave = octave
             slot.publish(envelope)
         }
     }
@@ -354,6 +380,7 @@ final class SessionCore {
         SceneCodec.apply(envelope, layout: layout, engine: engine)
         setWarpStack(envelope.warpStack)
         camera = envelope.camera
+        octave = envelope.scaleOctave
         // Palette is scene content; a scene without one keeps the current
         // palette rather than snapping to a default (Invariant 11 spirit).
         if let scenePalette = envelope.palette {

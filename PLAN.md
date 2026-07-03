@@ -564,8 +564,14 @@ infinite zoom). Consequences designed in, not patched in:
   single `ScaleContext { modelScale, octave }` struct consumed by both vertex and
   march code — the zoom-out sphere fix (horizon lift + proxy inflate + epsilon rescale,
   which had to touch three places) becomes one struct with three consumers.
-- Octave rebase (Phase 2 of infinite zoom) is a planned renormalization event on the
-  snapshot boundary: rewrite camera + scale + DE params atomically between frames.
+- Octave rebase (Phase 2 of infinite zoom) is a renormalization event between frames:
+  when the zoom phase reaches +8 octaves, SessionCore folds the integer part into an
+  `octave` counter, subtracts it from the integrator phase, and scales the base camera
+  by the matching power of two — both rewrites are float-exact, so the image cannot
+  move while the phase and camera coordinates stay in a healthy float range at any
+  depth. Zoom-IN only (zoom-out collapses features toward the origin and accumulates
+  no coordinate drift; −64 remains its honest budget). The counter persists as the
+  envelope's optional `scaleOctave` (omitted when 0 — pre-octave files unchanged).
 
 ### 6.4 visionOS specifics
 

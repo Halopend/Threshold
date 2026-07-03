@@ -149,6 +149,11 @@ public struct SceneEnvelope: Sendable, Equatable {
     public var foreignParams: [String: JSONValue]
     /// Integrator phase snapshots by ParamKey rawValue.
     public var integratorPhases: [String: Float]
+    /// Zoom-rebase counter at save (plan §6.3): integer octaves folded out of
+    /// the `scale.zoom` phase, with `camera` saved in the REBASED world.
+    /// Pure zoom-depth bookkeeping — phase + camera alone reproduce the
+    /// image; 0 (the default, omitted on encode) for never-rebased scenes.
+    public var scaleOctave: Int32
     public var warpStack: [WarpOpDTO]
     public var camera: CameraDTO
     /// Scene palette (gradient stops). `nil` means "no authored palette" — the
@@ -167,6 +172,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         params: [String: [Float]] = [:],
         foreignParams: [String: JSONValue] = [:],
         integratorPhases: [String: Float] = [:],
+        scaleOctave: Int32 = 0,
         warpStack: [WarpOpDTO] = [],
         camera: CameraDTO = .default,
         palette: Palette? = nil,
@@ -181,6 +187,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         self.params = params
         self.foreignParams = foreignParams
         self.integratorPhases = integratorPhases
+        self.scaleOctave = scaleOctave
         self.warpStack = warpStack
         self.camera = camera
         self.palette = palette
@@ -204,8 +211,8 @@ extension SceneEnvelope: Codable {
     /// Known top-level keys. Anything else is preserved in `unknown`.
     private static let knownKeys: Set<String> = [
         "version", "abiVersion", "name", "tags", "fractalTypeKey",
-        "embeddedDE", "params", "integratorPhases", "warpStack", "camera",
-        "palette",
+        "embeddedDE", "params", "integratorPhases", "scaleOctave",
+        "warpStack", "camera", "palette",
     ]
 
     public init(from decoder: any Decoder) throws {
@@ -226,6 +233,7 @@ extension SceneEnvelope: Codable {
         embeddedDE = try c.decodeIfPresent(EmbeddedDE.self, forKey: key("embeddedDE"))
         integratorPhases =
             try c.decodeIfPresent([String: Float].self, forKey: key("integratorPhases")) ?? [:]
+        scaleOctave = try c.decodeIfPresent(Int32.self, forKey: key("scaleOctave")) ?? 0
         warpStack = try c.decodeIfPresent([WarpOpDTO].self, forKey: key("warpStack")) ?? []
         camera = try c.decodeIfPresent(CameraDTO.self, forKey: key("camera")) ?? .default
         palette = try c.decodeIfPresent(Palette.self, forKey: key("palette"))
@@ -277,6 +285,7 @@ extension SceneEnvelope: Codable {
         if !integratorPhases.isEmpty {
             try c.encode(integratorPhases, forKey: key("integratorPhases"))
         }
+        if scaleOctave != 0 { try c.encode(scaleOctave, forKey: key("scaleOctave")) }
         try c.encode(warpStack, forKey: key("warpStack"))
         try c.encode(camera, forKey: key("camera"))
         try c.encodeIfPresent(palette, forKey: key("palette"))

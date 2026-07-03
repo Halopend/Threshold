@@ -222,6 +222,9 @@ public struct StatsSection: View {
             LabeledContent("FPS", value: String(format: "%.1f", mirror.stats.fps))
             LabeledContent("GPU", value: String(format: "%.2f ms", mirror.stats.gpuMilliseconds))
             LabeledContent("Steps", value: "\(mirror.stats.totalSteps)")
+            LabeledContent(
+                "Zoom Depth",
+                value: String(format: "%+.1f oct", mirror.zoomDepthOctaves))
             Toggle("Paused", isOn: SwiftUI.Binding(
                 get: { mirror.paused },
                 set: { mirror.setPaused($0) }

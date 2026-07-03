@@ -65,6 +65,8 @@ public final class ParameterMirror {
     public private(set) var dynamicEntries: [CatalogEntry] = []
     /// Animation transport state — what the play/scrub UI displays.
     public private(set) var animation: AnimationPlaybackState = .idle
+    /// Zoom-rebase counter from the latest snapshot (plan §6.3).
+    public private(set) var scaleOctave: Int32 = 0
     /// Local echo of in-flight slider drags (slot → target resolved value),
     /// so a drag reads back its own target instead of a stale snapshot.
     public private(set) var pendingEdits: [Int: Float] = [:]
@@ -185,8 +187,19 @@ public final class ParameterMirror {
             animation = snapshot.animation
             changed = true
         }
+        if snapshot.scaleOctave != scaleOctave {
+            scaleOctave = snapshot.scaleOctave
+            changed = true
+        }
 
         if changed { refreshGeneration &+= 1 }
+    }
+
+    /// Total zoom depth in octaves across every rebase (plan §6.3) — the
+    /// stats readout's "how deep am I", immune to the phase folding.
+    public var zoomDepthOctaves: Float {
+        let phase = layout.slot(for: .scaleZoom).map { displayValue(slot: $0) } ?? 0
+        return Float(scaleOctave) + phase
     }
 
     /// The value a control should display for `slot`: the in-flight edit echo

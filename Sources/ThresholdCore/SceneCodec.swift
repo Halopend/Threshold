@@ -165,9 +165,13 @@ public enum SceneCodec {
                 components.append(raw.isFinite ? raw : entry.spec.defaultValue[i])
             }
             params[entry.key.rawValue] = components
+        }
 
-            if entry.spec.integratorRateKey != nil,
-                let phase = engine.readIntegratorPhase(slot: entry.slot), phase.isFinite {
+        // Integrator phases snapshot regardless of persistence: a phase param
+        // is `.transient` in the params walk precisely BECAUSE this is its
+        // persistence channel (Invariant 17; ScaleContext header).
+        for entry in layout.entries where entry.spec.integratorRateKey != nil {
+            if let phase = engine.readIntegratorPhase(slot: entry.slot), phase.isFinite {
                 phases[entry.key.rawValue] = phase
             }
         }

@@ -567,6 +567,90 @@ struct SessionCoreTests {
         #expect(h.step().resolved.values[maxStepsSlot] == authored)
     }
 
+    // MARK: Octave rebase (plan §6.3, infinite-zoom phase 2)
+
+    @Test func octaveRebaseFoldsTheZoomPhaseAndRescalesTheCamera() {
+        // A scene deep past the rebase threshold: zoom phase 8.5 with the
+        // camera out at the matching world magnitude.
+        var scene = SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbulb")
+        scene.camera = CameraDTO(
+            position: [0, 0, 768], orientation: [0, 0, 0, 1], fovYRadians: .pi / 3)
+        scene.integratorPhases[ParamKey.scaleZoom.rawValue] = 8.5
+        var h = Harness(scene: scene)
+
+        let frame = h.step()
+        #expect(frame.scaleOctave == 8, "integer octaves fold into the counter")
+        let phase = frame.resolved.values[h.slot(.scaleZoom)]
+        #expect(abs(phase - 0.5) < 1e-6, "fractional zoom remains as the phase")
+        #expect(abs(frame.request.uniforms.camPosFov.z - 3) < 1e-4,
+                "camera rescales by exactly 2⁻⁸ (768 → 3)")
+
+        // The invariant that makes a rebase invisible: the model-space camera
+        // (world position × modelScale) is unchanged by the fold.
+        let modelZ = frame.request.uniforms.camPosFov.z * exp2(-phase)
+        #expect(abs(modelZ - 768 * exp2(-8.5)) < 1e-6)
+
+        // Steady state: within budget, no re-fire.
+        let again = h.step()
+        #expect(again.scaleOctave == 8)
+        #expect(abs(again.request.uniforms.camPosFov.z - 3) < 1e-4)
+    }
+
+    @Test func sustainedZoomRebasesRepeatedlyAndKeepsThePhaseBounded() {
+        var h = Harness()
+        h.step()
+        // Max zoom rate: 2 octaves/second into the integrator.
+        h.commands.publish(.userEdit(slot: h.slot(.scaleZoomSpeed), targetResolved: 2))
+        var last = h.step()
+        for _ in 0..<900 {  // 15 s at 60 fps → ~30 octaves of travel
+            last = h.step()
+            let phase = last.resolved.values[h.slot(.scaleZoom)]
+            #expect(phase < ScaleContext.rebaseThreshold + 0.1,
+                    Comment(rawValue: "phase must stay within the float budget (got \(phase))"))
+        }
+        let depth = Float(last.scaleOctave) + last.resolved.values[h.slot(.scaleZoom)]
+        #expect(last.scaleOctave >= 24, "deep zoom folded into the octave counter")
+        #expect(abs(depth - 30) < 0.5,
+                Comment(rawValue: "total depth ≈ rate × time across every rebase (got \(depth))"))
+    }
+
+    @Test func zoomOutNeverRebases() {
+        var scene = SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbulb")
+        scene.integratorPhases[ParamKey.scaleZoom.rawValue] = -20
+        var h = Harness(scene: scene)
+        let frame = h.step()
+        #expect(frame.scaleOctave == 0)
+        #expect(abs(frame.resolved.values[h.slot(.scaleZoom)] + 20) < 1e-5)
+    }
+
+    @Test func captureAfterRebaseRoundTripsTheZoomDepth() throws {
+        var scene = SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbulb")
+        scene.camera = CameraDTO(
+            position: [0, 0, 768], orientation: [0, 0, 0, 1], fovYRadians: .pi / 3)
+        scene.integratorPhases[ParamKey.scaleZoom.rawValue] = 8.5
+        var h = Harness(scene: scene)
+        h.step()
+
+        let slot = SceneCaptureSlot()
+        h.commands.publish(.captureScene(into: slot))
+        h.step()
+        let captured = try #require(slot.take())
+        #expect(captured.scaleOctave == 8, "depth counter persists")
+        let savedPhase = try #require(captured.integratorPhases[ParamKey.scaleZoom.rawValue])
+        #expect(abs(savedPhase - 0.5) < 1e-5, "phase saved in the rebased frame")
+        #expect(abs(captured.camera.position[2] - 3) < 1e-4,
+                "camera saved in the rebased world — phase + camera alone reproduce the image")
+
+        // Reopening restores the depth without re-firing a rebase.
+        var h2 = Harness(scene: try SceneCodec.decode(SceneCodec.encode(captured)))
+        let reopened = h2.step()
+        #expect(reopened.scaleOctave == 8)
+        #expect(abs(reopened.request.uniforms.camPosFov.z - 3) < 1e-4)
+    }
+
     @Test func builtinSceneApplyClearsAnExternalProgram() throws {
         // CPU-only: command/descriptor bookkeeping (no GPU program needed for
         // the clear path — apply a builtin scene while external is nil).
