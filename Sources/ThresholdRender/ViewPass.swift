@@ -256,15 +256,15 @@ final class ViewPassEncoder {
         amplificationCount: Int = 1,
         overrideSpecialized: SpecializedRaster? = nil
     ) -> Bool {
-        guard !views.isEmpty,
-              request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
-              Int(request.uniforms.meta.z) <= request.params.count,
-              request.uniforms.meta.w < request.uniforms.meta.z,
-              Int(request.uniforms.meta.y) < context.deFunctionCount
-        else { return false }
-
-        var uniforms = request.uniforms
-        uniforms.meta.x = UInt32(request.ops.count)
+        // Raster links built-ins only (external DEs render on the compute
+        // shells), so the shared contract's deFunctionCount is the built-in set.
+        guard !views.isEmpty else { return false }
+        let uniforms: ThreshFrameUniforms
+        switch EncodePreamble.validatedUniforms(
+            request, deFunctionCount: context.deFunctionCount) {
+        case .success(let u): uniforms = u
+        case .failure: return false
+        }
 
         guard let paramsBuffer = try? context.makeFloatBuffer(
                   request.params, label: "raster param table"),
@@ -281,14 +281,9 @@ final class ViewPassEncoder {
         var specialized: SpecializedRaster? = overrideSpecialized
         let deIndex = Int(uniforms.meta.y)
         if overrideSpecialized == nil,
-           request.tuning.specializationEnabled,
-           DERegistry.builtin.indices.contains(deIndex) {
-            let spec = MarchSpec.from(
-                tuning: request.tuning, params: request.params,
-                opCount: uniforms.meta.x)
+           let plan = EncodePreamble.specializationPlan(for: request, deIndex: deIndex) {
             specialized = specializations.lookup(
-                deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
-                spec: spec)
+                deFunctionName: plan.deFunctionName, spec: plan.spec)
         }
         if let s = specialized {
             chosenPipeline = s.pipeline
@@ -376,6 +371,9 @@ final class ViewPassEncoder {
             encoder.setVertexAmplificationCount(amplificationCount, viewMappings: &mappings)
         }
 
+        // SYNC-POINT: render binding contract — the same buffer indices /
+        // palette layout the compute shells bind (OffscreenRenderer,
+        // SessionGPUEncoder), through the fragment-stage API. Indices must match.
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setFragmentBytes(
                 raw.baseAddress!, length: raw.count, index: Int(THRESH_BUFFER_UNIFORMS))

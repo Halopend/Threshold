@@ -411,17 +411,6 @@ final class SessionGPUEncoder {
         statsSlot.load()
     }
 
-    /// Translate the live tuning + resolved params into the specialization
-    /// constants to bake. Each is nil unless the matching toggle is on, and
-    /// every value IS what the shader would read at runtime — so a baked
-    /// variant renders the identical image (only faster). Callers guarantee
-    /// `params.count >= THRESH_SLOT_ENGINE_COUNT`.
-    private static func marchSpec(
-        from tuning: RenderTuning, params: [Float], opCount: UInt32
-    ) -> MarchSpec {
-        MarchSpec.from(tuning: tuning, params: params, opCount: opCount)
-    }
-
     /// Record this frame's zoom-rebase octave; returns true when it changed
     /// (world coordinates rescaled → temporal history must reset).
     func noteOctave(_ octave: Int32) -> Bool {
@@ -452,15 +441,13 @@ final class SessionGPUEncoder {
     func encode(_ request: RenderRequest, program: ExternalDEProgram? = nil,
                 to drawable: CAMetalDrawable, resetHistory: Bool = false) -> RenderDiagnostics {
         let texture = drawable.texture
-        guard texture.width > 0, texture.height > 0,
-              request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
-              Int(request.uniforms.meta.z) <= request.params.count,
-              request.uniforms.meta.w < request.uniforms.meta.z,
-              Int(request.uniforms.meta.y) < (program?.deFunctionCount ?? context.deFunctionCount)
-        else { return lastDiagnostics }
-
-        var uniforms = request.uniforms
-        uniforms.meta.x = UInt32(request.ops.count)  // can never disagree
+        guard texture.width > 0, texture.height > 0 else { return lastDiagnostics }
+        let uniforms: ThreshFrameUniforms
+        switch EncodePreamble.validatedUniforms(
+            request, deFunctionCount: program?.deFunctionCount ?? context.deFunctionCount) {
+        case .success(let u): uniforms = u
+        case .failure: return lastDiagnostics
+        }
 
         guard let paramsBuffer = try? context.makeFloatBuffer(
                   request.params, label: "session param table"),
@@ -522,20 +509,16 @@ final class SessionGPUEncoder {
             diagnostics.pipeline = .external
         } else {
             let deIndex = Int(uniforms.meta.y)
-            if request.tuning.specializationEnabled,
-               DERegistry.builtin.indices.contains(deIndex) {
-                // Bake the function-constant knobs the tuning enables. Every
-                // baked value IS the value the shader would read at runtime, so
-                // the image is unchanged (SpecializationTests).
-                let spec = Self.marchSpec(
-                    from: request.tuning, params: request.params,
-                    opCount: uniforms.meta.x)
+            // Bake the function-constant knobs the tuning enables. Every baked
+            // value IS the value the shader would read at runtime, so the image
+            // is unchanged (SpecializationTests).
+            if let plan = EncodePreamble.specializationPlan(for: request, deIndex: deIndex) {
                 specialized = specializations.lookup(
-                    deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
-                    spec: spec, auxOutputs: auxOutputs)
+                    deFunctionName: plan.deFunctionName,
+                    spec: plan.spec, auxOutputs: auxOutputs)
                 if specialized != nil {
                     diagnostics.pipeline = auxOutputs ? .specializedAux : .specialized
-                    diagnostics.bakedConstants = spec.summary
+                    diagnostics.bakedConstants = plan.spec.summary
                 } else {
                     // Requested but the variant is still compiling off-thread.
                     diagnostics.specializationPending = true
@@ -604,6 +587,10 @@ final class SessionGPUEncoder {
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return lastDiagnostics }
         encoder.label = "session march"
+        // SYNC-POINT: render binding contract — same buffer indices / palette
+        // layout / pipeline precedence as OffscreenRenderer and ViewPassEncoder,
+        // plus the aux (temporal-upscale input) pipeline twin unique to this
+        // shell. Indices and precedence must match across all three.
         encoder.setComputePipelineState(
             program?.marchPipeline ?? specialized?.pipeline
                 ?? (auxOutputs ? context.marchAuxPipeline : context.marchPipeline))

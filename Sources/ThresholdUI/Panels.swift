@@ -280,6 +280,9 @@ public struct ControlSidebar: View {
             default:
                 DisplaySettingsSection()
                 InputSettingsSection()
+                #if os(visionOS)
+                RenderBackendSection()
+                #endif
             }
         }
     }
@@ -769,28 +772,27 @@ public struct PipelineSection: View {
                 LabeledContent("Baked", value: mirror.diagnostics.bakedConstants)
                     .font(.caption)
             }
-            if mirror.diagnostics.renderScale < 0.999 {
-                LabeledContent(
-                    "Render scale",
-                    value: String(format: "%.0f%%", mirror.diagnostics.renderScale * 100))
-            }
-            // Manual upscaling: march at reduced internal resolution and
-            // MetalFX-upscale to full res. Applies when Auto Quality (the fps
-            // governor) is OFF; otherwise the governor drives the scale.
+            // Live effective quality — what the encoder actually rendered at
+            // this frame (the governor's adaptive value under the user's
+            // ceiling). Always shown so "what quality am I getting?" never
+            // requires inference.
+            LabeledContent(
+                "Effective quality",
+                value: String(format: "%.0f%%", mirror.diagnostics.renderScale * 100))
+                .font(.caption)
+            // Render Quality: the USER'S CEILING (ADR-003). With Auto Quality
+            // on, the governor adapts below it to hold fps; off, this is the
+            // exact render scale. On Mac it feeds MetalFX temporal upscaling;
+            // on Vision Pro it caps the compositor renderQuality.
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text("Quality")
+                    Text("Render Quality")
                     Slider(value: renderScale, in: 0.1...1.0)
                     Text(String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100))
                         .monospacedDigit().foregroundStyle(.secondary)
                         .frame(minWidth: 44, alignment: .trailing)
                 }
-                // The manual render-resolution lever. On Mac this feeds MetalFX
-                // upscaling; on Vision Pro it drives the compositor renderQuality
-                // (the drawable shrinks, the compositor upscales natively). Only
-                // takes effect with Auto Quality OFF — otherwise the governor
-                // owns the scale. This is the independent variable for profiling.
-                Text("render resolution — Auto Quality must be off")
+                Text("ceiling — Auto Quality adapts below it to hold fps")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 

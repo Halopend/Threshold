@@ -45,6 +45,17 @@ public struct SpecializedMarch: @unchecked Sendable {
     public let conePrepass: MTLComputePipelineState?
 }
 
+/// A specialized PER-VIEW COMPUTE march (march_view_compute) + its DE table,
+/// plus the optional per-view cone prepass — the compute-backend counterpart
+/// of SpecializedRaster (ADR-001 compute phase 2, perf block 13).
+public struct SpecializedViewCompute: @unchecked Sendable {
+    // AUDIT — @unchecked: immutable Metal objects, documented thread-safe.
+    public let pipeline: MTLComputePipelineState
+    public let deTable: MTLVisibleFunctionTable
+    public let conePrepass: MTLComputePipelineState?
+    public let conePrepassDETable: MTLVisibleFunctionTable?
+}
+
 /// A specialized RASTER (stereo fragment) march pipeline + its fragment-stage
 /// DE table, plus the optional per-view cone prepass (a compute pipeline + its
 /// own compute-stage DE table). The visionOS Compositor counterpart of
@@ -316,6 +327,36 @@ extension GPUContext {
                 label: "specialized raster(\(deFunctionName)) prepass DE table")
         }
         return SpecializedRaster(
+            pipeline: pipeline, deTable: table,
+            conePrepass: prepass, conePrepassDETable: prepassTable)
+    }
+
+    /// Build the specialized PER-VIEW COMPUTE march (march_view_compute) for
+    /// the compute backend, plus the per-view cone prepass when
+    /// `spec.coneMarch` is set. Format-independent (the encoder owns the
+    /// intermediate textures), unlike the raster builder.
+    func makeSpecializedViewCompute(
+        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec
+    ) throws -> SpecializedViewCompute {
+        let pipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "march_view_compute",
+            deFunctions: builtinDEFunctions, spec: spec)
+        let table = try Self.makeDETable(
+            pipeline, functions: builtinDEFunctions,
+            label: "specialized view-compute(\(deFunctionName)) DE table")
+        var prepass: MTLComputePipelineState? = nil
+        var prepassTable: MTLVisibleFunctionTable? = nil
+        if spec.coneMarch == true {
+            let p = try Self.makeLinkedPipeline(
+                device: device, library: library,
+                kernelName: "march_cone_prepass_view",
+                deFunctions: builtinDEFunctions, spec: spec)
+            prepass = p
+            prepassTable = try Self.makeDETable(
+                p, functions: builtinDEFunctions,
+                label: "specialized view-compute(\(deFunctionName)) prepass DE table")
+        }
+        return SpecializedViewCompute(
             pipeline: pipeline, deTable: table,
             conePrepass: prepass, conePrepassDETable: prepassTable)
     }

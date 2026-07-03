@@ -153,14 +153,19 @@ final class SessionCore {
         // thrash texture/scaler allocations every frame. Iteration/step
         // writes were deliberately removed — they reshape the fractal
         // (docs/perf-notes.md perf block 5).
+        // The user's Render Quality setting is the CEILING in both modes
+        // (ADR-003: "quality sliders stay the user's ceiling; the governor
+        // only modulates below them"). Governor on → adaptive within
+        // [minRenderScale, ceiling]; off → the ceiling IS the scale.
+        let qualityCeiling = min(max(tuning.manualRenderScale, 0.1), 1)
         var renderScale: Float = 1
         if let config = governorConfig {
             let factor = governor.update(gpuMilliseconds: gpuMilliseconds, config: config)
             renderScale = min(max(sqrt(factor), config.minRenderScale), 1)
             renderScale = (renderScale * 20).rounded() / 20
+            renderScale = min(renderScale, qualityCeiling)
         } else {
-            // Governor off: honor the manual upscaling slider (RenderTuning).
-            renderScale = min(max(tuning.manualRenderScale, 0.1), 1)
+            renderScale = qualityCeiling
         }
 
         clock.update(now: timestamp)

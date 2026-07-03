@@ -245,6 +245,7 @@ public final class GPUContext: @unchecked Sendable {
         // the specialized-function creation path even for the default variant.
         let constantKernels: Set<String> = [
             "march_offscreen", "march_cone_prepass", "march_cone_prepass_view",
+            "march_view_compute",
         ]
         let kernel: MTLFunction
         if constantKernels.contains(kernelName) {

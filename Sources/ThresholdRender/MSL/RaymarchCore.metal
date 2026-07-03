@@ -1294,6 +1294,86 @@ fragment ThreshFragmentOut thresh_march_fragment(
     return out;
 }
 
+// ----------------------- per-view compute march -----------------------------
+//
+// The COMPUTE alternative to thresh_march_fragment (ADR-001 "compute phase
+// 2", perf block 13): the identical per-view ray model and presentation
+// semantics, dispatched as a compute grid (w, h, viewCount) instead of a
+// rasterized fullscreen triangle. Color and clip-depth land in intermediate
+// texture arrays the encoder blits into the drawable — compositor drawables
+// don't expose compute-write usage, and depth formats are never compute-
+// writable (depth goes through an r32Float ↔ depth32Float blit, a documented
+// copy-compatible pair).
+//
+// Trade against the fragment path (why this is an OPTION, not the default):
+// compute cannot consume rasterization rate maps, so the foveated-rendering
+// win is unavailable — the backend choice is made at layer configuration
+// (foveation off). What compute may win back: threadgroup-coherent scheduling
+// of the march and freedom from fragment-interlock overheads. Device A/B is
+// the point.
+//
+// Texture 4 (depth out) is a private contract with ViewComputeEncoder — same
+// standing as THRESH_TEXTURE_CONE.
+#define THRESH_TEXTURE_VIEW_DEPTH 4
+
+kernel void march_view_compute(
+    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+    device atomic_uint* stats                [[buffer(THRESH_BUFFER_STATS)]],
+    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+    constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
+    device const ThreshViewUniforms* views   [[buffer(THRESH_BUFFER_VIEWS)]],
+    texture2d_array<float, access::write> outColor [[texture(THRESH_TEXTURE_OUTPUT)]],
+    texture2d_array<float, access::write> outDepth [[texture(THRESH_TEXTURE_VIEW_DEPTH)]],
+    texture2d_array<float, access::read> coneTex   [[texture(THRESH_TEXTURE_CONE),
+                                                     function_constant(THRESH_CONE)]],
+    uint3 gid                                [[thread_position_in_grid]])
+{
+    const uint w = outColor.get_width();
+    const uint h = outColor.get_height();
+    if (gid.x >= w || gid.y >= h) { return; }
+
+    const ThreshViewUniforms view = views[gid.z];
+
+    // Pixel center → NDC (y up) — the compute mirror of the fragment's
+    // interpolated `in.ndc` for this pixel; then the SAME two-point
+    // unproject through this view's projection.
+    const float2 ndc = float2(
+        (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
+        1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+    float3 dirLocal = threshViewDirLocal(view.invProj, ndc);
+    const float roomScale = max(view.originScale.w, 1e-6f);
+    const float3 ro = view.originScale.xyz;
+    const float3 rd = quatRotate(view.orient, dirLocal);
+
+    // Hierarchical start: same logical-NDC tile map as the fragment.
+    float startT = 0.0f;
+    if (THRESH_CONE) {
+        const float2 tuv = clamp(ndc * 0.5f + 0.5f, 0.0f, 1.0f);
+        const uint cw = coneTex.get_width();
+        const uint ch = coneTex.get_height();
+        const uint2 tile = uint2(min(uint(tuv.x * float(cw)), cw - 1u),
+                                 min(uint(tuv.y * float(ch)), ch - 1u));
+        startT = coneTex.read(tile, gid.z).x;
+    }
+
+    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
+                                     startT);
+    if (threshStatsEnabled()) {
+        atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+    }
+
+    // Raster-shell presentation semantics: miss = transparent (the compositor
+    // composites over passthrough), and depth in THIS view's projection —
+    // identical formulas to thresh_march_fragment.
+    const float4 clip = view.proj * float4(dirLocal * (m.t / roomScale), 1.0f);
+    outColor.write(m.hit ? m.color : float4(0.0f), gid.xy, gid.z);
+    outDepth.write(
+        float4(clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f), 0.0f, 0.0f, 0.0f),
+        gid.xy, gid.z);
+}
+
 // -------------------- per-view hierarchical cone prepass --------------------
 //
 // The raster counterpart of march_cone_prepass: one thread per (tile, view).

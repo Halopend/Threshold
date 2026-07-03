@@ -121,6 +121,7 @@ public struct RenderDiagnostics: Sendable, Equatable {
         case specializedAux  // direct-call + temporal-upscale inputs
         case external        // an external DE program's own pipeline
         case raster          // visionOS Compositor stereo fragment path
+        case viewCompute     // visionOS Compositor per-view COMPUTE backend
 
         public var label: String {
             switch self {
@@ -130,6 +131,7 @@ public struct RenderDiagnostics: Sendable, Equatable {
             case .specializedAux: return "Specialized + Upscale"
             case .external:       return "External DE"
             case .raster:         return "Raster (visionOS)"
+            case .viewCompute:    return "Compute (visionOS)"
             }
         }
         public var isSpecialized: Bool { self == .specialized || self == .specializedAux }

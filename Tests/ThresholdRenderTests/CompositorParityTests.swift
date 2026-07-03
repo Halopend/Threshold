@@ -273,4 +273,239 @@ struct CompositorParityTests {
         #expect(Double(big) / Double(cone.count / 4 * 3) < 0.05,
                 Comment(rawValue: "raster cone large-delta regions (\(big))"))
     }
+
+    /// The COMPUTE backend (march_view_compute + intermediates + blit) must
+    /// reproduce the raster fragment path's image for the same request — the
+    /// off-device proof for the visionOS backend picker (ADR-001 compute
+    /// phase 2). Same ray model, same presentation semantics; only the
+    /// dispatch mechanism differs, so parity is tight (sub-ulp ray noise at
+    /// silhouettes only, same contract as fragment≡compute).
+    @Test(.enabled(if: GPU.available))
+    func computeBackendMatchesRasterBackend() throws {
+        let ctx = try GPU.ctx()
+        let device = ctx.device
+
+        var engine = EngineParams()
+        engine.aoStrength = 0.6
+        let de = DERegistry.descriptor(forKey: "mandelbulb")!
+        let (params, deParamOffset) = ParamTableLayout.build(
+            engine: engine, deParams: de.paramLayout.map(\.default))
+        let (ops, _) = [ThreshWarpOp].fromDTOs([
+            WarpOpDTO(kind: WK.twist, strength: 0.4, a: [0, 1, 0, 0], b: [0, 0, 0, 0])
+        ])
+        let uniforms = CameraMath.makeUniforms(
+            cameraPos: SIMD3(0.4, 0.3, 3.2), target: .zero,
+            fovYRadians: Float.pi / 3,
+            epsilonBase: 1.5e-3, modelScale: 1,
+            opCount: ops.count, deIndex: Int(de.index),
+            paramCount: params.count, deParamOffset: deParamOffset)
+        var request = RenderRequest(
+            uniforms: uniforms, params: params, ops: ops,
+            palette: PaletteWire.defaultStops, width: 96, height: 96)
+        // Generic-vs-generic comparison: disable specialization so neither
+        // path depends on the async caches (deterministic single render).
+        request.tuning.specializationEnabled = false
+
+        let raster = try rasterRender(request, context: ctx)
+
+        // Compute backend into a color/depth target pair (dedicated-style:
+        // one texture per view, slice 0).
+        let encoder = try ViewComputeEncoder(context: ctx, colorFormat: .rgba8Unorm)
+        let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: request.width, height: request.height, mipmapped: false)
+        colorDesc.usage = [.shaderRead]
+        colorDesc.storageMode = .shared
+        let depthDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r32Float,
+            width: request.width, height: request.height, mipmapped: false)
+        depthDesc.usage = [.shaderRead]
+        depthDesc.storageMode = .shared
+        let colorOut = try #require(device.makeTexture(descriptor: colorDesc))
+        let depthOut = try #require(device.makeTexture(descriptor: depthDesc))
+
+        let view = CompositorViewMath.viewUniforms(
+            projection: CompositorViewMath.pinholeProjection(
+                fovTan: request.uniforms.camPosFov.w,
+                aspect: Float(request.width) / Float(request.height)),
+            eyeToRoom: matrix_identity_float4x4,
+            anchorPosition: .zero,
+            base: request.uniforms)
+
+        let queue = try #require(device.makeCommandQueue())
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let encoded = encoder.encode(
+            request, views: [view],
+            colorTargets: [(colorOut, 0)], depthTargets: [(depthOut, 0)],
+            commandBuffer: commandBuffer)
+        #expect(encoded, "compute-backend encode must accept the parity request")
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        try #require(commandBuffer.error == nil)
+
+        var compute = [UInt8](repeating: 0, count: request.width * request.height * 4)
+        compute.withUnsafeMutableBytes { raw in
+            colorOut.getBytes(
+                raw.baseAddress!, bytesPerRow: request.width * 4,
+                from: MTLRegionMake2D(0, 0, request.width, request.height),
+                mipmapLevel: 0)
+        }
+
+        #expect(compute.contains { $0 > 8 }, "blank proves nothing")
+        // RGBA compared fully: both backends share the raster shell's
+        // presentation semantics (miss = transparent), unlike the
+        // fragment≡compute-window test which must exclude alpha.
+        var outliers = 0
+        var totalDiff = 0
+        for (a, b) in zip(raster, compute) {
+            let d = abs(Int(a) - Int(b))
+            totalDiff += d
+            if d > 3 { outliers += 1 }
+        }
+        let outlierFraction = Double(outliers) / Double(compute.count)
+        let meanDiff = Double(totalDiff) / Double(compute.count)
+        #expect(outlierFraction < 0.005,
+                Comment(rawValue: "compute≡raster outside silhouettes (outliers \(outlierFraction))"))
+        #expect(meanDiff < 0.5,
+                Comment(rawValue: "no systematic backend divergence (mean \(meanDiff))"))
+
+        // Depth sanity: hit pixels wrote a non-trivial projected depth.
+        var depths = [Float](repeating: 0, count: request.width * request.height)
+        depths.withUnsafeMutableBytes { raw in
+            depthOut.getBytes(
+                raw.baseAddress!, bytesPerRow: request.width * 4,
+                from: MTLRegionMake2D(0, 0, request.width, request.height),
+                mipmapLevel: 0)
+        }
+        #expect(depths.contains { $0 > 0 && $0 < 1 },
+                "compute backend must write projected depth for hits")
+    }
+
+    /// The specialized+cone compute-backend variant builds, dispatches its
+    /// per-view prepass, and renders without poisoned tiles — the compute
+    /// sibling of rasterConePrepassMatchesGenericRaster.
+    @Test(.enabled(if: GPU.available))
+    func computeBackendConeVariantRenders() throws {
+        let ctx = try GPU.ctx()
+        let device = ctx.device
+        let de = DERegistry.descriptor(forKey: "mandelbox")!
+        var engine = EngineParams()
+        engine.aoStrength = 0.6
+        let (params, deParamOffset) = ParamTableLayout.build(
+            engine: engine, deParams: de.paramLayout.map(\.default))
+        let uniforms = CameraMath.makeUniforms(
+            cameraPos: SIMD3(0.4, 0.3, 3.2), target: .zero,
+            fovYRadians: Float.pi / 3,
+            epsilonBase: 1.5e-3, modelScale: 1,
+            opCount: 0, deIndex: Int(de.index),
+            paramCount: params.count, deParamOffset: deParamOffset)
+        let request = RenderRequest(
+            uniforms: uniforms, params: params, ops: [],
+            palette: PaletteWire.defaultStops, width: 96, height: 96)
+
+        let library = try ctx.compileSpecializedLibrary(
+            deFunctionName: de.mslFunctionName)
+        let variant = try ctx.makeSpecializedViewCompute(
+            from: library, deFunctionName: de.mslFunctionName,
+            spec: MarchSpec(coneMarch: true))
+        #expect(variant.conePrepass != nil, "cone variant must carry the prepass")
+
+        let encoder = try ViewComputeEncoder(context: ctx, colorFormat: .rgba8Unorm)
+        let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: request.width, height: request.height, mipmapped: false)
+        colorDesc.usage = [.shaderRead]
+        colorDesc.storageMode = .shared
+        let depthDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r32Float,
+            width: request.width, height: request.height, mipmapped: false)
+        depthDesc.usage = [.shaderRead]
+        depthDesc.storageMode = .shared
+        let colorOut = try #require(device.makeTexture(descriptor: colorDesc))
+        let depthOut = try #require(device.makeTexture(descriptor: depthDesc))
+        let view = CompositorViewMath.viewUniforms(
+            projection: CompositorViewMath.pinholeProjection(
+                fovTan: request.uniforms.camPosFov.w, aspect: 1),
+            eyeToRoom: matrix_identity_float4x4,
+            anchorPosition: .zero, base: request.uniforms)
+
+        let queue = try #require(device.makeCommandQueue())
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let encoded = encoder.encode(
+            request, views: [view],
+            colorTargets: [(colorOut, 0)], depthTargets: [(depthOut, 0)],
+            commandBuffer: commandBuffer, overrideSpecialized: variant)
+        #expect(encoded)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        try #require(commandBuffer.error == nil)
+
+        var rgba = [UInt8](repeating: 0, count: request.width * request.height * 4)
+        rgba.withUnsafeMutableBytes { raw in
+            colorOut.getBytes(
+                raw.baseAddress!, bytesPerRow: request.width * 4,
+                from: MTLRegionMake2D(0, 0, request.width, request.height),
+                mipmapLevel: 0)
+        }
+        #expect(rgba.contains { $0 > 8 }, "blank proves nothing")
+        var sentinels = 0
+        for i in stride(from: 0, to: rgba.count, by: 4)
+        where rgba[i] == 255 && rgba[i + 1] == 0 && rgba[i + 2] == 255 && rgba[i + 3] == 0 {
+            sentinels += 1
+        }
+        #expect(sentinels == 0, "NaN-sentinel tiles under compute-backend cone")
+    }
+
+    /// The compute backend's depth hand-off relies on the r32Float ↔
+    /// depth32Float blit-compatibility pair (depth formats are never
+    /// compute-writable). Prove the round trip on this GPU instead of
+    /// trusting documentation: r32Float → depth32Float → r32Float must be
+    /// bit-exact.
+    @Test(.enabled(if: GPU.available))
+    func r32FloatDepthBlitPairRoundTrips() throws {
+        let ctx = try GPU.ctx()
+        let device = ctx.device
+        let size = 16
+
+        func tex(_ format: MTLPixelFormat, shared: Bool) throws -> MTLTexture {
+            let d = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: format, width: size, height: size, mipmapped: false)
+            d.usage = [.shaderRead]
+            d.storageMode = shared ? .shared : .private
+            return try #require(device.makeTexture(descriptor: d))
+        }
+        let source = try tex(.r32Float, shared: true)
+        let depth = try tex(.depth32Float, shared: false)  // private, like the drawable
+        let back = try tex(.r32Float, shared: true)
+
+        var pattern = (0..<(size * size)).map { Float($0) / Float(size * size) }
+        pattern[0] = 0.123456
+        pattern.withUnsafeBytes { raw in
+            source.replace(
+                region: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0,
+                withBytes: raw.baseAddress!, bytesPerRow: size * 4)
+        }
+
+        let queue = try #require(device.makeCommandQueue())
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let blit = try #require(commandBuffer.makeBlitCommandEncoder())
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0,
+                  to: depth, destinationSlice: 0, destinationLevel: 0,
+                  sliceCount: 1, levelCount: 1)
+        blit.copy(from: depth, sourceSlice: 0, sourceLevel: 0,
+                  to: back, destinationSlice: 0, destinationLevel: 0,
+                  sliceCount: 1, levelCount: 1)
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        try #require(commandBuffer.error == nil,
+                     "r32Float↔depth32Float blit rejected by this device")
+
+        var out = [Float](repeating: -1, count: size * size)
+        out.withUnsafeMutableBytes { raw in
+            back.getBytes(raw.baseAddress!, bytesPerRow: size * 4,
+                          from: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0)
+        }
+        #expect(out == pattern, "depth blit round trip must be bit-exact")
+    }
 }

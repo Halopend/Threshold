@@ -602,6 +602,41 @@ struct SessionCoreTests {
         #expect(h.step().request.renderScale == 1)
     }
 
+    @Test func renderQualityIsTheCeilingInBothGovernorModes() {
+        var h = Harness()
+        h.step()
+
+        // Governor OFF: the Render Quality setting IS the scale.
+        var tuning = RenderTuning.envDefault
+        tuning.manualRenderScale = 0.7
+        h.commands.publish(.setRenderTuning(tuning))
+        h.step()
+        #expect(abs(h.step().request.renderScale - 0.7) < 1e-5,
+                "governor off → the quality setting is the exact scale")
+
+        // Governor ON with headroom (fast frames): it would recover toward 1,
+        // but the user's ceiling caps it (ADR-003 contract).
+        h.commands.publish(.setQualityGovernor(QualityGovernorConfig(
+            targetMilliseconds: 8, minRenderScale: 0.35)))
+        for _ in 0..<300 { h.step(gpuMilliseconds: 2) }
+        let capped = h.step()
+        #expect(capped.request.renderScale <= 0.7 + 1e-5,
+                "governor with headroom must not exceed the user ceiling")
+
+        // Under load it still adapts BELOW the ceiling.
+        for _ in 0..<120 { h.step(gpuMilliseconds: 24) }
+        let throttled = h.step()
+        #expect(throttled.request.renderScale < 0.7,
+                "governor adapts below the ceiling under load")
+
+        // Raising the ceiling back to 1 with headroom lets it recover past 0.7.
+        tuning.manualRenderScale = 1
+        h.commands.publish(.setRenderTuning(tuning))
+        for _ in 0..<900 { h.step(gpuMilliseconds: 2) }
+        #expect(h.step().request.renderScale > 0.7,
+                "recovery is bounded only by the (raised) ceiling")
+    }
+
     // MARK: Octave rebase (plan §6.3, infinite-zoom phase 2)
 
     @Test func octaveRebaseFoldsTheZoomPhaseAndRescalesTheCamera() {

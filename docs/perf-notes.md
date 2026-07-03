@@ -511,3 +511,53 @@ to the block-9 baseline (shader maps the -1 sentinel to 3.0); goldens and the
 395-test suite unchanged. visionOS raster path picks this up for free —
 MarchSpec.from feeds both encoders, so the picker drives the Vision Pro shell
 too (device shimmer/perf still needs an on-headset sweep).
+
+## Render Quality ceiling + compute backend option — 2026-07-03 (perf block 13)
+
+**Render Quality in the UI (ADR-003 made true):** `manualRenderScale` was
+IGNORED whenever Auto Quality was on, contradicting ADR-003's "quality
+sliders stay the user's ceiling". SessionCore now clamps the governor's
+adaptive scale to the user's setting in both modes: governor on → adaptive in
+[minRenderScale, ceiling]; off → the ceiling IS the scale. The Pipeline panel
+slider is renamed "Render Quality" (works always), and "Effective quality" —
+what the encoder actually rendered at — is shown unconditionally. On Vision
+Pro the same value caps the compositor renderQuality; on Mac it caps the
+MetalFX input scale. New SessionCore test locks the ceiling semantics.
+
+**Compute-vs-fragment backend (ADR-001 "compute phase 2"):** the compositor
+shell gains a selectable rendering backend — Settings ▸ Rendering (visionOS),
+persisted in UserDefaults (`threshold.render.backend`), applied at layer
+configuration when the immersive space next opens:
+
+- `fragment` (default): the shipping foveated raster path, unchanged.
+- `compute` (experimental): NEW `march_view_compute` kernel — the identical
+  per-view ray model and presentation semantics as the fragment (shared
+  `threshViewDirLocal`, same clip-depth formula, miss = transparent),
+  dispatched as a compute grid (w, h, viewCount) into intermediate color +
+  r32Float depth ARRAYS, then blitted into the drawable (color: sRGB-variant
+  copy, compute writes linear → hardware encodes; depth: r32Float →
+  depth32Float, the copy-compatible pair — proven bit-exact by a new
+  round-trip test on real hardware, not assumed from docs). Full
+  specialization + cone-prepass support via `SpecializedViewCompute` /
+  `ViewComputeSpecializationCache` (ViewCompute.swift), reusing
+  march_cone_prepass_view and the same MarchSpec machinery.
+
+Why an option, not a default: compute cannot consume rasterization rate
+maps, so foveation is unavailable (the config gates it off for compute) and
+two blit copies are added. What compute may win back: threadgroup-coherent
+march scheduling, no fragment-interlock overhead — and it is the shape that
+could later host threadgroup-shared refinement. The honest expectation is
+fragment+foveation wins on device; the picker exists to MEASURE that
+(PERF_LOG rule: device numbers only). Everywhere else compute already IS the
+path (ADR-001) — no change on Mac/iOS/offscreen.
+
+Verification: compute-backend ≡ raster-backend parity on Mac (same tolerance
+contract as fragment≡compute), specialized+cone compute variant renders
+sentinel-free, depth-blit round trip bit-exact, 398 tests green, visionOS
+full app + Mac app build clean. Diagnostics: the panel shows
+"Compute (visionOS)" when the backend is active.
+
+NOT measured: Vision Pro FPS for either backend (device-only). The compute
+backend also has no resolution lever yet (renderQuality is foveation-gated;
+an internal-scale intermediate would be its equivalent — add if the device
+A/B makes compute worth keeping).

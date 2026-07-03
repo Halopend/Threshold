@@ -68,19 +68,11 @@ public final class OffscreenRenderer: @unchecked Sendable {
         guard request.width > 0, request.height > 0 else {
             throw RenderError.badRequest("non-positive dimensions")
         }
-        guard request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT) else {
-            throw RenderError.badRequest("param table smaller than the reserved engine slots")
-        }
-        var uniforms = request.uniforms
-        uniforms.meta.x = UInt32(request.ops.count) // meta.x always carries ops.count
-        guard Int(uniforms.meta.z) <= request.params.count,
-              uniforms.meta.w < uniforms.meta.z else {
-            throw RenderError.badRequest(
-                "uniforms.meta param layout (count \(uniforms.meta.z), offset \(uniforms.meta.w)) " +
-                "inconsistent with params.count \(request.params.count)")
-        }
-        guard Int(uniforms.meta.y) < (program?.deFunctionCount ?? context.deFunctionCount) else {
-            throw RenderError.badRequest("deIndex \(uniforms.meta.y) out of range")
+        let uniforms: ThreshFrameUniforms
+        switch EncodePreamble.validatedUniforms(
+            request, deFunctionCount: program?.deFunctionCount ?? context.deFunctionCount) {
+        case .success(let u): uniforms = u
+        case .failure(let invalid): throw RenderError.badRequest(invalid.reason)
         }
 
         let device = context.device
@@ -181,6 +173,10 @@ public final class OffscreenRenderer: @unchecked Sendable {
             throw RenderError.allocationFailed("command encoder")
         }
         encoder.label = "march_offscreen"
+        // SYNC-POINT: render binding contract — pipeline/table precedence and
+        // buffer/palette binding below mirror SessionGPUEncoder (compute, with
+        // an aux twin) and ViewPassEncoder (raster setFragment*). Kept per-shell
+        // because the Metal API differs; the indices and precedence must match.
         encoder.setComputePipelineState(
             program?.marchPipeline ?? specialized?.pipeline ?? context.marchPipeline)
         withUnsafeBytes(of: uniforms) { raw in

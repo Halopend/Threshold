@@ -5,6 +5,49 @@
 
 import SwiftUI
 import ThresholdCore
+import ThresholdRender
+
+// MARK: - RenderBackendSection (visionOS)
+
+#if os(visionOS)
+/// Rendering-backend choice for the Compositor shell (ADR-001 compute phase
+/// 2): fragment (foveated, the shipping default) vs the experimental per-view
+/// compute march. Config-time: the layer must be built without foveation for
+/// compute, so the choice applies the next time the immersive space opens.
+public struct RenderBackendSection: View {
+    @AppStorage(CompositorSession.renderBackendKey)
+    private var backendRaw = CompositorSession.RenderBackend.fragment.rawValue
+
+    public init() {}
+
+    private var backend: SwiftUI.Binding<CompositorSession.RenderBackend> {
+        SwiftUI.Binding(
+            get: {
+                CompositorSession.RenderBackend(rawValue: backendRaw) ?? .fragment
+            },
+            set: { backendRaw = $0.rawValue })
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Rendering", icon: "cpu")
+            Picker("Backend", selection: backend) {
+                ForEach(CompositorSession.RenderBackend.allCases, id: \.self) {
+                    Text($0.label).tag($0)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("Applies the next time the immersive space opens. Compute is "
+                 + "an experimental A/B: it disables foveated rendering and "
+                 + "adds copy passes — compare GPU ms per scene.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .moduleCard(.orange)
+    }
+}
+#endif
 
 // MARK: - DisplaySettingsSection
 

@@ -71,6 +71,38 @@ public final class CompositorSession: @unchecked Sendable {
         self.snapshots = SnapshotSlot()
     }
 
+    /// Rendering backend for the compositor shell (ADR-001 compute phase 2,
+    /// perf block 13). Chosen at LAYER CONFIGURATION time (not live): the
+    /// compute backend cannot consume rasterization rate maps, so foveation
+    /// must be decided before the layer exists. Persisted in UserDefaults —
+    /// the Settings picker writes it; it applies the next time the immersive
+    /// space opens.
+    public enum RenderBackend: String, Sendable, CaseIterable {
+        /// Stereo raster fragment path — foveated, the shipping default.
+        case fragment
+        /// Per-view compute march into intermediates + blit — EXPERIMENTAL:
+        /// no foveation, two extra copies; exists to A/B on device whether
+        /// compute-coherent marching beats foveated rasterization.
+        case compute
+
+        public var label: String {
+            switch self {
+            case .fragment: return "Fragment (Foveated)"
+            case .compute: return "Compute (Experimental)"
+            }
+        }
+    }
+
+    /// UserDefaults key for the backend choice (read at layer configuration
+    /// and at render-loop start — the two must agree, hence one source).
+    public static let renderBackendKey = "threshold.render.backend"
+
+    /// The persisted backend choice (default: fragment).
+    public static var selectedBackend: RenderBackend {
+        UserDefaults.standard.string(forKey: renderBackendKey)
+            .flatMap(RenderBackend.init(rawValue:)) ?? .fragment
+    }
+
     /// Compositor render-quality CEILING (visionOS 26). This is the Vision Pro
     /// counterpart of the Mac render-scale lever's top: `maxRenderQuality` is
     /// set once and governs the drawable color-texture MEMORY allocation; the
@@ -93,9 +125,13 @@ public final class CompositorSession: @unchecked Sendable {
         // write, matching the compute path's linear-in-texture convention.
         configuration.colorFormat = .bgra8Unorm_srgb
         configuration.depthFormat = .depth32Float
-        configuration.isFoveationEnabled = capabilities.supportsFoveation
+        // The compute backend cannot consume rasterization rate maps —
+        // foveation is only armed on the fragment backend (RenderBackend doc).
+        let foveation = capabilities.supportsFoveation
+            && selectedBackend == .fragment
+        configuration.isFoveationEnabled = foveation
         let layouts = capabilities.supportedLayouts(options:
-            capabilities.supportsFoveation ? [.foveationEnabled] : [])
+            foveation ? [.foveationEnabled] : [])
         configuration.layout = layouts.contains(.layered) ? .layered : .dedicated
         // Runtime render-quality control only takes effect with foveation on
         // (the compositor's foveation-aware upscaler is what resizes the
@@ -140,12 +176,27 @@ public final class CompositorSession: @unchecked Sendable {
         queue.label = "threshold.compositor.queue"
 
         let layered = layer.configuration.layout == .layered
-        guard let gpu = try? ViewPassEncoder(
-            context: context,
-            colorFormat: layer.configuration.colorFormat,
-            depthFormat: layer.configuration.depthFormat,
-            maxViewCount: layered ? 2 : 1)
-        else { return }
+        // Backend choice (RenderBackend doc): fragment (foveated, default) or
+        // the experimental per-view compute march. Exactly one encoder exists.
+        let backend = Self.selectedBackend
+        var raster: ViewPassEncoder? = nil
+        var computeGPU: ViewComputeEncoder? = nil
+        switch backend {
+        case .fragment:
+            raster = try? ViewPassEncoder(
+                context: context,
+                colorFormat: layer.configuration.colorFormat,
+                depthFormat: layer.configuration.depthFormat,
+                maxViewCount: layered ? 2 : 1)
+        case .compute:
+            computeGPU = try? ViewComputeEncoder(
+                context: context,
+                colorFormat: layer.configuration.colorFormat)
+        }
+        guard raster != nil || computeGPU != nil else { return }
+        func lastCompletedStats() -> FrameStatsSlot.Stats {
+            raster?.lastCompleted() ?? computeGPU!.lastCompleted()
+        }
 
         // Head tracking: the compositor needs a device anchor per frame for
         // reprojection; the eye poses derive from it.
@@ -249,7 +300,7 @@ public final class CompositorSession: @unchecked Sendable {
             // gesture lane see this frame's values.
             onFrame?(sessionTime)
 
-            let stats = gpu.lastCompleted()
+            let stats = lastCompletedStats()
             let colorTexture = drawable.colorTextures[0]
             // "core.step" phase: per-frame session logic + the quality governor.
             let stepStart = Mono.now()
@@ -302,9 +353,16 @@ public final class CompositorSession: @unchecked Sendable {
             let encodeState = sp.beginInterval("encode")
             if let commandBuffer = queue.makeCommandBuffer() {
                 commandBuffer.label = "compositor frame"
-                encode(
-                    request, views: views, drawable: drawable,
-                    layered: layered, gpu: gpu, commandBuffer: commandBuffer)
+                if let raster {
+                    encode(
+                        request, views: views, drawable: drawable,
+                        layered: layered, gpu: raster, commandBuffer: commandBuffer)
+                } else if let computeGPU {
+                    encodeCompute(
+                        request, views: views, drawable: drawable,
+                        layered: layered, gpu: computeGPU,
+                        commandBuffer: commandBuffer)
+                }
                 drawable.encodePresent(commandBuffer: commandBuffer)
                 commandBuffer.commit()
             }
@@ -321,17 +379,17 @@ public final class CompositorSession: @unchecked Sendable {
                 frameIndex: frameIndex,
                 pixels: colorTexture.width * colorTexture.height)
 
-            // Debug telemetry for the control-window panel (the visionOS
-            // shell renders through the stereo raster fragment path, not the
-            // compute specialization cache). Report the renderQuality actually
-            // applied (clamped to the ceiling) — the drawable shrinks and the
-            // compositor upscales natively, so `upscaling` tracks quality < 1.
+            // Debug telemetry for the control-window panel. Report the
+            // renderQuality actually applied (clamped to the ceiling) — the
+            // drawable shrinks and the compositor upscales natively, so
+            // `upscaling` tracks quality < 1. The compute backend has no
+            // renderQuality lever (foveation off) — it reports full scale.
             let scale = foveated ? pendingRenderQuality : 1
             snapshots.publish(sessionFrame.snapshot(
                 gpuMilliseconds: stats.gpuMilliseconds,
                 totalSteps: stats.totalSteps,
                 diagnostics: RenderDiagnostics(
-                    pipeline: .raster,
+                    pipeline: backend == .compute ? .viewCompute : .raster,
                     renderScale: scale,
                     upscaling: scale < 0.999)))
         }
@@ -378,6 +436,37 @@ public final class CompositorSession: @unchecked Sendable {
                     commandBuffer: commandBuffer)
             }
         }
+    }
+
+    /// Compute-backend encode: intermediates + blit per view. Layered: the
+    /// drawable's textures are arrays (slice per view); dedicated: one
+    /// texture per view at slice 0.
+    private func encodeCompute(
+        _ request: RenderRequest,
+        views: [ThreshViewUniforms],
+        drawable: LayerRenderer.Drawable,
+        layered: Bool,
+        gpu: ViewComputeEncoder,
+        commandBuffer: MTLCommandBuffer
+    ) {
+        var colorTargets: [(texture: MTLTexture, slice: Int)] = []
+        var depthTargets: [(texture: MTLTexture, slice: Int)] = []
+        if layered {
+            for i in views.indices {
+                colorTargets.append((drawable.colorTextures[0], i))
+                depthTargets.append((drawable.depthTextures[0], i))
+            }
+        } else {
+            for i in views.indices
+            where drawable.colorTextures.indices.contains(i) {
+                colorTargets.append((drawable.colorTextures[i], 0))
+                depthTargets.append((drawable.depthTextures[i], 0))
+            }
+        }
+        gpu.encode(
+            request, views: views,
+            colorTargets: colorTargets, depthTargets: depthTargets,
+            commandBuffer: commandBuffer)
     }
 
     // MARK: Hand-driven ops
