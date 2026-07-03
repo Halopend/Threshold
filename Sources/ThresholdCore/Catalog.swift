@@ -83,6 +83,13 @@ public struct CatalogEntry: Sendable, Hashable {
     public let slot: Int
     public let spec: ParamSpec
 
+    /// Public so dynamic-arena registrars (SessionCore's external-DE path)
+    /// can publish catalog-shaped entries in snapshots.
+    public init(slot: Int, spec: ParamSpec) {
+        self.slot = slot
+        self.spec = spec
+    }
+
     public var key: ParamKey { spec.key }
     public var kind: ParamKind { spec.kind }
     public var slotRange: Range<Int> { slot..<(slot + spec.kind.slotWidth) }
@@ -286,5 +293,39 @@ public struct CatalogLayout: Sendable {
     /// Base slot for a key (vector params start here).
     public func slot(for key: ParamKey) -> Int? {
         entry(for: key)?.slot
+    }
+}
+
+// MARK: - ArenaAllocator
+
+/// Bump allocator over a layout's dynamic arena. Owned by whoever owns the
+/// engine (render-thread confined alongside it); allocation NEVER moves
+/// existing slots — the arena is recycled wholesale via `reset()` when its
+/// occupant (external DE, warp-stack fields) is replaced. Pair every
+/// allocation with `ModulationEngine.registerDynamic`, and every `reset` with
+/// `unregisterDynamic`, so spec tables and lane state stay in sync.
+public struct ArenaAllocator: Sendable {
+    public let range: Range<Int>
+    private var cursor: Int
+
+    public init(range: Range<Int>) {
+        self.range = range
+        self.cursor = range.lowerBound
+    }
+
+    /// Slots handed out since init/reset (ascending, contiguous).
+    public var allocated: Range<Int> { range.lowerBound..<cursor }
+
+    /// Allocate `count` consecutive slots; nil when the arena is exhausted
+    /// (callers degrade — e.g. an external DE renders at declared defaults).
+    public mutating func allocate(_ count: Int) -> Range<Int>? {
+        guard count >= 0, cursor + count <= range.upperBound else { return nil }
+        defer { cursor += count }
+        return cursor..<(cursor + count)
+    }
+
+    /// Recycle everything allocated since init/reset.
+    public mutating func reset() {
+        cursor = range.lowerBound
     }
 }

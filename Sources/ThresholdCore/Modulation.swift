@@ -167,15 +167,18 @@ public final class ModulationEngine {
     private let clock: any AppClock
 
     // Per-slot spec tables, dense (index == slot). `registered[slot] == false`
-    // for the 6..15 engine gap and the dynamic arena; unregistered slots
-    // resolve to 0 and are skipped everywhere else.
-    private let registered: [Bool]
-    private let compositionBySlot: [Composition]
-    private let rangeLo: [Float]
-    private let rangeHi: [Float]
-    private let defaults: [Float]
+    // for the 6..15 engine gap and unclaimed dynamic-arena slots; unregistered
+    // slots resolve to 0 and are skipped everywhere else. Static entries fill
+    // these at init and never change; arena slots are filled/cleared at
+    // runtime by `registerDynamic`/`unregisterDynamic` (render thread — the
+    // engine is thread-confined, so no synchronization is needed).
+    private var registered: [Bool]
+    private var compositionBySlot: [Composition]
+    private var rangeLo: [Float]
+    private var rangeHi: [Float]
+    private var defaults: [Float]
     /// `tauByLane[lane.rawValue][slot]`, seconds; 0 = instant.
-    private let tauByLane: [[Double]]
+    private var tauByLane: [[Double]]
 
     // Per-lane state: written targets, smoothed currents, explicit-value bits.
     private var target: [[Float]]
@@ -336,6 +339,49 @@ public final class ModulationEngine {
         precondition(slot >= 0 && slot < layout.slotCount)
         hasValue[lane.rawValue].remove(slot)
         if lane == .music { musicWritten.remove(slot) }
+    }
+
+    // MARK: Dynamic arena registration
+
+    /// Register a spec into the dynamic arena at runtime (external DE params,
+    /// warp-slot fields — Catalog.freeze doc). The GPU-facing slot count never
+    /// changes; only the spec tables for already-reserved arena slots fill in.
+    /// Render thread only (the engine is thread-confined).
+    ///
+    /// Dynamic params cannot be integrators — integrator state is wired at
+    /// init (Invariant 17's "declared" is load-bearing).
+    public func registerDynamic(_ spec: ParamSpec, atSlot slot: Int) {
+        precondition(spec.integratorRateKey == nil,
+                     "dynamic param \(spec.key) cannot declare an integrator")
+        for (component, s) in (slot..<(slot + spec.kind.slotWidth)).enumerated() {
+            precondition(layout.arenaRange.contains(s),
+                         "dynamic slot \(s) outside arena \(layout.arenaRange)")
+            precondition(!registered[s], "arena slot \(s) already registered")
+            registered[s] = true
+            compositionBySlot[s] = spec.composition
+            rangeLo[s] = spec.range.lowerBound
+            rangeHi[s] = spec.range.upperBound
+            defaults[s] = spec.defaultValue[component]
+            for lane in Lane.allCases {
+                tauByLane[lane.rawValue][s] = spec.smoothing.tau(for: lane)
+            }
+        }
+    }
+
+    /// Recycle arena slots: unregister and clear EVERY lane's state there, so
+    /// the next registration starts clean (a recycled slot must never leak the
+    /// previous occupant's lane values). No-op components outside the arena
+    /// trap — static slots are never recyclable.
+    public func unregisterDynamic(slots: Range<Int>) {
+        for s in slots {
+            precondition(layout.arenaRange.contains(s),
+                         "cannot unregister non-arena slot \(s)")
+            registered[s] = false
+            for lane in Lane.allCases {
+                hasValue[lane.rawValue].remove(s)
+            }
+            musicWritten.remove(s)
+        }
     }
 
     // MARK: Introspection

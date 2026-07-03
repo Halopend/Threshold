@@ -60,6 +60,9 @@ public final class ParameterMirror {
     public private(set) var paused: Bool = false
     /// The active gradient palette — what the gradient editor displays.
     public private(set) var palette: Palette = Palette(stops: [])
+    /// Dynamic-arena entries (external DE params) from the latest snapshot —
+    /// rendered by CustomDESection exactly like static layout entries.
+    public private(set) var dynamicEntries: [CatalogEntry] = []
     /// Local echo of in-flight slider drags (slot → target resolved value),
     /// so a drag reads back its own target instead of a stale snapshot.
     public private(set) var pendingEdits: [Int: Float] = [:]
@@ -170,6 +173,10 @@ public final class ParameterMirror {
         }
         if snapshot.palette != palette {
             palette = snapshot.palette
+            changed = true
+        }
+        if snapshot.dynamicEntries != dynamicEntries {
+            dynamicEntries = snapshot.dynamicEntries
             changed = true
         }
 

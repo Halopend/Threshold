@@ -39,6 +39,21 @@ final class SessionCore {
     private(set) var externalProgram: ExternalDEProgram?
     /// The built-in to revert to when the external program is cleared.
     private var lastBuiltinDescriptor: DEDescriptor
+    /// Dynamic-arena bookkeeping for the external DE's declared params: each
+    /// activation registers them into the arena (sliders/bindings work like
+    /// built-ins), each deactivation recycles it (Catalog.freeze doc).
+    private var arena: ArenaAllocator
+    /// Arena slots of the active external DE's params, in paramLayout order;
+    /// empty when no external DE is active OR the arena was exhausted (then
+    /// the DE renders at declared defaults).
+    private var externalParamSlots: Range<Int> = 0..<0
+    /// Catalog-shaped entries for the dynamic registrations, published in
+    /// snapshots so the UI derives controls exactly as for static entries.
+    private(set) var dynamicEntries: [CatalogEntry] = []
+    /// The latest applied scene's raw params — seeds the scene lane for
+    /// external DE params registered AFTER the scene apply (the setExternalDE
+    /// command follows applyScene; SceneCodec.apply drops unknown keys).
+    private var lastSceneParams: [String: [Float]] = [:]
     /// The AUTHORED warp stack — what snapshots/editors show.
     private(set) var authoredStack: [WarpOpDTO] = []
     /// The simplified buffer the GPU sees (plan §5.2). Rebuilt only on
@@ -72,6 +87,7 @@ final class SessionCore {
         let initial = DERegistry.descriptor(forKey: defaultDEKey) ?? .mandelbulb
         self.descriptor = initial
         self.lastBuiltinDescriptor = initial
+        self.arena = ArenaAllocator(range: layout.arenaRange)
         if let scene = initialScene {
             apply(scene: scene)
         }
@@ -123,12 +139,19 @@ final class SessionCore {
         engineParams.brightness = resolved.values[Int(THRESH_SLOT_BRIGHTNESS)]
         engineParams.gamma = resolved.values[Int(THRESH_SLOT_GAMMA)]
         engineParams.tonemap = resolved.values[Int(THRESH_SLOT_TONEMAP)]
-        let deValues = descriptor.paramLayout.map { param -> Float in
-            // A DE whose params were never registered (defensive: the app
-            // shell registers every built-in at startup) renders at declared
-            // defaults rather than crashing the render thread.
-            layout.slot(for: .de(descriptor.key, param.name))
-                .map { resolved.values[$0] } ?? param.default
+        let deValues: [Float]
+        if externalProgram != nil, externalParamSlots.count == descriptor.paramLayout.count {
+            // External DE: params live in the dynamic arena (setExternal).
+            deValues = externalParamSlots.map { resolved.values[$0] }
+        } else {
+            deValues = descriptor.paramLayout.map { param -> Float in
+                // A DE whose params were never registered (defensive: the app
+                // shell registers every built-in at startup; an external DE
+                // that exhausted the arena) renders at declared defaults
+                // rather than crashing the render thread.
+                layout.slot(for: .de(descriptor.key, param.name))
+                    .map { resolved.values[$0] } ?? param.default
+            }
         }
         let (params, deParamOffset) = ParamTableLayout.build(
             engine: engineParams, deParams: deValues)
@@ -164,6 +187,7 @@ final class SessionCore {
             paused: paused,
             palette: palette,
             animation: animationPlayer.playbackState,
+            dynamicEntries: dynamicEntries,
             externalProgram: externalProgram)
     }
 
@@ -179,14 +203,12 @@ final class SessionCore {
             // scene switching never loses values). Unknown keys are ignored
             // (never trust-and-crash on the render thread).
             if let swapped = DERegistry.descriptor(forKey: key) {
-                descriptor = swapped
                 lastBuiltinDescriptor = swapped
-                externalProgram = nil
+                setExternal(nil)
             }
 
         case .setExternalDE(let program):
-            externalProgram = program
-            descriptor = program?.descriptor ?? lastBuiltinDescriptor
+            setExternal(program)
 
         case .setWarpStack(let stack):
             setWarpStack(stack)
@@ -233,6 +255,48 @@ final class SessionCore {
         }
     }
 
+    /// Activate (or with nil, deactivate) an external DE program: recycle any
+    /// previous dynamic registrations, then register the new program's
+    /// declared params into the arena so sliders/music/animation bind to them
+    /// like built-ins (Invariant 5's spirit, CPU-side).
+    private func setExternal(_ program: ExternalDEProgram?) {
+        if !externalParamSlots.isEmpty {
+            engine.unregisterDynamic(slots: externalParamSlots)
+        }
+        arena.reset()
+        externalParamSlots = 0..<0
+        dynamicEntries = []
+        externalProgram = program
+        descriptor = program?.descriptor ?? lastBuiltinDescriptor
+
+        guard let d = program?.descriptor, !d.paramLayout.isEmpty else { return }
+        guard let slots = arena.allocate(d.paramLayout.count) else {
+            // Arena exhausted (256 slots — would take an absurd param list):
+            // the DE still renders, at declared defaults (deValues fallback).
+            return
+        }
+        for (i, param) in d.paramLayout.enumerated() {
+            let spec = ParamSpec(
+                key: .de(d.key, param.name),
+                label: "\(d.displayName) \(param.name)",
+                range: param.range,
+                default: param.default,
+                composition: .additive,
+                persistence: .scene,
+                capabilities: [.musicBindable, .animatable],
+                group: .shape)
+            engine.registerDynamic(spec, atSlot: slots.lowerBound + i)
+            dynamicEntries.append(CatalogEntry(slot: slots.lowerBound + i, spec: spec))
+            // Scene-authored value (raw "de.external.<name>" params — the
+            // offscreen harness convention) lands on the scene lane, exactly
+            // as SceneCodec.apply would have if the key had been static.
+            if let authored = lastSceneParams["de.external.\(param.name)"]?.first {
+                engine.write(lane: .scene, slot: slots.lowerBound + i, value: authored)
+            }
+        }
+        externalParamSlots = slots
+    }
+
     private func apply(scene envelope: SceneEnvelope) {
         // Authoritative apply: scene lane only; user/gesture/music offsets
         // survive (Invariant 11).
@@ -248,11 +312,11 @@ final class SessionCore {
         // ExternalDELoader.load and follows the applyScene command with
         // setExternalDE. Until that lands, keep the current descriptor
         // (fractalTypeKey is ignored when embeddedDE is set).
+        lastSceneParams = envelope.params
         if envelope.embeddedDE == nil,
            let sceneDE = DERegistry.descriptor(forKey: envelope.fractalTypeKey) {
-            descriptor = sceneDE
             lastBuiltinDescriptor = sceneDE
-            externalProgram = nil
+            setExternal(nil)
         }
     }
 

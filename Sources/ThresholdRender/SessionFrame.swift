@@ -23,6 +23,9 @@ struct SessionFrame {
     let palette: Palette
     /// Animation transport state — what the play/scrub UI displays.
     let animation: AnimationPlaybackState
+    /// Dynamic-arena registrations (external DE params) — the UI derives
+    /// controls for these exactly as for the static layout entries.
+    let dynamicEntries: [CatalogEntry]
     /// Active external DE program — the encoder binds its pipeline/table
     /// instead of the context's built-in-only ones.
     let externalProgram: ExternalDEProgram?
@@ -40,6 +43,7 @@ struct SessionFrame {
             warpStack: warpStack,
             paused: paused,
             palette: palette,
-            animation: animation)
+            animation: animation,
+            dynamicEntries: dynamicEntries)
     }
 }

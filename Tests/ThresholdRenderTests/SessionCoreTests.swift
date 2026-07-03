@@ -408,6 +408,62 @@ struct SessionCoreTests {
         #expect(cleared.externalProgram == nil)
     }
 
+    @Test(.enabled(if: GPU.available))
+    func externalDEParamsRegisterIntoTheArenaAndRecycle() throws {
+        let ctx = try GPU.ctx()
+        let loader = try ExternalDELoader(context: ctx)
+        let source = ExternalDETests.sphereSource
+        let embedded = EmbeddedDE(
+            source: source, abiVersion: Int(THRESHOLD_ABI_VERSION),
+            hash: ExternalDELoader.sourceHash(source),
+            params: [EmbeddedDEParam(name: "radius", defaultValue: 1, min: 0.1, max: 2)])
+        let program = try loader.load(embedded)
+
+        var h = Harness()
+        h.step()
+
+        // Scene apply (embedded) + program activation — the exact command
+        // pair InteractiveSession.applyScene(_:loader:) publishes. The scene
+        // authors the param via the raw "de.external.<name>" convention.
+        var scene = SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "external")
+        scene.embeddedDE = embedded
+        scene.params["de.external.radius"] = [1.5]
+        h.commands.publish(.applyScene(scene))
+        h.commands.publish(.setExternalDE(program))
+
+        let frame = h.step()
+        let entry = try #require(frame.dynamicEntries.first)
+        #expect(frame.dynamicEntries.count == 1)
+        #expect(h.layout.arenaRange.contains(entry.slot),
+                "external params live in the dynamic arena")
+        #expect(entry.spec.key == ParamKey.de(program.descriptor.key, "radius"))
+        // The scene-authored value (not the declared default) reaches the
+        // GPU slice at deParamOffset.
+        #expect(frame.request.params[Int(frame.request.uniforms.meta.w)] == 1.5)
+
+        // A user edit on the arena slot lands in the slice, clamped to the
+        // declared range — same single-clamp-site behavior as built-ins.
+        h.commands.publish(.userEdit(slot: entry.slot, targetResolved: 5))
+        let edited = h.step()
+        #expect(edited.request.params[Int(edited.request.uniforms.meta.w)] == 2)
+
+        // Clearing the program recycles the arena…
+        h.commands.publish(.setExternalDE(nil))
+        let cleared = h.step()
+        #expect(cleared.dynamicEntries.isEmpty)
+
+        // …and re-activation starts clean: the declared default, no ghost
+        // user edit or stale scene value from the recycled slot… except the
+        // scene lane, which re-seeds from the STILL-CURRENT scene's params
+        // (the scene remains applied). So: 1.5 again, but the user edit gone.
+        h.commands.publish(.setExternalDE(program))
+        let again = h.step()
+        #expect(again.dynamicEntries.count == 1)
+        #expect(again.request.params[Int(again.request.uniforms.meta.w)] == 1.5,
+                "re-seeded from the current scene; the user edit must NOT survive recycling")
+    }
+
     @Test func builtinSceneApplyClearsAnExternalProgram() throws {
         // CPU-only: command/descriptor bookkeeping (no GPU program needed for
         // the clear path — apply a builtin scene while external is nil).

@@ -140,12 +140,18 @@ public final class ExternalDELoader: @unchecked Sendable {
         guard hash == embedded.hash.lowercased() else {
             throw ExternalDEError.hashMismatch(declared: embedded.hash, computed: hash)
         }
-        if let cached = cache.withLock({ $0[hash] }) {
+        // Cache key includes the declared params: the same source loaded with
+        // different param declarations (defaults/ranges) needs a distinct
+        // descriptor, and descriptors are immutable on the program.
+        let cacheKey = hash + "|" + embedded.params
+            .map { "\($0.name):\($0.defaultValue):\($0.min):\($0.max)" }
+            .joined(separator: ",")
+        if let cached = cache.withLock({ $0[cacheKey] }) {
             return cached
         }
 
         let program = try compileAndProbe(embedded, hash: hash)
-        cache.withLock { $0[hash] = program }
+        cache.withLock { $0[cacheKey] = program }
         return program
     }
 

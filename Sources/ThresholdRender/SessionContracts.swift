@@ -27,12 +27,17 @@ public struct RenderSnapshot: Sendable {
     public let palette: Palette
     /// Animation transport state — what the play/scrub UI displays.
     public let animation: AnimationPlaybackState
+    /// Dynamic-arena registrations (external DE params, plan phase 9): the
+    /// UI renders rows for these exactly as for static layout entries. Empty
+    /// when no external DE is active.
+    public let dynamicEntries: [CatalogEntry]
 
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
         gpuMilliseconds: Double, totalSteps: UInt64, deKey: String,
         warpStack: [WarpOpDTO], paused: Bool, palette: Palette,
-        animation: AnimationPlaybackState = .idle
+        animation: AnimationPlaybackState = .idle,
+        dynamicEntries: [CatalogEntry] = []
     ) {
         self.resolved = resolved
         self.frameIndex = frameIndex
@@ -44,6 +49,7 @@ public struct RenderSnapshot: Sendable {
         self.paused = paused
         self.palette = palette
         self.animation = animation
+        self.dynamicEntries = dynamicEntries
     }
 }
 

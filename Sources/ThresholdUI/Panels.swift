@@ -70,6 +70,7 @@ public struct ControlSidebar: View {
         Form {
             StatsSection(mirror: mirror)
             DEPickerSection(mirror: mirror)
+            CustomDESection(mirror: mirror)
             WarpStackSection(mirror: mirror)
             PaletteSection(mirror: mirror, layout: layout)
             ForEach(Self.groupsInOrder(layout), id: \.self) { group in
@@ -113,6 +114,30 @@ public struct DEPickerSection: View {
                 }
                 ForEach(DERegistry.builtin, id: \.key) { descriptor in
                     Text(descriptor.displayName).tag(descriptor.key)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - CustomDESection
+
+/// Rows for the active EXTERNAL DE's params — dynamic-arena entries from the
+/// snapshot, rendered by the same generic `ParameterRow` as static entries
+/// (external DEs are indistinguishable past registration — Invariant 5's
+/// spirit, CPU-side). Renders nothing when no external DE is active.
+public struct CustomDESection: View {
+    let mirror: ParameterMirror
+
+    public init(mirror: ParameterMirror) {
+        self.mirror = mirror
+    }
+
+    public var body: some View {
+        if !mirror.dynamicEntries.isEmpty {
+            Section("Custom DE") {
+                ForEach(mirror.dynamicEntries, id: \.slot) { entry in
+                    ParameterRow(entry: entry, mirror: mirror)
                 }
             }
         }
