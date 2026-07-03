@@ -34,6 +34,11 @@ final class SessionCore {
     let animationPlayer: AnimationPlayer
 
     private(set) var descriptor: DEDescriptor
+    /// Active external DE program; when set, `descriptor` is its descriptor
+    /// and the encoder binds its pipeline/table.
+    private(set) var externalProgram: ExternalDEProgram?
+    /// The built-in to revert to when the external program is cleared.
+    private var lastBuiltinDescriptor: DEDescriptor
     /// The AUTHORED warp stack — what snapshots/editors show.
     private(set) var authoredStack: [WarpOpDTO] = []
     /// The simplified buffer the GPU sees (plan §5.2). Rebuilt only on
@@ -64,7 +69,9 @@ final class SessionCore {
         self.engine = ModulationEngine(layout: layout, clock: clock, mailbox: laneMailbox)
         self.bindingEngine = BindingEngine(layout: layout)
         self.animationPlayer = AnimationPlayer(layout: layout)
-        self.descriptor = DERegistry.descriptor(forKey: defaultDEKey) ?? .mandelbulb
+        let initial = DERegistry.descriptor(forKey: defaultDEKey) ?? .mandelbulb
+        self.descriptor = initial
+        self.lastBuiltinDescriptor = initial
         if let scene = initialScene {
             apply(scene: scene)
         }
@@ -156,7 +163,8 @@ final class SessionCore {
             warpStack: authoredStack,
             paused: paused,
             palette: palette,
-            animation: animationPlayer.playbackState)
+            animation: animationPlayer.playbackState,
+            externalProgram: externalProgram)
     }
 
     // MARK: - Commands
@@ -172,7 +180,13 @@ final class SessionCore {
             // (never trust-and-crash on the render thread).
             if let swapped = DERegistry.descriptor(forKey: key) {
                 descriptor = swapped
+                lastBuiltinDescriptor = swapped
+                externalProgram = nil
             }
+
+        case .setExternalDE(let program):
+            externalProgram = program
+            descriptor = program?.descriptor ?? lastBuiltinDescriptor
 
         case .setWarpStack(let stack):
             setWarpStack(stack)
@@ -230,13 +244,15 @@ final class SessionCore {
         if let scenePalette = envelope.palette {
             palette = scenePalette
         }
-        // Embedded DEs need the probe/compile path (ARCHITECTURE.md §4) —
-        // not wired yet; the envelope contract says fractalTypeKey is ignored
-        // when embeddedDE is set, so keep the current descriptor rather than
-        // silently rendering the wrong DE.
+        // Embedded DEs compile OFF this thread: the app shell runs
+        // ExternalDELoader.load and follows the applyScene command with
+        // setExternalDE. Until that lands, keep the current descriptor
+        // (fractalTypeKey is ignored when embeddedDE is set).
         if envelope.embeddedDE == nil,
            let sceneDE = DERegistry.descriptor(forKey: envelope.fractalTypeKey) {
             descriptor = sceneDE
+            lastBuiltinDescriptor = sceneDE
+            externalProgram = nil
         }
     }
 

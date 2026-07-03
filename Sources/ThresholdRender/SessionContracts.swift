@@ -76,8 +76,13 @@ public enum SessionCommand: Sendable {
     /// Authoritative scene apply: scene lane + warp stack + DE + camera.
     case applyScene(SceneEnvelope)
     /// Switch the active DE; params keep their lane state (plan §2.1:
-    /// scene switching never loses values).
+    /// scene switching never loses values). Clears any active external DE.
     case setDE(key: String)
+    /// Activate a compiled+probed external DE program (nil reverts to the
+    /// last built-in). Compilation is EXPENSIVE and must happen off the
+    /// render thread — the app shell runs ExternalDELoader.load and sends
+    /// the validated program here; the render thread only swaps a pointer.
+    case setExternalDE(ExternalDEProgram?)
     /// Replace the authored warp stack.
     case setWarpStack([WarpOpDTO])
     /// Grab-what-you-see slider edit: the render thread computes the

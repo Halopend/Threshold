@@ -23,6 +23,9 @@ struct SessionFrame {
     let palette: Palette
     /// Animation transport state — what the play/scrub UI displays.
     let animation: AnimationPlaybackState
+    /// Active external DE program — the encoder binds its pipeline/table
+    /// instead of the context's built-in-only ones.
+    let externalProgram: ExternalDEProgram?
 
     /// Complete the snapshot with the PREVIOUS completed frame's GPU stats
     /// (the frame path never waits on the GPU — ARCHITECTURE.md §2).

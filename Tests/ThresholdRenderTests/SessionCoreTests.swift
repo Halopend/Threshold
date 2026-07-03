@@ -366,4 +366,57 @@ struct SessionCoreTests {
             stride(from: 3, to: result.rgba8.count, by: 4).allSatisfy { result.rgba8[$0] == 255 },
             "no NaN sentinel pixels from a session-built request")
     }
+
+    // MARK: External DE via session commands
+
+    @Test(.enabled(if: GPU.available))
+    func externalDEActivatesRendersAndReverts() throws {
+        let ctx = try GPU.ctx()
+        let loader = try ExternalDELoader(context: ctx)
+        let source = ExternalDETests.sphereSource
+        let program = try loader.load(EmbeddedDE(
+            source: source, abiVersion: Int(THRESHOLD_ABI_VERSION),
+            hash: ExternalDELoader.sourceHash(source)))
+
+        var h = Harness()
+        h.step()
+
+        // Activate: descriptor and meta.y follow the program.
+        h.commands.publish(.setExternalDE(program))
+        let external = h.step(width: 64, height: 64)
+        #expect(external.deKey == program.descriptor.key)
+        #expect(external.request.uniforms.meta.y == program.descriptor.index)
+        #expect(external.externalProgram === program)
+
+        // The frame renders through the program's extended table.
+        let renderer = try OffscreenRenderer(context: ctx)
+        let result = try renderer.render(external.request, program: program)
+        #expect(result.stats.totalSteps > 0)
+
+        // setDE reverts to a built-in and clears the program.
+        h.commands.publish(.setDE(key: "mandelbox"))
+        let reverted = h.step()
+        #expect(reverted.deKey == "mandelbox")
+        #expect(reverted.externalProgram == nil)
+
+        // Re-activate, then clearing with nil reverts to the LAST built-in.
+        h.commands.publish(.setExternalDE(program))
+        _ = h.step()
+        h.commands.publish(.setExternalDE(nil))
+        let cleared = h.step()
+        #expect(cleared.deKey == "mandelbox")
+        #expect(cleared.externalProgram == nil)
+    }
+
+    @Test func builtinSceneApplyClearsAnExternalProgram() throws {
+        // CPU-only: command/descriptor bookkeeping (no GPU program needed for
+        // the clear path — apply a builtin scene while external is nil).
+        var h = Harness()
+        h.step()
+        h.commands.publish(.applyScene(SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox")))
+        let frame = h.step()
+        #expect(frame.deKey == "mandelbox")
+        #expect(frame.externalProgram == nil)
+    }
 }

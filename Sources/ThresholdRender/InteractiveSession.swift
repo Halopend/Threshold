@@ -262,7 +262,7 @@ public final class InteractiveSession: @unchecked Sendable {
 
         let encodeStart = Mono.now()
         let encodeState = sp.beginInterval("encode")
-        gpu.encode(frame.request, to: drawable)
+        gpu.encode(frame.request, program: frame.externalProgram, to: drawable)
         sp.endInterval("encode", encodeState)
         let encodeMs = Mono.ms(encodeStart, Mono.now())
 
@@ -366,13 +366,14 @@ final class SessionGPUEncoder {
     /// Encode one frame into the drawable's texture and present it. A failed
     /// allocation drops the frame (the drawable returns to the pool) — the
     /// live loop must never crash or block.
-    func encode(_ request: RenderRequest, to drawable: CAMetalDrawable) {
+    func encode(_ request: RenderRequest, program: ExternalDEProgram? = nil,
+                to drawable: CAMetalDrawable) {
         let texture = drawable.texture
         guard texture.width > 0, texture.height > 0,
               request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
               Int(request.uniforms.meta.z) <= request.params.count,
               request.uniforms.meta.w < request.uniforms.meta.z,
-              Int(request.uniforms.meta.y) < context.deFunctionCount
+              Int(request.uniforms.meta.y) < (program?.deFunctionCount ?? context.deFunctionCount)
         else { return }
 
         var uniforms = request.uniforms
@@ -397,7 +398,7 @@ final class SessionGPUEncoder {
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.label = "session march"
-        encoder.setComputePipelineState(context.marchPipeline)
+        encoder.setComputePipelineState(program?.marchPipeline ?? context.marchPipeline)
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setBytes(
                 raw.baseAddress!, length: raw.count, index: Int(THRESH_BUFFER_UNIFORMS))
@@ -406,7 +407,8 @@ final class SessionGPUEncoder {
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
         encoder.setVisibleFunctionTable(
-            context.marchDETable, bufferIndex: GPUContext.deTableBufferIndex)
+            program?.marchDETable ?? context.marchDETable,
+            bufferIndex: GPUContext.deTableBufferIndex)
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in
             encoder.setBytes(raw.baseAddress!, length: raw.count,

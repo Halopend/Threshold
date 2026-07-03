@@ -88,6 +88,22 @@ public final class ExternalDEProgram: @unchecked Sendable {
     }
 }
 
+// MARK: - Scene apply with embedded DE
+
+#if os(macOS) || os(iOS)
+extension InteractiveSession {
+    /// Apply a scene whose embedded DE (if any) is compiled + probed HERE —
+    /// off the render thread — before both commands are published together.
+    /// Throws (scene not applied at all) when the embedded DE is rejected,
+    /// so a bad file can never half-apply.
+    public func applyScene(_ envelope: SceneEnvelope, loader: ExternalDELoader) throws {
+        let program = try envelope.embeddedDE.map { try loader.load($0) }
+        commands.publish(.applyScene(envelope))
+        commands.publish(.setExternalDE(program))
+    }
+}
+#endif
+
 // MARK: - ExternalDELoader
 
 /// Compile + validate + cache external DEs. Thread-safe; loads are
