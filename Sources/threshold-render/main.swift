@@ -19,6 +19,7 @@ import ThresholdRender
 struct Options {
     var scenePath: String?
     var outPath = "threshold-out.png"
+    var outPathExplicit = false
     var statsPath: String?
     var comparePath: String?
     var writeDefaultScenePath: String?
@@ -29,6 +30,11 @@ struct Options {
     var deKey = "mandelbulb"
     var quiet = false
     var specialize = false
+    var benchFrames = 0        // > 0 → benchmark mode
+    var benchWarmup = 8
+    var benchJSONPath: String?
+    var maxStepsOverride: Int?  // engine.maxSteps is device-local, not
+                                // scene-persisted — the bench suite pins it
 
     static func parse(_ args: [String]) -> Options {
         var opts = Options()
@@ -41,7 +47,7 @@ struct Options {
         while i < args.count {
             let arg = args[i]
             switch arg {
-            case "--out": opts.outPath = next(arg)
+            case "--out": opts.outPath = next(arg); opts.outPathExplicit = true
             case "--stats": opts.statsPath = next(arg)
             case "--compare": opts.comparePath = next(arg)
             case "--write-default-scene": opts.writeDefaultScenePath = next(arg)
@@ -52,6 +58,10 @@ struct Options {
             case "--de": opts.deKey = next(arg)
             case "--quiet": opts.quiet = true
             case "--specialize": opts.specialize = true
+            case "--bench": opts.benchFrames = intValue(next(arg), for: arg)
+            case "--bench-warmup": opts.benchWarmup = intValue(next(arg), for: arg)
+            case "--bench-json": opts.benchJSONPath = next(arg)
+            case "--max-steps": opts.maxStepsOverride = intValue(next(arg), for: arg)
             case "--help":
                 print(usage)
                 exit(0)
@@ -81,6 +91,13 @@ usage: threshold-render [scene.threshscene] [options]
   --quiet                       suppress progress output
   --specialize                  render built-ins through the direct-call DE
                                 pipeline variant (perf A/B; identical image)
+  --bench <n>                   benchmark mode: warmup then n measured frames;
+                                print median/p95 GPU ms + fps, skip PNG unless
+                                --out was given explicitly
+  --bench-warmup <n>            warmup frames before measuring (default 8)
+  --bench-json <path>           write the benchmark result JSON
+  --max-steps <n>               override engine.maxSteps (device-local, not
+                                scene-persisted; the perf suite pins it)
 """
 
 func die(_ message: String) -> Never {
@@ -287,19 +304,28 @@ if opts.specialize, program == nil {
         // _MAXSTEPS / _HASOPS / _MAPMODE / _AO = 1. Read once here: a static
         // scene resolves constant values; an animated value keeps this initial
         // one and would surface as a --compare mismatch, not a silent drift.
+        // All bakes ON by default (perf round 6): each is measured
+        // byte-identical, and the CLI resolves a static scene's values once.
+        // THRESHOLD_SPEC_<KNOB>=0 disables one for A/B.
         let r = engine.resolve().values
         let flags = ProcessInfo.processInfo.environment
-        func on(_ key: String) -> Bool { flags[key] == "1" }
+        func on(_ key: String) -> Bool { flags[key] != "0" }
         let spec = MarchSpec(
-            iterations: GPUContext.bakeIterations
+            iterations: on("THRESHOLD_SPEC_ITERATIONS")
                 ? Int(r[Int(THRESH_SLOT_ITERATIONS)]) : nil,
             maxSteps: on("THRESHOLD_SPEC_MAXSTEPS")
-                ? Int(r[Int(THRESH_SLOT_MAX_STEPS)]) : nil,
+                ? (opts.maxStepsOverride ?? Int(r[Int(THRESH_SLOT_MAX_STEPS)])) : nil,
             hasWarpOps: on("THRESHOLD_SPEC_HASOPS") ? !ops.isEmpty : nil,
             colorMapMode: on("THRESHOLD_SPEC_MAPMODE")
                 ? Int(r[Int(THRESH_SLOT_MAP_MODE)]) : nil,
             aoEnabled: on("THRESHOLD_SPEC_AO")
-                ? (r[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil)
+                ? (r[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil,
+            hasDistanceOps: ops.contains {
+                $0.kind >= UInt32(THRESH_WARP_KIND_DISTANCE_OP_BASE)
+            },
+            // Benchmark runs drop the per-pixel stats atomic unless --stats
+            // asked for step counts (pure telemetry; image unchanged).
+            statsEnabled: !(opts.benchFrames > 0 && opts.statsPath == nil))
         specialized = try context.makeSpecializedMarch(
             deFunctionName: descriptor.mslFunctionName, spec: spec)
         if !opts.quiet {
@@ -328,14 +354,29 @@ func externalDEParamValues(_ descriptor: DEDescriptor, envelope: SceneEnvelope) 
 var perFrame: [FrameStats] = []
 var lastResult: RenderResult?
 
-for frame in 0..<opts.frames {
+// Immutable snapshot for the render closure (top-level `var` is main-actor
+// isolated under Swift 6; the scene never mutates past this point).
+let scene = envelope
+
+/// One frame through the full scene path: advance the fixed-step clock,
+/// resolve, build the request, render. Shared by the normal frame loop and
+/// --bench mode so the benchmark measures exactly the production path.
+@MainActor
+func renderOneFrame(_ frame: Int) throws -> RenderResult {
     clock.advance()
     let resolved = engine.resolve()
 
     var engineParams = EngineParams()
-    engineParams.maxSteps = resolved.values[Int(THRESH_SLOT_MAX_STEPS)]
+    engineParams.maxSteps = opts.maxStepsOverride.map(Float.init)
+        ?? resolved.values[Int(THRESH_SLOT_MAX_STEPS)]
     engineParams.maxDist = resolved.values[Int(THRESH_SLOT_MAX_DIST)]
     engineParams.stepSafety = resolved.values[Int(THRESH_SLOT_STEP_SAFETY)]
+    // Over-relaxed sphere tracing by default: when the resolved safety is the
+    // conservative legacy default (≤ 1), march at this DE's per-formula ω cap
+    // — the kernel's overshoot retreat keeps surfaces intact.
+    if engineParams.stepSafety <= 1.0 {
+        engineParams.stepSafety = descriptor.stepRelaxation
+    }
     // Measurement override: engine.stepSafety is .deviceLocal (not scene-
     // persisted), so THRESHOLD_STEP_MULTIPLIER is the CLI A/B knob for the
     // over-relaxation factor ω.
@@ -359,7 +400,7 @@ for frame in 0..<opts.frames {
     let (params, deParamOffset) = ParamTableLayout.build(
         engine: engineParams,
         deParams: program != nil
-            ? externalDEParamValues(descriptor, envelope: envelope)
+            ? externalDEParamValues(descriptor, envelope: scene)
             : deParamValues(descriptor, layout: layout, resolved: resolved))
 
     // Camera: base pose + resolved rig offsets, same derivation as the
@@ -380,20 +421,64 @@ for frame in 0..<opts.frames {
     // as the interactive session (SessionCore.step).
     let scaleContext = ScaleContext(
         zoomOctaves: layout.slot(for: .scaleZoom).map { resolved.values[$0] } ?? 0,
-        octave: envelope.scaleOctave)
+        octave: scene.scaleOctave)
+    // Measurement seam: THRESHOLD_EPS_SCALE multiplies the cone-epsilon base
+    // (accuracy↔steps A/B knob; > 1 accepts surfaces earlier).
+    let epsScale = ProcessInfo.processInfo.environment["THRESHOLD_EPS_SCALE"]
+        .flatMap(Float.init) ?? 1
     uniforms.scaleCtx = SIMD4(
-        Float(clock.now), scaleContext.epsilonBase, scaleContext.modelScale, 1)
+        Float(clock.now), scaleContext.epsilonBase * epsScale,
+        scaleContext.modelScale, 1)
     uniforms.meta = SIMD4(
         UInt32(ops.count), descriptor.index,
         UInt32(params.count), UInt32(deParamOffset))
 
     let request = RenderRequest(
         uniforms: uniforms, params: params, ops: ops,
-        palette: envelope.palette?.stops ?? [],
+        palette: scene.palette?.stops ?? [],
         width: opts.width, height: opts.height)
+    return try renderer.render(request, program: program, specialized: specialized)
+}
+
+if opts.benchFrames > 0 {
+    // Benchmark mode: warmup + measured frames through the identical path.
+    // (Loop stays at top level — the render state is main-actor; the
+    // statistics live in the library's FrameBenchmark.summarize.)
     do {
-        let result = try renderer.render(
-            request, program: program, specialized: specialized)
+        for frame in 0..<max(0, opts.benchWarmup) {
+            _ = try renderOneFrame(frame)
+        }
+        var samples: [Double] = []
+        var benchSteps: UInt64 = 0
+        for frame in 0..<opts.benchFrames {
+            let r = try renderOneFrame(opts.benchWarmup + frame)
+            samples.append(r.stats.gpuMilliseconds)
+            benchSteps += r.stats.totalSteps
+            lastResult = r
+        }
+        let result = FrameBenchmark.summarize(
+            warmup: max(0, opts.benchWarmup), samples: samples,
+            totalSteps: benchSteps)
+        print("bench \(opts.width)x\(opts.height) de=\(descriptor.key) "
+            + "ops=\(ops.count)\(specialized != nil ? " specialized" : ""): "
+            + result.summaryLine)
+        if let path = opts.benchJSONPath {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(result).write(to: URL(fileURLWithPath: path))
+        }
+        if opts.outPathExplicit, let final = lastResult {
+            writePNG(final, to: opts.outPath)
+        }
+    } catch {
+        die("benchmark failed: \(error)")
+    }
+    exit(0)
+}
+
+for frame in 0..<opts.frames {
+    do {
+        let result = try renderOneFrame(frame)
         perFrame.append(FrameStats(
             frame: frame, time: clock.now,
             totalSteps: result.stats.totalSteps,

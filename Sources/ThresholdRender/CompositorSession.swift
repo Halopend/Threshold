@@ -178,6 +178,16 @@ public final class CompositorSession: @unchecked Sendable {
         var pendingRenderQuality = Self.maxRenderQuality
         var lastAppliedRenderQuality: Float = -1
 
+        // Profiling seam (RenderTelemetry.swift). Until now the visionOS render
+        // path had NO os_signpost coverage — a Metal System Trace / os_signpost
+        // capture on Vision Pro showed unnamed regions and no phase breakdown.
+        // We emit the SAME named phases as the Mac InteractiveSession path
+        // ("drawable" wait, "core.step", "encode") so both device traces read
+        // alike, plus a periodic os_log summary for numbers WITHOUT Instruments.
+        let profiler = FrameProfiler(telemetry: RenderTelemetry(), logSummaries: true)
+        let sp = profiler.signposter
+        var frameIndex: UInt64 = 0
+
         while !stopRequested.load(ordering: .acquiring) {
             switch layer.state {
             case .invalidated:
@@ -205,13 +215,27 @@ public final class CompositorSession: @unchecked Sendable {
             }
 
             guard let timing = frame.predictTiming() else { continue }
+
+            // Frame entry stamp for the profiler's inter-frame cadence measure
+            // (Mono is telemetry-only — Invariant 9 — never the render clock).
+            let frameEntry = Mono.now()
+
+            // "drawable" phase: the compositor input-time wait + drawable
+            // acquisition. On a GPU-bound headset this is where the render
+            // thread blocks waiting for a free frame slot; a large value here
+            // vs. a small "encode" is the CPU/sync-bound signature.
+            let waitStart = Mono.now()
+            let drawableState = sp.beginInterval("drawable")
             LayerRenderer.Clock().wait(until: timing.optimalInputTime)
 
             frame.startSubmission()
             guard let drawable = frame.queryDrawables().first else {
+                sp.endInterval("drawable", drawableState)
                 frame.endSubmission()
                 continue
             }
+            sp.endInterval("drawable", drawableState)
+            let drawableMs = Mono.ms(waitStart, Mono.now())
 
             let anchorTime = Self.seconds(timing.trackableAnchorTime)
             let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: anchorTime)
@@ -227,11 +251,16 @@ public final class CompositorSession: @unchecked Sendable {
 
             let stats = gpu.lastCompleted()
             let colorTexture = drawable.colorTextures[0]
+            // "core.step" phase: per-frame session logic + the quality governor.
+            let stepStart = Mono.now()
+            let stepState = sp.beginInterval("core.step")
             let sessionFrame = core.step(
                 now: now,
                 width: colorTexture.width,
                 height: colorTexture.height,
                 gpuMilliseconds: stats.gpuMilliseconds)
+            sp.endInterval("core.step", stepState)
+            let stepMs = Mono.ms(stepStart, Mono.now())
             sessionTime = sessionFrame.time
             // The governor's resolution scale becomes next frame's compositor
             // renderQuality. On this shell renderScale is NOT an intermediate
@@ -267,6 +296,10 @@ public final class CompositorSession: @unchecked Sendable {
                 sessionFrame.request, now: sessionFrame.time,
                 anchorPosition: anchorPosition ?? .zero)
 
+            // "encode" phase: CPU cost of building + committing the command
+            // buffer (the GPU work itself lands in gpuMilliseconds, next frame).
+            let encodeStart = Mono.now()
+            let encodeState = sp.beginInterval("encode")
             if let commandBuffer = queue.makeCommandBuffer() {
                 commandBuffer.label = "compositor frame"
                 encode(
@@ -275,7 +308,18 @@ public final class CompositorSession: @unchecked Sendable {
                 drawable.encodePresent(commandBuffer: commandBuffer)
                 commandBuffer.commit()
             }
+            sp.endInterval("encode", encodeState)
             frame.endSubmission()
+            let encodeMs = Mono.ms(encodeStart, Mono.now())
+
+            // Feed the profiler: rolling phase averages + hitch attribution to
+            // os_log every 60 frames, and a signpost "hitch" event on stutters.
+            frameIndex += 1
+            profiler.record(
+                entry: frameEntry, stepMs: stepMs, drawableMs: drawableMs,
+                encodeMs: encodeMs, gpuMs: stats.gpuMilliseconds,
+                frameIndex: frameIndex,
+                pixels: colorTexture.width * colorTexture.height)
 
             // Debug telemetry for the control-window panel (the visionOS
             // shell renders through the stereo raster fragment path, not the

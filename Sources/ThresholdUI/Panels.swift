@@ -779,12 +779,17 @@ public struct PipelineSection: View {
             // governor) is OFF; otherwise the governor drives the scale.
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text("Upscale")
-                    Slider(value: renderScale, in: 0.25...1.0)
+                    Text("Quality")
+                    Slider(value: renderScale, in: 0.1...1.0)
                     Text(String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100))
                         .monospacedDigit().foregroundStyle(.secondary)
                         .frame(minWidth: 44, alignment: .trailing)
                 }
+                // The manual render-resolution lever. On Mac this feeds MetalFX
+                // upscaling; on Vision Pro it drives the compositor renderQuality
+                // (the drawable shrinks, the compositor upscales natively). Only
+                // takes effect with Auto Quality OFF — otherwise the governor
+                // owns the scale. This is the independent variable for profiling.
                 Text("render resolution — Auto Quality must be off")
                     .font(.caption2).foregroundStyle(.secondary)
             }

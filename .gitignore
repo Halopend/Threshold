@@ -5,3 +5,4 @@ xcuserdata/
 DerivedData/
 *.xcuserstate
 /artifacts/
+bench-results/

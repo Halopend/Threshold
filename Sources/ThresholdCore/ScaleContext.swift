@@ -85,7 +85,10 @@ public struct ScaleContext: Sendable, Equatable {
     /// divides by modelScale), so this is scale-INVARIANT by construction —
     /// it derives here anyway so a future screen-space-aware derivation has
     /// its one home.
-    public var epsilonBase: Float { 1e-3 }
+    /// 1.5e-3 (was 1e-3): perf round 10 — the near-surface step crawl scales
+    /// with 1/epsilon, and the 1.5× base cut the 2048² mandelbox frame ~18%
+    /// for a slight softening of finest detail (bench-results/history.jsonl).
+    public var epsilonBase: Float { 1.5e-3 }
 }
 
 // MARK: - Catalog registration

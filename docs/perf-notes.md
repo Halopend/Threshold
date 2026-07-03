@@ -265,3 +265,47 @@ Stress_test @1080p, 30 frames, release CLI:
   Kleinian, 1.6 box-fold, 1.1 log-DE). Next port step: per-DE ω caps in
   DERegistry + raise the default; needs a golden rebaseline since
   stepSafety changes marched output.
+
+## Frame-time benchmark harness + 10 optimization rounds — 2026-07-03 (perf block 7)
+
+New standing infrastructure:
+
+- **`FrameBenchmark`** (ThresholdRender): warmup + measured frames →
+  median/mean/p95/min/max GPU ms + median FPS. CLI: `--bench <n>`
+  `--bench-warmup <n>` `--bench-json <path>`, plus `--max-steps <n>`
+  (device-local, not scene-persisted) and measurement seams
+  `THRESHOLD_EPS_SCALE`, `THRESHOLD_TG=WxH`.
+- **`Scripts/bench-suite.sh`** — THE regression suite. bench-mandelbox scene
+  (mandelbox, iterations 9), maxSteps 120, specialized, 1024²/1800²/2048².
+  Goal: ≥ 30 fps at 2048². Appends to `bench-results/history.jsonl` with git
+  rev. Run after every perf-relevant change; exits 1 on goal failure.
+
+Rounds (warped-bulb 1024² specialized until the suite existed, then the
+triplet). Medians:
+
+| Round | Change | warped-bulb 1024² |
+|---|---|---|
+| 0 | baseline | 19.68 ms (50.8 fps) |
+| 1 | specialized pipelines default .relaxed math | 16.14 ms |
+| 2 | per-DE ω caps (DEDescriptor.stepRelaxation), default over-relaxed | 13.77 ms |
+| 3 | AO 5→3 taps (rescaled decay) | 13.31 ms |
+| 4 | mandelbulb single-pow (r^p = r^(p-1)·r) | 13.20 ms |
+| 5 | hasDistanceOps function constant 6 → DCE dist-op loop | 11.44 ms |
+| 6 | all spec bakes default ON in CLI | 11.46 ms |
+| 7 | reduced-iteration normals (0.6×)/AO (0.5×) via ctx.lodScale | flat on bulb; −4.5 ms on mandelbox 2048² |
+| 8 | mandelbulb ω 1.1→1.3 (retreat guard holds; meanΔ 0.5/255) | 10.11 ms |
+| 9 | sqrt-free orbit traps (squared min, one sqrt at return) | −0.6 ms @2048² box |
+| 10 | epsilonBase 1e-3 → 1.5e-3 (cone eps; near-surface crawl ∝ 1/ε) | −18% @2048² box |
+
+Suite result (mandelbox iters=9 steps=120): 1024² **8.07 ms / 123.8 fps**,
+1800² **23.70 ms / 42.2 fps**, 2048² **30.42 ms / 32.9 fps → goal PASS**.
+Baseline before block: 2048² was 42.3 ms / 23.6 fps.
+
+Measured dead ends: threadgroup shapes ≠ 8×8 all regress; ω > 1.6 regresses
+mandelbox; maxSteps 120→60 and maxDist 64→16 both no-ops (cap rarely hit).
+
+Fidelity notes (deliberate, FPS-first): specialized .relaxed is no longer
+bit-identical to generic in principle (SpecializationTests now pin .safe to
+test the mechanism); AO is 3-tap; normals/AO evaluate the DE at 0.6×/0.5×
+iterations; epsilonBase 1.5e-3 slightly softens finest detail. Goldens run
+the generic .safe pipeline and still pass (390/390).

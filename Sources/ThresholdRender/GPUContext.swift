@@ -231,6 +231,8 @@ public final class GPUContext: @unchecked Sendable {
                 setInt(spec.hasWarpOps.map { $0 ? 1 : 0 } ?? -1, 3)
                 setInt(spec.colorMapMode ?? -1, 4)
                 setInt(spec.aoEnabled.map { $0 ? 1 : 0 } ?? -1, 5)
+                setInt(spec.hasDistanceOps.map { $0 ? 1 : 0 } ?? -1, 6)
+                setInt(spec.statsEnabled.map { $0 ? 1 : 0 } ?? -1, 7)
             }
             do {
                 kernel = try library.makeFunction(

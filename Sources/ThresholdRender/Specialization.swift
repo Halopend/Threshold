@@ -61,28 +61,38 @@ public struct MarchSpec: Sendable, Hashable {
     public var colorMapMode: Int?
     /// AO enabled (function_constant 5): false → skip the 5-tap AO.
     public var aoEnabled: Bool?
+    /// Distance ops (kind ≥ 64) present (function_constant 6): false → DCE
+    /// the applyDistanceOps loop even when point ops keep the stack non-empty.
+    public var hasDistanceOps: Bool?
+    /// Step-count telemetry (function_constant 7): false → drop the per-pixel
+    /// stats atomic (totalSteps reads back 0). Benchmark variants bake false.
+    public var statsEnabled: Bool?
 
     public init(iterations: Int? = nil, maxSteps: Int? = nil,
                 hasWarpOps: Bool? = nil, colorMapMode: Int? = nil,
-                aoEnabled: Bool? = nil) {
+                aoEnabled: Bool? = nil, hasDistanceOps: Bool? = nil,
+                statsEnabled: Bool? = nil) {
         self.iterations = iterations
         self.maxSteps = maxSteps
         self.hasWarpOps = hasWarpOps
         self.colorMapMode = colorMapMode
         self.aoEnabled = aoEnabled
+        self.hasDistanceOps = hasDistanceOps
+        self.statsEnabled = statsEnabled
     }
 
     /// Nothing baked — the variant is just the direct-call inline.
     public var isEmpty: Bool {
         iterations == nil && maxSteps == nil && hasWarpOps == nil
-            && colorMapMode == nil && aoEnabled == nil
+            && colorMapMode == nil && aoEnabled == nil && hasDistanceOps == nil
+            && statsEnabled == nil
     }
 
     /// Stable cache-key fragment.
     var keyFragment: String {
         func i(_ v: Int?) -> String { v.map(String.init) ?? "-" }
         func b(_ v: Bool?) -> String { v.map { $0 ? "1" : "0" } ?? "-" }
-        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))"
+        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))"
     }
 
     /// Human-readable summary of what's baked (for the diagnostics readout).
@@ -93,6 +103,8 @@ public struct MarchSpec: Sendable, Hashable {
         if let hasWarpOps { parts.append(hasWarpOps ? "ops" : "no-ops") }
         if let colorMapMode { parts.append("map=\(colorMapMode)") }
         if let aoEnabled { parts.append(aoEnabled ? "ao" : "no-ao") }
+        if let hasDistanceOps { parts.append(hasDistanceOps ? "dist-ops" : "no-dist-ops") }
+        if let statsEnabled { parts.append(statsEnabled ? "stats" : "no-stats") }
         return parts.joined(separator: ", ")
     }
 }
@@ -104,7 +116,9 @@ extension GPUContext {
     /// the result. The specialized source `#define`s THRESH_SPEC_DE so the DE
     /// is called directly and inlined (and, unlike the generic library,
     /// declares the iteration function constant).
-    func compileSpecializedLibrary(deFunctionName: String) throws -> MTLLibrary {
+    func compileSpecializedLibrary(
+        deFunctionName: String, mathMode: MTLMathMode? = nil
+    ) throws -> MTLLibrary {
         guard DERegistry.builtin.contains(where: { $0.mslFunctionName == deFunctionName })
         else { throw RenderError.missingFunction("not a built-in DE: \(deFunctionName)") }
 
@@ -116,10 +130,12 @@ extension GPUContext {
             + abiHeaderSource + "\n" + core
 
         let options = MTLCompileOptions()
-        // Identical semantics to the generic compile (including the
-        // measurement-seam override — a specialized variant must never differ
-        // from the generic pipeline it replaces).
-        options.mathMode = GPUContext.mathModeOverride ?? .safe
+        // Specialized variants are the PERF pipeline: default to .relaxed
+        // (fast-math re-association/FMA, INF/NaN semantics kept — measured
+        // byte-identical on the corpus scenes, docs/perf-notes.md block 3).
+        // The generic pipeline stays .safe and remains the golden/CPU-
+        // equivalence reference; THRESHOLD_MATH_MODE still overrides both.
+        options.mathMode = mathMode ?? GPUContext.mathModeOverride ?? .relaxed
         do {
             return try device.makeLibrary(source: source, options: options)
         } catch {
@@ -156,9 +172,11 @@ extension GPUContext {
     /// EXPENSIVE (a full library compile) — call off the render thread; the
     /// live session goes through SpecializationCache, which reuses the library.
     public func makeSpecializedMarch(
-        deFunctionName: String, spec: MarchSpec = MarchSpec(), auxOutputs: Bool = false
+        deFunctionName: String, spec: MarchSpec = MarchSpec(),
+        auxOutputs: Bool = false, mathMode: MTLMathMode? = nil
     ) throws -> SpecializedMarch {
-        let library = try compileSpecializedLibrary(deFunctionName: deFunctionName)
+        let library = try compileSpecializedLibrary(
+            deFunctionName: deFunctionName, mathMode: mathMode)
         return try makeSpecializedMarch(
             from: library, deFunctionName: deFunctionName,
             spec: spec, auxOutputs: auxOutputs)

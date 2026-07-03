@@ -52,6 +52,12 @@ public struct DEDescriptor: Sendable, Hashable {
     public let paramLayout: [Param]
     /// Default DE iteration cap (seeds engine slot THRESH_SLOT_ITERATIONS).
     public let defaultIterations: Int
+    /// Safe over-relaxation factor ω for enhanced sphere tracing against this
+    /// DE (legacy per-formula cap table, docs/perf-notes.md block 6): the
+    /// march steps ω·DE and retreats on overshoot. Log-DEs (bulb families)
+    /// overestimate near the set and only tolerate ~1.1; box-fold DEs take
+    /// 1.6. 1.0 = plain sphere tracing.
+    public let stepRelaxation: Float
 
     public init(
         index: UInt32,
@@ -60,7 +66,8 @@ public struct DEDescriptor: Sendable, Hashable {
         mslFunctionName: String,
         equation: String,
         paramLayout: [Param],
-        defaultIterations: Int
+        defaultIterations: Int,
+        stepRelaxation: Float = 1.0
     ) {
         self.index = index
         self.key = key
@@ -69,6 +76,7 @@ public struct DEDescriptor: Sendable, Hashable {
         self.equation = equation
         self.paramLayout = paramLayout
         self.defaultIterations = defaultIterations
+        self.stepRelaxation = stepRelaxation
     }
 }
 
@@ -89,7 +97,8 @@ extension DEDescriptor {
             Param(name: "fixedRadius", default: 1.0, range: 0.05...4.0),
             Param(name: "foldLimit", default: 1.0, range: 0.1...4.0),
         ],
-        defaultIterations: 12
+        defaultIterations: 12,
+        stepRelaxation: 1.6
     )
 
     /// Classic power-N Mandelbulb. Param layout: [power].
@@ -102,7 +111,8 @@ extension DEDescriptor {
         paramLayout: [
             Param(name: "power", default: 8.0, range: 2.0...16.0),
         ],
-        defaultIterations: 12
+        defaultIterations: 12,
+        stepRelaxation: 1.3
     )
 
     /// Knighty's Pseudo Kleinian: box fold + sphere fold with a cylindrical
@@ -126,7 +136,8 @@ extension DEDescriptor {
             Param(name: "maxZ", default: 1.22, range: -2.0...2.0),
             Param(name: "crossRadius", default: 0.84, range: 0.01...4.0),
         ],
-        defaultIterations: 12
+        defaultIterations: 12,
+        stepRelaxation: 1.2
     )
 
     /// Classic Menger sponge (abs + sort fold, scale + offset). The original's
@@ -144,7 +155,8 @@ extension DEDescriptor {
             Param(name: "offsetY", default: 1.0, range: 0.0...4.0),
             Param(name: "offsetZ", default: 1.0, range: 0.0...4.0),
         ],
-        defaultIterations: 12
+        defaultIterations: 12,
+        stepRelaxation: 1.6
     )
 
     /// Quaternion Julia set (q ← q² + c with the running Jacobian norm).
@@ -163,7 +175,8 @@ extension DEDescriptor {
             Param(name: "cW", default: 0.0, range: -2.0...2.0),
             Param(name: "threshold", default: 10.0, range: 1.0...100.0),
         ],
-        defaultIterations: 12
+        defaultIterations: 12,
+        stepRelaxation: 1.3
     )
 
     /// Julia-mode Mandelbulb: the mandelbulb iteration with a fixed additive
@@ -182,7 +195,8 @@ extension DEDescriptor {
             Param(name: "cY", default: -0.15, range: -2.0...2.0),
             Param(name: "cZ", default: 0.35, range: -2.0...2.0),
         ],
-        defaultIterations: 12
+        defaultIterations: 12,
+        stepRelaxation: 1.3
     )
 }
 

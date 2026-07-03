@@ -1,7 +1,9 @@
 // SpecializationTests.swift — the specialized (direct-call, inlined DE)
 // march pipeline is a pure performance overlay: for every built-in it must
-// produce the generic table-dispatch pipeline's image EXACTLY (same source,
-// same safe math mode — inlining may not change a single bit).
+// produce the generic table-dispatch pipeline's image EXACTLY when compiled
+// at the SAME math mode (inlining may not change a single bit). Production
+// specialized variants default to .relaxed for perf — these tests pin .safe
+// so they verify the specialization mechanism, not the math mode.
 
 import Foundation
 import Testing
@@ -38,7 +40,7 @@ struct SpecializationTests {
 
             let generic = try renderer.render(request)
             let variant = try ctx.makeSpecializedMarch(
-                deFunctionName: descriptor.mslFunctionName)
+                deFunctionName: descriptor.mslFunctionName, mathMode: .safe)
             let fast = try renderer.render(request, specialized: variant)
 
             #expect(fast.rgba8 == generic.rgba8,
@@ -57,7 +59,8 @@ struct SpecializationTests {
                 colorMapMode: Int(params[Int(THRESH_SLOT_MAP_MODE)]),
                 aoEnabled: params[Int(THRESH_SLOT_AO_STRENGTH)] > 0)
             let baked = try ctx.makeSpecializedMarch(
-                deFunctionName: descriptor.mslFunctionName, spec: full)
+                deFunctionName: descriptor.mslFunctionName, spec: full,
+                mathMode: .safe)
             let bakedResult = try renderer.render(request, specialized: baked)
             #expect(bakedResult.rgba8 == generic.rgba8,
                     Comment(rawValue: "\(descriptor.key): fully-baked specialization must be invisible"))
@@ -91,7 +94,8 @@ struct SpecializationTests {
             let generic = try renderer.render(request)
             let gated = MarchSpec(hasWarpOps: false, aoEnabled: false)
             let variant = try ctx.makeSpecializedMarch(
-                deFunctionName: descriptor.mslFunctionName, spec: gated)
+                deFunctionName: descriptor.mslFunctionName, spec: gated,
+                mathMode: .safe)
             let result = try renderer.render(request, specialized: variant)
             #expect(result.rgba8 == generic.rgba8,
                     Comment(rawValue: "\(descriptor.key): gated-off (no-ops, no-AO) must be invisible"))

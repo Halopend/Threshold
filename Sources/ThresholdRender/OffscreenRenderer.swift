@@ -102,9 +102,18 @@ public final class OffscreenRenderer: @unchecked Sendable {
         }
         encoder.setTexture(texture, index: Int(THRESH_TEXTURE_OUTPUT))
 
-        let threadsPerGroup = MTLSize(width: 8, height: 8, depth: 1)
-        let groups = MTLSize(width: (request.width + 7) / 8,
-                             height: (request.height + 7) / 8,
+        // Measurement seam: THRESHOLD_TG=WxH overrides the threadgroup shape
+        // for occupancy A/Bs (default 8x8).
+        var tgW = 8, tgH = 8
+        if let raw = ProcessInfo.processInfo.environment["THRESHOLD_TG"] {
+            let parts = raw.split(separator: "x").compactMap { Int($0) }
+            if parts.count == 2, parts[0] > 0, parts[1] > 0 {
+                tgW = parts[0]; tgH = parts[1]
+            }
+        }
+        let threadsPerGroup = MTLSize(width: tgW, height: tgH, depth: 1)
+        let groups = MTLSize(width: (request.width + tgW - 1) / tgW,
+                             height: (request.height + tgH - 1) / tgH,
                              depth: 1)
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerGroup)
         encoder.endEncoding()

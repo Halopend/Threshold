@@ -350,6 +350,8 @@ constant int thresh_max_steps     [[function_constant(2)]];
 constant int thresh_has_ops       [[function_constant(3)]];
 constant int thresh_map_mode      [[function_constant(4)]];
 constant int thresh_ao_enabled    [[function_constant(5)]];
+constant int thresh_has_dist_ops  [[function_constant(6)]];
+constant int thresh_stats_enabled [[function_constant(7)]];
 #endif
 
 // The DE fold-loop bound: the baked compile-time count in a specialized
@@ -358,11 +360,14 @@ constant int thresh_ao_enabled    [[function_constant(5)]];
 // to the SAME number, so specialized output equals generic output.
 static inline int threshDEIterations(thread const ThreshDEContext& ctx) {
 #ifdef THRESH_SPEC_DE
-    return (thresh_de_iterations >= 0) ? thresh_de_iterations
-                                       : int(ctx.params[ctx.paramCount - 1]);
+    int n = (thresh_de_iterations >= 0) ? thresh_de_iterations
+                                        : int(ctx.params[ctx.paramCount - 1]);
 #else
-    return int(ctx.params[ctx.paramCount - 1]);
+    int n = int(ctx.params[ctx.paramCount - 1]);
 #endif
+    // lodScale < 1 → reduced-iteration evaluation (normal/AO taps, perf
+    // round 7 — legacy "cheap gradient" port). Primary march passes 1.
+    return (ctx.lodScale >= 1.0f) ? n : max(1, int(float(n) * ctx.lodScale));
 }
 
 // March step cap: baked compile-time when specialized, else the runtime
@@ -385,6 +390,30 @@ static inline bool threshHasOps(uint runtimeOpCount) {
     return (thresh_has_ops >= 0) ? (thresh_has_ops != 0) : (runtimeOpCount > 0u);
 #else
     return runtimeOpCount > 0u;
+#endif
+}
+
+// Distance-op presence (kind ≥ 64): a stack of pure point ops keeps
+// threshHasOps true but never has work in applyDistanceOps — baking FALSE
+// DCEs that per-mapScene loop (2 device op loads per call otherwise). The
+// loop skips those kinds anyway, so gating it off is bit-identical.
+static inline bool threshHasDistOps(uint runtimeOpCount) {
+#ifdef THRESH_SPEC_DE
+    return (thresh_has_dist_ops >= 0) ? (thresh_has_dist_ops != 0)
+                                      : (runtimeOpCount > 0u);
+#else
+    return runtimeOpCount > 0u;
+#endif
+}
+
+// Stats instrumentation: the per-pixel atomic step-count add is telemetry,
+// not image data — a variant that bakes FALSE drops one device atomic per
+// thread per frame (totalSteps reads back 0). Generic always counts.
+static inline bool threshStatsEnabled() {
+#ifdef THRESH_SPEC_DE
+    return thresh_stats_enabled != 0;   // -1 sentinel (runtime) also counts
+#else
+    return true;
 #endif
 }
 
@@ -429,9 +458,11 @@ static inline bool threshAOEnabled(float aoStrength) {
     const float mR2 = minR * minR;
     const float fR2 = fixR * fixR;
 
+    // Orbit trap tracked SQUARED (min commutes with sqrt) — one sqrt at
+    // return instead of one per iteration (perf round 9).
     float3 z = p;
     float dr = 1.0f;
-    float trap = length(z);
+    float trap2 = dot(z, z);
     for (int i = 0; i < iterations; ++i) {
         // Box fold.
         z = clamp(z, -limit, limit) * 2.0f - z;
@@ -441,10 +472,11 @@ static inline bool threshAOEnabled(float aoStrength) {
         else if (r2 < fR2) { float f = fR2 / r2;  z *= f; dr *= f; }
         z = z * scale + p;
         dr = dr * fabs(scale) + 1.0f;
-        trap = min(trap, length(z));
-        if (dot(z, z) > 1e8f) { break; }   // diverged — further folds are inert
+        float zz = dot(z, z);
+        trap2 = min(trap2, zz);
+        if (zz > 1e8f) { break; }          // diverged — further folds are inert
     }
-    return float2(length(z) / fabs(dr), trap);
+    return float2(length(z) / fabs(dr), sqrt(trap2));
 }
 
 // params: [power] + [iterations]. Classic triplex-power formulation
@@ -455,23 +487,30 @@ static inline bool threshAOEnabled(float aoStrength) {
     const float power = ctx.params[0];
     const int iterations = threshDEIterations(ctx);
 
+    // Trap reuses the loop-top r (was a second length(z) per iteration —
+    // perf round 9): min over |z| at every orbit position is preserved
+    // because each new z's |z| is read at the next loop top (or by the
+    // final post-loop min below).
     float3 z = p;
     float dr = 1.0f;
     float r = length(z);
     float trap = r;
     for (int i = 0; i < iterations; ++i) {
         r = length(z);
+        trap = min(trap, r);
         if (r > 4.0f) { break; }           // escape radius 4
         float rSafe = max(r, 1e-9f);
         float theta = acos(clamp(z.z / rSafe, -1.0f, 1.0f)) * power;
         // atan2(0, 0) is NaN in MSL but 0 in libm (C99 F.9.1.4) — points on
         // the z-axis (e.g. a camera ray origin) must match the CPU reference.
         float phi = (z.y == 0.0f && z.x == 0.0f) ? 0.0f : atan2(z.y, z.x) * power;
-        dr = pow(rSafe, power - 1.0f) * power * dr + 1.0f;
-        float zr = pow(rSafe, power);
+        // One transcendental instead of two: r^power = r^(power-1) · r.
+        float rp = pow(rSafe, power - 1.0f);
+        dr = rp * power * dr + 1.0f;
+        float zr = rp * rSafe;
         z = zr * float3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta)) + p;
-        trap = min(trap, length(z));
     }
+    trap = min(trap, length(z));
     return float2(0.5f * log(max(r, 1e-9f)) * r / dr, trap);
 }
 
@@ -488,7 +527,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 
     float3 z = p;
     float scale = 1.0f;
-    float trap = length(z);
+    float trap2 = dot(z, z);   // squared trap — one sqrt at return (round 9)
 
     for (int i = 0; i < iterations; ++i) {
         z = clamp(z, mins, maxs) * 2.0f - z;
@@ -496,8 +535,9 @@ static inline bool threshAOEnabled(float aoStrength) {
         float k = max(sphereFold / max(r2, 1e-6f), 1.0f);
         z *= k;
         scale *= k;
-        trap = min(trap, length(z));
+        trap2 = min(trap2, dot(z, z));
     }
+    float trap = sqrt(trap2);
 
     float rxy = length(z.xy);
     float de = 0.7f * max(rxy - crossR, rxy * z.z / max(length(z), 1e-6f))
@@ -515,7 +555,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 
     float3 z = p;
     float dr = 1.0f;
-    float trap = length(z);
+    float trap2 = dot(z, z);   // squared trap — one sqrt at return (round 9)
 
     for (int i = 0; i < iterations; ++i) {
         z = fabs(z);
@@ -529,9 +569,9 @@ static inline bool threshAOEnabled(float aoStrength) {
             z.z += offsetScaled.z;
         }
         dr = dr * fabs(scale) + 1.0f;
-        trap = min(trap, length(z));
+        trap2 = min(trap2, dot(z, z));
     }
-    return float2((length(z) - 1.0f) / dr, trap);
+    return float2((length(z) - 1.0f) / dr, sqrt(trap2));
 }
 
 // params: [cX, cY, cZ, cW, threshold] + [iterations]. Quaternion Julia —
@@ -544,7 +584,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 
     float4 q = float4(p, 0.0f);
     float4 dq = float4(1.0f, 0.0f, 0.0f, 0.0f);
-    float trap = length(q);
+    float trap2 = dot(q, q);   // squared trap — one sqrt at return (round 9)
 
     for (int i = 0; i < iterations; ++i) {
         dq = 2.0f * float4(
@@ -557,12 +597,13 @@ static inline bool threshAOEnabled(float aoStrength) {
             2.0f * q.x * q.y,
             2.0f * q.x * q.z,
             2.0f * q.x * q.w) + c;
-        trap = min(trap, length(q));
-        if (dot(q, q) > threshold) { break; }
+        float qq = dot(q, q);
+        trap2 = min(trap2, qq);
+        if (qq > threshold) { break; }
     }
 
     float r = max(length(q), 1e-6f);
-    return float2(0.5f * r * log(r) / max(length(dq), 1e-9f), trap);
+    return float2(0.5f * r * log(r) / max(length(dq), 1e-9f), sqrt(trap2));
 }
 
 // params: [power, cX, cY, cZ] + [iterations]. Julia-mode Mandelbulb (fixed
@@ -581,16 +622,18 @@ static inline bool threshAOEnabled(float aoStrength) {
 
     for (int i = 0; i < iterations; ++i) {
         r = length(z);
+        trap = min(trap, r);
         if (r > 4.0f) { break; }
         float rSafe = max(r, 1e-9f);
         float theta = acos(clamp(z.z / rSafe, -1.0f, 1.0f)) * power;
         // atan2(0, 0): pin to the CPU (libm) value, see de_mandelbulb.
         float phi = (z.y == 0.0f && z.x == 0.0f) ? 0.0f : atan2(z.y, z.x) * power;
-        dr = pow(rSafe, power - 1.0f) * power * dr;
-        float zr = pow(rSafe, power);
+        float rp = pow(rSafe, power - 1.0f);   // r^power = r^(power-1) · r
+        dr = rp * power * dr;
+        float zr = rp * rSafe;
         z = zr * float3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta)) + c;
-        trap = min(trap, length(z));
     }
+    trap = min(trap, length(z));
     return float2(0.5f * log(max(r, 1e-9f)) * r / max(dr, 1e-9f), trap);
 }
 
@@ -610,7 +653,8 @@ static float2 mapScene(float3 worldP,
                        constant ThreshFrameUniforms& U,
                        device const float* params,
                        device const ThreshWarpOp* ops,
-                       visible_function_table<ThreshDE> deTable)
+                       visible_function_table<ThreshDE> deTable,
+                       float iterScale = 1.0f)
 {
     const float modelScale = U.scaleCtx.z;
     // Warp-stack gate: a specialized variant with an empty stack bakes this
@@ -630,7 +674,7 @@ static float2 mapScene(float3 worldP,
     ctx.params = params + U.meta.w;          // DE param slice at deParamOffset
     ctx.paramCount = U.meta.z - U.meta.w;    // slice length (iterations last)
     ctx.time = U.scaleCtx.x;
-    ctx.lodScale = U.scaleCtx.w;
+    ctx.lodScale = U.scaleCtx.w * iterScale;
 
     // Specialization seam (GPUContext.makeSpecializedMarch): a pipeline
     // variant compiled with THRESH_SPEC_DE defined calls that DE DIRECTLY —
@@ -644,7 +688,7 @@ static float2 mapScene(float3 worldP,
     float2 de = deTable[U.meta.y](q, ctx);
 #endif
     float d = de.x / dScale;
-    if (hasOps) {
+    if (hasOps && threshHasDistOps(U.meta.x)) {
         d = applyDistanceOps(worldP, d, ops, U.meta.x);
     }
     return float2(d, de.y);
@@ -715,24 +759,37 @@ static float3 applyGrading(float3 c, device const float* params) {
     // Contrast pivoted at mid-gray.
     c = (c - 0.5f) * contrast + 0.5f;
     c = max(c, 0.0f);
-    c = mix(c, acesFilmic(c), clamp(tonemap, 0.0f, 1.0f));
-    c = pow(max(c, 0.0f), float3(1.0f / max(gamma, 1e-3f)));
+    // Identity fast paths (perf round 14): tonemap 0 / gamma 1 are the
+    // catalog defaults — skip the ACES polynomial and the 3 pows there.
+    // Branches are uniform across the frame (engine params), so no
+    // divergence; results are identical at the defaults.
+    if (tonemap > 0.0f) {
+        c = mix(c, acesFilmic(c), clamp(tonemap, 0.0f, 1.0f));
+    }
+    if (gamma != 1.0f) {
+        c = pow(max(c, 0.0f), float3(1.0f / max(gamma, 1e-3f)));
+    }
     return clamp(c, 0.0f, 1.0f);
 }
 
-// Tetrahedron-technique normal of the SAME mapScene (Invariant 7 — never a
-// second hand-unrolled gradient sweep).
-static float3 calcNormal(float3 pos, float h,
+// Forward-difference normal of the SAME mapScene (Invariant 7 — never a
+// second hand-unrolled gradient sweep). 3 taps against the hit point's own
+// DE value d0 (perf round 12; was the 4-tap tetrahedron), evaluated at
+// reduced fold iterations (perf round 10) — the normal needs local surface
+// orientation, not full fold depth. Shading-only.
+static float3 calcNormal(float3 pos, float h, float d0,
                          constant ThreshFrameUniforms& U,
                          device const float* params,
                          device const ThreshWarpOp* ops,
                          visible_function_table<ThreshDE> deTable)
 {
-    const float2 k = float2(1.0f, -1.0f);
-    return normalize(k.xyy * mapScene(pos + k.xyy * h, U, params, ops, deTable).x +
-                     k.yyx * mapScene(pos + k.yyx * h, U, params, ops, deTable).x +
-                     k.yxy * mapScene(pos + k.yxy * h, U, params, ops, deTable).x +
-                     k.xxx * mapScene(pos + k.xxx * h, U, params, ops, deTable).x);
+    const float NI = 0.6f;
+    float3 g = float3(
+        mapScene(pos + float3(h, 0.0f, 0.0f), U, params, ops, deTable, NI).x,
+        mapScene(pos + float3(0.0f, h, 0.0f), U, params, ops, deTable, NI).x,
+        mapScene(pos + float3(0.0f, 0.0f, h), U, params, ops, deTable, NI).x) - d0;
+    float len = length(g);
+    return (len > 1e-12f) ? g / len : float3(0.0f, 1.0f, 0.0f);
 }
 
 // Cheap 5-tap ambient occlusion along the normal, scaled by aoStrength.
@@ -744,14 +801,14 @@ static float cheapAO(float3 pos, float3 n, float aoStrength, float featureScale,
                      device const ThreshWarpOp* ops,
                      visible_function_table<ThreshDE> deTable)
 {
-    float occ = 0.0f;
-    float sca = 1.0f;
-    for (int i = 1; i <= 5; ++i) {
-        float h = (0.01f + 0.12f * float(i)) * featureScale;
-        float d = mapScene(pos + n * h, U, params, ops, deTable).x;
-        occ += (h - d) * sca;
-        sca *= 0.7f;
-    }
+    // 2 probes (was 5 → 3 → 2, perf rounds 3/13): near + far occlusion
+    // sample over the same [0.13, 0.61] walk, weights re-tuned to keep the
+    // overall darkening in the original range. Shading-only.
+    float h1 = 0.16f * featureScale;
+    float h2 = 0.55f * featureScale;
+    float d1 = mapScene(pos + n * h1, U, params, ops, deTable, 0.5f).x;
+    float d2 = mapScene(pos + n * h2, U, params, ops, deTable, 0.5f).x;
+    float occ = (h1 - d1) * 1.45f + (h2 - d2) * 0.65f;
     return clamp(1.0f - 1.5f * aoStrength * occ, 0.0f, 1.0f);
 }
 
@@ -799,6 +856,7 @@ static inline ThreshMarchResult marchShade(
     float t = 0.0f;
     float hitEps = 0.0f;
     float trap = 0.0f;
+    float hitRadius = 0.0f;   // DE value at the accepted hit (normal center)
     bool hit = false;
     bool bad = false;
     uint steps = 0;
@@ -830,7 +888,9 @@ static inline ThreshMarchResult marchShade(
         prevRadius = radius;
         hitEps = epsBase * t;   // distance-proportional (cone) epsilon —
                                 // scale-invariant: dm.x is already world-space
-        if (!sorFail && radius < hitEps) { hit = true; trap = dm.y; break; }
+        if (!sorFail && radius < hitEps) {
+            hit = true; trap = dm.y; hitRadius = radius; break;
+        }
         t += stepLength;
         if (t > maxDist) { break; }
     }
@@ -841,7 +901,10 @@ static inline ThreshMarchResult marchShade(
     } else if (hit) {
         float3 pos = ro + rd * t;
         float nEps = max(hitEps, 1e-4f * featureScale);
-        float3 n = calcNormal(pos, nEps, U, params, ops, deTable);
+        // Center value for the forward difference: the march's own DE value
+        // at the hit. It is full-iteration while the taps are reduced — a
+        // small constant bias that mostly normalizes away; costs zero taps.
+        float3 n = calcNormal(pos, nEps, hitRadius, U, params, ops, deTable);
         float3 lightDir = normalize(float3(1.0f, 0.8f, 0.6f));
         float lambert = max(dot(n, lightDir), 0.0f);
 
@@ -945,8 +1008,11 @@ kernel void march_offscreen(
 
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette);
 
-    // Per-thread step count added ONCE into the device stats counter.
-    atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+    // Per-thread step count added ONCE into the device stats counter
+    // (baked off in benchmark variants — pure telemetry).
+    if (threshStatsEnabled()) {
+        atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+    }
 
     outTex.write(m.color, gid);
 
