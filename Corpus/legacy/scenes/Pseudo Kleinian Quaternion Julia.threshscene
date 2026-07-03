@@ -1,0 +1,225 @@
+{
+  "id": "D3B14883-7F39-542C-BE66-DC7DB104D952",
+  "name": "Pseudo Kleinian Quaternion Julia",
+  "createdAt": "2026-06-28T00:00:00Z",
+  "rating": 0,
+  "fractalType": "custom",
+  "fractalIterations": 10,
+  "colorIterations": 8.0,
+  "maxRaySteps": 160,
+  "minDistance": 0.08,
+  "colorMix": 0.55,
+  "position": [
+    0.0,
+    0.0,
+    -6.0
+  ],
+  "scale": 1.0,
+  "detailScale": 1.0,
+  "fractalScale": 2.8,
+  "foldingLimit": 1.0,
+  "sphereRadius": 0.5,
+  "colorScheme": "rainbow",
+  "colorSchemeSaturation": 1.5,
+  "colorSchemeContrast": 1.08,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeVibrance": 0.9,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeHighlights": 0.03,
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.22,
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.14
+  },
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "safetyBubbleBlend": 0.0,
+  "resolutionScale": 1.0,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0,
+  "formulaParamValues": [
+    1.0,
+    -1.0,
+    0.3669,
+    -0.32374,
+    10.0,
+    5.0,
+    10.0,
+    0.93912,
+    0.22428,
+    0.97196,
+    0.07476,
+    -2.0,
+    -0.000377293,
+    -0.50792,
+    -1.0,
+    0.0
+  ],
+  "embeddedFormula": {
+    "schemaVersion": 1,
+    "id": "com.puppypower.threshold.embedded.pseudokleinianqjulia",
+    "name": "Pseudo Kleinian Quaternion Julia",
+    "category": "Kleinian / Quaternion",
+    "author": "Knighty (Fragmentarium), ported by Threshold",
+    "description": "Knighty/Theli-at scale-1 Pseudo-Kleinian Julia box (sphere-fold + box-fold IFS) whose inner basic shape is a 4D quaternion Julia distance estimator (cross-product/full-quaternion form). The Kleinian box folds space MI times (clamp to CSize, sphere inversion by Size/r^2, translate by C), then multiplies a plane (p.z - OffsetZ) by the quaternion-Julia DE1 evaluated at the folded point, scaled by the accumulated fold factor. Produces filigree Kleinian shells wrapped around a quaternion-Julia core.",
+    "functionStem": "PseudoKleinianQJulia",
+    "metalSource": "// ============================================================================\n// Pseudo Kleinian Quaternion Julia\n// Port of Knighty / Theli-at PseudoKleinian_4D_Quaternion_Julia.frag\n//   DE = Thing2(p): scale-1 Julia box (MI folds) -> basic shape = plane * DE1\n//   DE1 = 4D quaternion Julia (cross-product / full-quaternion square form)\n// ============================================================================\n\n// --- DE1: 4D quaternion Julia (matches source DE1, cross-product form) ---\nFORCE_INLINE float PseudoKleinianQJulia_de1(float3 pos, float4 jC, int jIterations, float jThreshold,\n                                            thread float& trap, thread int& trapIter, thread float3& trapPos,\n                                            int colorIterations) {\n    float4 p = float4(pos, 0.0f);\n    float4 dp = float4(1.0f, 0.0f, 0.0f, 0.0f);\n    int n = clamp(jIterations, 0, 100);\n    for (int i = 0; i < n; ++i) {\n        // dp = 2 * (q * dq):  scalar = p.x*dp.x - p.yzw.dp.yzw ; vec = p.x*dp.yzw + dp.x*p.yzw + p.yzw x dp.yzw\n        float ds = p.x * dp.x - dot(p.yzw, dp.yzw);\n        float3 dv = p.x * dp.yzw + dp.x * p.yzw + cross(p.yzw, dp.yzw);\n        dp = 2.0f * float4(ds, dv);\n        // p = (p.x^2 - p.yzw.p.yzw, 2*p.x*p.yzw) + jC\n        p = float4(p.x * p.x - dot(p.yzw, p.yzw), 2.0f * p.x * p.yzw) + jC;\n        float p2 = dot(p, p);\n        // orbitTrap = min(orbitTrap, abs(vec4(p.xyz, p2))) -> track min r2 of p.xyz\n        float r2 = dot(p.xyz, p.xyz);\n        UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, colorIterations, p.xyz);\n        if (p2 > jThreshold) break;\n    }\n    float r = length(p);\n    float safeR = max(r, 1e-6f);\n    return 0.5f * safeR * log(safeR) / max(length(dp), 1e-6f);\n}\n\nFORCE_INLINE float PseudoKleinianQJulia_de1_dist(float3 pos, float4 jC, int jIterations, float jThreshold) {\n    float4 p = float4(pos, 0.0f);\n    float4 dp = float4(1.0f, 0.0f, 0.0f, 0.0f);\n    int n = clamp(jIterations, 0, 100);\n    for (int i = 0; i < n; ++i) {\n        float ds = p.x * dp.x - dot(p.yzw, dp.yzw);\n        float3 dv = p.x * dp.yzw + dp.x * p.yzw + cross(p.yzw, dp.yzw);\n        dp = 2.0f * float4(ds, dv);\n        p = float4(p.x * p.x - dot(p.yzw, p.yzw), 2.0f * p.x * p.yzw) + jC;\n        if (dot(p, p) > jThreshold) break;\n    }\n    float r = length(p);\n    float safeR = max(r, 1e-6f);\n    return 0.5f * safeR * log(safeR) / max(length(dp), 1e-6f);\n}\n\n// --- Full DE: Kleinian Julia box wrapping DE1, with orbit tracking ---\nFORCE_INLINE float DE_PseudoKleinianQJulia(float3 pos, FormulaParams fp, float3x3 rot,\n                                           int iterations, int colorIterations,\n                                           thread OrbitData& orbit) {\n    float4 jC = float4(fp.params[0], fp.params[1], fp.params[2], fp.params[3]);\n    int jIterations = clamp(int(round(fp.params[4])), 0, 100);\n    float jThreshold = max(fp.params[5], 1e-4f);\n    int MI = clamp(int(round(fp.params[6])), 0, 40);\n    float Size = fp.params[7];\n    float3 CSize = float3(fp.params[8], fp.params[9], fp.params[10]);\n    float3 C = float3(fp.params[11], fp.params[12], fp.params[13]);\n    float offsetZ = fp.params[14];\n    const float DEoffset = 0.0f; // baked: source Default DEoffset = 0\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = pos;\n\n    float DEfactor = 1.0f;\n    int n = clamp(MI, 0, 40);\n    for (int i = 0; i < n; ++i) {\n        // box fold: p = 2*clamp(p,-CSize,CSize) - p\n        p = 2.0f * clamp(p, -CSize, CSize) - p;\n        float r2 = dot(p, p);\n        UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, colorIterations, p);\n        // sphere fold: k = max(Size/r2, 1)\n        float k = max(Size / max(r2, 1e-12f), 1.0f);\n        p *= k;\n        DEfactor *= k;\n        p += C;\n        UpdateTrapMinR2(trap, trapIter, trapPos, dot(p, p), i, colorIterations, p);\n    }\n\n    // Active basic shape (last uncommented in source):\n    //   abs(0.5*abs((p.z - Offset.z)*DE1(p))/DEfactor - DEoffset)\n    float de1 = PseudoKleinianQJulia_de1(p, jC, jIterations, jThreshold, trap, trapIter, trapPos, colorIterations);\n    float d = abs(0.5f * abs((p.z - offsetZ) * de1) / max(abs(DEfactor), 1e-9f) - DEoffset);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p;\n    orbit.iterationsUsed = n;\n    return d;\n}\n\n// --- Lean distance-only variant (same math, no orbit writes) ---\nFORCE_INLINE float DE_PseudoKleinianQJulia_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float4 jC = float4(fp.params[0], fp.params[1], fp.params[2], fp.params[3]);\n    int jIterations = clamp(int(round(fp.params[4])), 0, 100);\n    float jThreshold = max(fp.params[5], 1e-4f);\n    int MI = clamp(int(round(fp.params[6])), 0, 40);\n    float Size = fp.params[7];\n    float3 CSize = float3(fp.params[8], fp.params[9], fp.params[10]);\n    float3 C = float3(fp.params[11], fp.params[12], fp.params[13]);\n    float offsetZ = fp.params[14];\n    const float DEoffset = 0.0f;\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float DEfactor = 1.0f;\n    int n = clamp(MI, 0, 40);\n    for (int i = 0; i < n; ++i) {\n        p = 2.0f * clamp(p, -CSize, CSize) - p;\n        float r2 = dot(p, p);\n        float k = max(Size / max(r2, 1e-12f), 1.0f);\n        p *= k;\n        DEfactor *= k;\n        p += C;\n    }\n\n    float de1 = PseudoKleinianQJulia_de1_dist(p, jC, jIterations, jThreshold);\n    return abs(0.5f * abs((p.z - offsetZ) * de1) / max(abs(DEfactor), 1e-9f) - DEoffset);\n}",
+    "params": [
+      {
+        "index": 0,
+        "name": "Julia C.x",
+        "default": 1,
+        "min": -1,
+        "max": 1,
+        "step": 0.001
+      },
+      {
+        "index": 1,
+        "name": "Julia C.y",
+        "default": -1,
+        "min": -1,
+        "max": 1,
+        "step": 0.001
+      },
+      {
+        "index": 2,
+        "name": "Julia C.z",
+        "default": 0.3669,
+        "min": -1,
+        "max": 1,
+        "step": 0.001
+      },
+      {
+        "index": 3,
+        "name": "Julia C.w",
+        "default": -0.32374,
+        "min": -1,
+        "max": 1,
+        "step": 0.001
+      },
+      {
+        "index": 4,
+        "name": "Julia Iterations",
+        "default": 10,
+        "min": 0,
+        "max": 16,
+        "step": 1
+      },
+      {
+        "index": 5,
+        "name": "Julia Threshold",
+        "default": 5,
+        "min": 0,
+        "max": 100,
+        "step": 0.1
+      },
+      {
+        "index": 6,
+        "name": "Box Iterations (MI)",
+        "default": 10,
+        "min": 0,
+        "max": 20,
+        "step": 1
+      },
+      {
+        "index": 7,
+        "name": "Size",
+        "default": 0.93912,
+        "min": 0,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 8,
+        "name": "CSize.x",
+        "default": 0.22428,
+        "min": 0,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 9,
+        "name": "CSize.y",
+        "default": 0.97196,
+        "min": 0,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 10,
+        "name": "CSize.z",
+        "default": 0.07476,
+        "min": 0,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 11,
+        "name": "C.x",
+        "default": -2,
+        "min": -4,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 12,
+        "name": "C.y",
+        "default": -0.000377293,
+        "min": -4,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 13,
+        "name": "C.z",
+        "default": -0.50792,
+        "min": -4,
+        "max": 4,
+        "step": 0.001
+      },
+      {
+        "index": 14,
+        "name": "Offset.z",
+        "default": -1,
+        "min": -1,
+        "max": 1,
+        "step": 0.001
+      }
+    ],
+    "defaultIterations": 10,
+    "defaultColorIterations": 8,
+    "supportedEffectTags": [
+      "safetyBubble"
+    ]
+  }
+}

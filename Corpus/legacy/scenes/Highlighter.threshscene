@@ -1,0 +1,346 @@
+{
+  "aoStrength" : 0.67352706,
+  "audioReactiveConfig" : {
+    "bassSensitivity" : 1,
+    "beatSensitivity" : 1,
+    "fractalAudioAmount" : 0.25,
+    "fractalAudioDamping" : 0,
+    "fractalAudioReactiveEnabled" : true,
+    "fractalBeatPunch" : 0.3,
+    "midSensitivity" : 1,
+    "musicReactiveMappings" : [
+      {
+        "amount" : 1,
+        "hybridCombo" : 0.35,
+        "id" : "980C7FCD-4DD2-49BD-9043-BE79D811C1E6",
+        "isEnabled" : true,
+        "lfo" : {
+          "amplitude" : 0.2,
+          "enabled" : false,
+          "frequency" : 0.1,
+          "shape" : "sine"
+        },
+        "responseCurve" : "drift",
+        "smoothingWindow" : 0,
+        "source" : "composite",
+        "spaceWarpField" : "strength",
+        "target" : "gradientOffset"
+      }
+    ],
+    "trebleSensitivity" : 1,
+    "tripletMusicGains" : {
+
+    }
+  },
+  "beatFlashEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "bloomEffect" : {
+    "enabled" : false,
+    "strength" : 0
+  },
+  "cellShadingEnabled" : false,
+  "cellShadingLevels" : 4,
+  "colorIterations" : 8,
+  "colorMix" : 0.55,
+  "colorScheme" : "classic",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.0822414,
+  "colorSchemeCurve" : -0.44813573,
+  "colorSchemeGamma" : 0.85,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 1.7,
+  "colorSchemeShadows" : 0.0241513,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2026-07-01T23:16:08Z",
+  "detailScale" : 0.47499868,
+  "embeddedFormula" : {
+    "author" : "Knighty (Fragmentarium), ported by Threshold",
+    "category" : "Kleinian",
+    "defaultColorIterations" : 3,
+    "defaultIterations" : 9,
+    "description" : "Knighty's pseudo-knightyan: a clamp box-fold plus sphere inversion with a cylindrical cross-section distance estimate. The CSize vector sets the per-axis box-fold half-width, Size drives the sphere fold, DEfactor seeds the derivative accumulator (a smooth-blob knob via the +0.05 term), and TwiddleRXY pinches the cylindrical radius. Lives near the origin; orbit-trap colored on the folded position.",
+    "functionStem" : "PseudoKnightyan",
+    "id" : "com.puppypower.threshold.embedded.pseudoknightyan",
+    "metalSource" : "\/\/ Pseudo Knightyan (Knighty) — clamp box-fold + sphere inversion, cylindrical DE.\n\/\/ Source: Fragmentarium PseudoKnightyan.frag (DE only; raytracer extras ignored).\n\/\/ Params: [0-2]=CSize.xyz, [3]=Size, [4]=DEfactor, [5]=TwiddleRXY.\n\/\/ Iter -> iterations, ColorIterations -> colorIterations (NOT params).\n\/\/ NOTE: derivative accumulates as j *= (k + 0.05), seeded by DEfactor; final\n\/\/       DE = max(rxy - TwiddleRXY, abs(rxy*p.z)\/len(p)) \/ j  (no 0.7 fudge).\n\nFORCE_INLINE float DE_PseudoKnightyan(float3 pos, FormulaParams fp, float3x3 rot,\n                                      int iterations, int colorIterations,\n                                      thread OrbitData& orbit) {\n    float3 cSize    = max(abs(float3(fp.params[0], fp.params[1], fp.params[2])), float3(1e-4f));\n    float3 negCSize = -cSize;\n    float  size     = fp.params[3];\n    float  deFactor = fp.params[4];\n    float  twiddle  = fp.params[5];\n    bool hasRotation = hasRot1Precomputed(fp);\n\n    float3 p = pos;\n    float j = (deFactor != 0.0f) ? deFactor : 1.0f;\n\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = pos;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    int n = clamp(iterations, 0, 200);\n    int i = 0;\n    if (hasRotation) {\n        for (; i < n; ++i) {\n            p = rot * p;\n            \/\/ Box fold: 2*clamp(p,-CSize,CSize) - p\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            \/\/ Sphere fold: k = max(Size\/dot(p,p), 1)\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n            if (i < trapIterations) {\n                float r2 = dot(p, p);\n                if (r2 < trap) { trap = r2; trapIter = i; trapPos = p; }\n            }\n        }\n    } else {\n        for (; i < n; ++i) {\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n            if (i < trapIterations) {\n                float r2 = dot(p, p);\n                if (r2 < trap) { trap = r2; trapIter = i; trapPos = p; }\n            }\n        }\n    }\n\n    float rxy = length(p.xy);\n    float lenP = max(length(p), 1e-6f);\n    float de = max(rxy - twiddle, abs(rxy * p.z) \/ lenP) \/ max(abs(j), 1e-6f);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p;\n    orbit.iterationsUsed = i;\n\n    return de;\n}\n\nFORCE_INLINE float DE_PseudoKnightyan_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float3 cSize    = max(abs(float3(fp.params[0], fp.params[1], fp.params[2])), float3(1e-4f));\n    float3 negCSize = -cSize;\n    float  size     = fp.params[3];\n    float  deFactor = fp.params[4];\n    float  twiddle  = fp.params[5];\n    bool hasRotation = hasRot1Precomputed(fp);\n\n    float3 p = pos;\n    float j = (deFactor != 0.0f) ? deFactor : 1.0f;\n\n    int n = clamp(iterations, 0, 200);\n    if (hasRotation) {\n        for (int i = 0; i < n; ++i) {\n            p = rot * p;\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n        }\n    } else {\n        for (int i = 0; i < n; ++i) {\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n        }\n    }\n\n    float rxy = length(p.xy);\n    float lenP = max(length(p), 1e-6f);\n    return max(rxy - twiddle, abs(rxy * p.z) \/ lenP) \/ max(abs(j), 1e-6f);\n}\n",
+    "name" : "Pseudo Knightyan",
+    "params" : [
+      {
+        "default" : 0.485771,
+        "index" : 0,
+        "max" : 2,
+        "min" : -2,
+        "name" : "CSize X",
+        "step" : 0.001
+      },
+      {
+        "default" : 0.8034414,
+        "index" : 1,
+        "max" : 2,
+        "min" : -2,
+        "name" : "CSize Y",
+        "step" : 0.001
+      },
+      {
+        "default" : 1.062872,
+        "index" : 2,
+        "max" : 2,
+        "min" : -2,
+        "name" : "CSize Z",
+        "step" : 0.001
+      },
+      {
+        "default" : 0.70968,
+        "index" : 3,
+        "max" : 2,
+        "min" : -2,
+        "name" : "Size",
+        "step" : 0.001
+      },
+      {
+        "default" : 1,
+        "index" : 4,
+        "max" : 10,
+        "min" : 0,
+        "name" : "DEfactor",
+        "step" : 0.01
+      },
+      {
+        "default" : 0.8412322,
+        "index" : 5,
+        "max" : 2,
+        "min" : -2,
+        "name" : "TwiddleRXY",
+        "step" : 0.001
+      }
+    ],
+    "schemaVersion" : 1,
+    "supportedEffectTags" : [
+      "safetyBubble"
+    ]
+  },
+  "fogEffect" : {
+    "colorBlue" : 0.02,
+    "colorGreen" : 0.015,
+    "colorRed" : 0.01,
+    "enabled" : true,
+    "hueRotateEnabled" : false,
+    "hueRotateSpeed" : 0.1,
+    "intensity" : 0.32
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    0.98586667,
+    -0.92555875,
+    -0.13753694,
+    0.6416264,
+    1,
+    0.8412322,
+    0,
+    0,
+    3.7579134,
+    3.9682438,
+    0.5085934,
+    1.9430197,
+    -0.06694238,
+    2.3322213,
+    0,
+    0
+  ],
+  "fractalIterations" : 5,
+  "fractalScale" : 2.8,
+  "fractalType" : "custom",
+  "glowEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.07908512
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "0CA57000-1B2B-4CA3-A8C4-E803A90A80FD",
+      "mappingMode" : 5,
+      "name" : "Classic",
+      "offset" : 0.0139207505,
+      "repeatCount" : 1.62572,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "CCA23214-4749-4AC9-BB59-6AF7EC9181F5",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "8892C1D1-2477-4B11-9C08-40F0D2610A75",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "C4B4F6F8-7CB8-4154-90F4-4F7203D0B764",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "2134E5CF-9768-406E-BC99-1742D03AB092",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "4AF9BA6E-152F-44A1-BF25-845AEBD0EDB3",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 0.91782963,
+    "speed" : 0.03017017
+  },
+  "id" : "C8A154BE-036A-46C3-95D6-45E15B5669DA",
+  "juliaDriftEffect" : {
+    "enabled" : false,
+    "speed" : 0
+  },
+  "lightVariationRate" : 0.6074416,
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "linearRailEffect" : {
+    "amplitude" : 0,
+    "axis" : "z",
+    "enabled" : false,
+    "multiplier" : 1,
+    "orbitAmount" : 0,
+    "orbitSpeed" : 0.18,
+    "speed" : 0
+  },
+  "maxRaySteps" : 200,
+  "minDistance" : 0.08000652,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "980C7FCD-4DD2-49BD-9043-BE79D811C1E6",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "responseCurve" : "drift",
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "spaceWarpField" : "strength",
+      "target" : "gradientOffset"
+    }
+  ],
+  "name" : "Highlighter",
+  "platformEnabled" : true,
+  "platformRadius" : 0.94279927,
+  "polarRotationEffect" : {
+    "direction" : "off",
+    "speed" : 0
+  },
+  "position" : [
+    1.4242096,
+    2.0696378,
+    -3.6898613
+  ],
+  "pulseEffect" : {
+    "amount" : 0.35323426,
+    "enabled" : false,
+    "speed" : 0.45989713
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.5,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleFadeEnabled" : true,
+  "safetyBubbleFadeWidth" : 0.1,
+  "safetyBubbleRadius" : 1.8,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "spaceWarpOps" : [
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "CFCFA97D-F67D-4E4F-B9B9-B182A3A87E45",
+      "isEnabled" : true,
+      "p1" : 4,
+      "p2" : 3,
+      "strength" : 1,
+      "type" : 11
+    },
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "295B77CF-60BB-4554-8B3E-1B46B986C9FA",
+      "isEnabled" : true,
+      "p1" : 1,
+      "p2" : 0,
+      "strength" : 1,
+      "type" : 5
+    },
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "30E57387-F4F3-4D98-8FDE-011A58911D43",
+      "isEnabled" : false,
+      "p1" : 2.06421,
+      "p2" : 0,
+      "strength" : 1,
+      "type" : 10
+    }
+  ],
+  "sphereProjectionBlend" : 1,
+  "sphereProjectionEnabled" : false,
+  "sphereProjectionRadius" : 1,
+  "sphereRadius" : 0.5,
+  "sphericalInversionMode" : "off",
+  "sphericalInversionRadius" : 2,
+  "tileSize" : 0,
+  "tonemapStrength" : 0,
+  "worldRotationW" : 0.8133252,
+  "worldRotationX" : -0.015763182,
+  "worldRotationY" : 0.5777983,
+  "worldRotationZ" : -0.06635351
+}

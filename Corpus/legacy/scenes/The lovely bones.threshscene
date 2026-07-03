@@ -1,0 +1,153 @@
+{
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.5
+  },
+  "colorIterations" : 8,
+  "colorMix" : 1,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : -0.50287884,
+  "colorSchemeGamma" : 0.46,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 1.7,
+  "colorSchemeShadows" : -0.03769037,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.43247145,
+  "createdAt" : "2026-04-29T23:39:07Z",
+  "detailScale" : 1.8054303,
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.32
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    -0.6153722,
+    -0.13598599,
+    -1.5147779,
+    3,
+    1.5254618,
+    0.14940819,
+    -0.2705397,
+    1.5612423,
+    1.9928894,
+    2.9945393,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 6,
+  "fractalScale" : 2.6275954,
+  "fractalType" : "kleinian",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.7
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.15
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "554737BE-3718-47CB-AF99-EF8C9702D735",
+      "mappingMode" : 4,
+      "name" : "Mono",
+      "offset" : 0.433121,
+      "repeatCount" : 2.9101272,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.02,
+            0.02,
+            0.03
+          ],
+          "id" : "53832366-68BD-4362-AC28-F00F4A4DACF3",
+          "position" : 0
+        },
+        {
+          "color" : [
+            0.5,
+            0.5,
+            0.55
+          ],
+          "id" : "5367ACF6-E213-48D5-9EF2-8948882CFC33",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            1,
+            0.95
+          ],
+          "id" : "85FB8CAA-80AE-4E1B-A7F7-014AAAF9D89C",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "mono"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 1,
+    "speed" : 0.28515914
+  },
+  "id" : "D8CD0FBF-6A51-4C17-AD2E-7328FFA83261",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "maxRaySteps" : 32,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 0.52008045,
+      "hybridCombo" : 0.8347996,
+      "id" : "E1A0B3A7-A404-4917-B23A-CA3062E033AC",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 1.288,
+      "rangeMin" : 0.09200001,
+      "responseCurve" : "sinusoidal",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.8681923,
+      "source" : "composite",
+      "target" : "formulaParam3"
+    }
+  ],
+  "name" : "The lovely bones",
+  "position" : [
+    0.78112584,
+    0.39266533,
+    -4.092888
+  ],
+  "pulseEffect" : {
+    "amount" : 0.5,
+    "enabled" : true,
+    "speed" : 1
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.5,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 1.8,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 0,
+  "worldRotationW" : 0.5624675,
+  "worldRotationX" : -0.3913322,
+  "worldRotationY" : 0.628579,
+  "worldRotationZ" : -0.36793727
+}

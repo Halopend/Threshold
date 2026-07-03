@@ -35,8 +35,10 @@ public struct SceneMigration: Sendable {
 
 public enum SceneMigrations {
     /// The ordered production migration table. Append-only; unit-tested
-    /// against the legacy corpus in Corpus/ (plan §9) once captured.
-    public static let table: [SceneMigration] = []
+    /// against the legacy corpus in Corpus/legacy/ (plan §9).
+    public static let table: [SceneMigration] = [
+        LegacyScene.migration  // 0 → 1: original-app flat format
+    ]
 }
 
 // MARK: - Apply report
@@ -87,6 +89,12 @@ public enum SceneCodec {
         }
         guard case .object(var tree) = root else {
             throw SceneCodecError.malformed("scene root is not an object")
+        }
+        // Original-app files (Corpus/legacy/) have no `version` field — they
+        // predate the envelope. A version-less tree bearing the legacy
+        // signature is version 0; anything else version-less is malformed.
+        if tree["version"] == nil, LegacyScene.isLegacyTree(tree) {
+            tree["version"] = .number(0)
         }
         guard case .number(let rawVersion)? = tree["version"] else {
             throw SceneCodecError.malformed("scene envelope missing numeric version")

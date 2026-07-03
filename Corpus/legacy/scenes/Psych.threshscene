@@ -1,0 +1,271 @@
+{
+  "bloomEffect" : {
+    "enabled" : false,
+    "strength" : 0
+  },
+  "colorIterations" : 8,
+  "colorMix" : 1,
+  "colorScheme" : "classic",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.08,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.85,
+  "colorSchemeHighlights" : 0.02,
+  "colorSchemeSaturation" : 1.7,
+  "colorSchemeShadows" : -0.018,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.8,
+  "createdAt" : "2026-04-27T02:02:36Z",
+  "detailScale" : 1,
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.32
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    1.1442827,
+    1,
+    3.4507391,
+    2.8,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 8,
+  "fractalScale" : 2.8,
+  "fractalType" : "mandelboxSphereProjection",
+  "glowEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.20063555
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "02ADCDF5-3142-440B-B4CC-7790A0A29587",
+      "mappingMode" : 5,
+      "name" : "Classic",
+      "offset" : 0,
+      "repeatCount" : 1,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "5C38E7E0-D753-476C-8449-13F6A49E0148",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "78128E12-B789-44D5-A43C-563278854F81",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "5D74B0FB-FB63-4878-AB7D-F62F2DA06FE7",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "33B4BFFE-91EF-4F42-85A0-8DF670ACBF60",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "16202B16-18C6-496D-9594-E51450751C6D",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 1,
+    "speed" : 0.25713181
+  },
+  "id" : "6462DAA4-AA84-4EBC-B278-CF5CE7DB6481",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "maxRaySteps" : 56,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "7CB4F2EE-C08B-4844-9734-AD947F9D2DEE",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.9,
+      "rangeMin" : 0.2,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "colorMix"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "EB9ACA26-56ED-4832-9F15-59D2AF735F9C",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.5,
+      "rangeMin" : 0.05,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "fog"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "65A6D3DF-591B-473D-BE9B-3902167304BC",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.25,
+      "rangeMin" : 0.02,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "hueSpeed"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "D771E34C-E13D-48F5-8063-B21613EF9E62",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 2,
+      "rangeMin" : 0.8,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "saturation"
+    },
+    {
+      "amount" : 0.24649996,
+      "hybridCombo" : 0.35,
+      "id" : "6D9F4ADE-F2F5-4275-B693-D2F74C864DA5",
+      "isEnabled" : false,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 4.8,
+      "rangeMin" : -3.2,
+      "responseCurve" : "sinusoidal",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.85877085,
+      "source" : "composite",
+      "target" : "formulaParam0"
+    },
+    {
+      "amount" : 0.45174846,
+      "hybridCombo" : 0.35,
+      "id" : "AC52549E-E9B7-4C79-9E07-187B7E80EE4D",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 9,
+      "rangeMin" : -7,
+      "responseCurve" : "sinusoidal",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 1.463169,
+      "source" : "bass",
+      "target" : "formulaParam1"
+    }
+  ],
+  "name" : "Psych",
+  "position" : [
+    0.025575759,
+    1.4128885,
+    -0.73398924
+  ],
+  "pulseEffect" : {
+    "amount" : 0,
+    "enabled" : false,
+    "speed" : 0
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 1,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 1.977137,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 0,
+  "worldRotationW" : 1,
+  "worldRotationX" : 0,
+  "worldRotationY" : 0,
+  "worldRotationZ" : 0
+}

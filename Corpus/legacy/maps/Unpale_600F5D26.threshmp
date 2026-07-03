@@ -1,0 +1,338 @@
+{
+  "audioReactiveConfig" : {
+    "bassSensitivity" : 1,
+    "beatSensitivity" : 1,
+    "fractalAudioAmount" : 0.7247243,
+    "fractalAudioDamping" : 0.8861397,
+    "fractalAudioReactiveEnabled" : true,
+    "fractalBeatPunch" : 0.3,
+    "midSensitivity" : 1,
+    "musicReactiveMappings" : [
+      {
+        "amount" : 1,
+        "hybridCombo" : 0.35,
+        "id" : "7CB4F2EE-C08B-4844-9734-AD947F9D2DEE",
+        "isEnabled" : true,
+        "lfo" : {
+          "amplitude" : 0.2,
+          "enabled" : false,
+          "frequency" : 0.1,
+          "shape" : "sine"
+        },
+        "responseCurve" : "drift",
+        "smoothingWindow" : 0,
+        "source" : "composite",
+        "target" : "colorMix"
+      },
+      {
+        "amount" : 1,
+        "hybridCombo" : 0.35,
+        "id" : "EB9ACA26-56ED-4832-9F15-59D2AF735F9C",
+        "isEnabled" : true,
+        "lfo" : {
+          "amplitude" : 0.2,
+          "enabled" : false,
+          "frequency" : 0.1,
+          "shape" : "sine"
+        },
+        "responseCurve" : "drift",
+        "smoothingWindow" : 0,
+        "source" : "composite",
+        "target" : "fog"
+      },
+      {
+        "amount" : 1,
+        "hybridCombo" : 0.35,
+        "id" : "65A6D3DF-591B-473D-BE9B-3902167304BC",
+        "isEnabled" : true,
+        "lfo" : {
+          "amplitude" : 0.2,
+          "enabled" : false,
+          "frequency" : 0.1,
+          "shape" : "sine"
+        },
+        "responseCurve" : "drift",
+        "smoothingWindow" : 0,
+        "source" : "treble",
+        "target" : "hueSpeed"
+      },
+      {
+        "amount" : 1,
+        "hybridCombo" : 0.35,
+        "id" : "D771E34C-E13D-48F5-8063-B21613EF9E62",
+        "isEnabled" : true,
+        "lfo" : {
+          "amplitude" : 0.2,
+          "enabled" : false,
+          "frequency" : 0.1,
+          "shape" : "sine"
+        },
+        "responseCurve" : "drift",
+        "smoothingWindow" : 0,
+        "source" : "mid",
+        "target" : "saturation"
+      },
+      {
+        "amount" : 0.98420066,
+        "hybridCombo" : 0.35,
+        "id" : "6DE9E767-D81E-4EB3-8FEE-1F6C66E8885A",
+        "isEnabled" : true,
+        "lfo" : {
+          "amplitude" : 0.2,
+          "enabled" : false,
+          "frequency" : 0.1,
+          "shape" : "sine"
+        },
+        "responseCurve" : "drift",
+        "smoothingWindow" : 0.9572831,
+        "source" : "mid",
+        "target" : "formulaParam1"
+      }
+    ],
+    "trebleSensitivity" : 1,
+    "tripletMusicGains" : {
+
+    }
+  },
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.5
+  },
+  "colorIterations" : 8,
+  "colorMix" : 0.89734083,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.78,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 2.5261045,
+  "colorSchemeShadows" : 0.011303246,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.9521061,
+  "createdAt" : "2026-06-15T01:52:13Z",
+  "detailScale" : 3.993438,
+  "fogEffect" : {
+    "colorBlue" : 0.02,
+    "colorGreen" : 0.015,
+    "colorRed" : 0.01,
+    "enabled" : true,
+    "intensity" : 0.42487267
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    4.4585342,
+    4.883107,
+    0.010036708,
+    3.6346881,
+    0.99983424,
+    3.0549924,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 9,
+  "fractalScale" : 2.8,
+  "fractalType" : "mandelboxSphereProjection",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.7
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.15
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "6BE54AC0-B287-402D-A14A-5061CA3C4556",
+      "mappingMode" : 5,
+      "name" : "Classic",
+      "offset" : 0.102824934,
+      "repeatCount" : 2.229906,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "B759758E-2347-4CD9-8E67-6CD7D0B9EEEA",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "5AEAA444-6E2C-46EA-BE0B-5AC2BBE0D941",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "DC4D19BD-4355-483F-83D0-ED5EA18E3EA6",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "CCF5622B-0F9A-4AE5-8835-27A3EFC1E3E2",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "60D66BC3-5D7E-4392-A74F-58D8CB579144",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 0.8,
+    "speed" : 0.4193219
+  },
+  "id" : "600F5D26-E97F-4509-9D09-DB7911A139BF",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "linearRailEffect" : {
+    "amplitude" : 1.6382403,
+    "axis" : "z",
+    "enabled" : true,
+    "multiplier" : 1,
+    "orbitAmount" : 0,
+    "orbitSpeed" : 0.18,
+    "speed" : 0.0150759
+  },
+  "maxRaySteps" : 64,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "7CB4F2EE-C08B-4844-9734-AD947F9D2DEE",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "responseCurve" : "drift",
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "colorMix"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "EB9ACA26-56ED-4832-9F15-59D2AF735F9C",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "responseCurve" : "drift",
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "fog"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "65A6D3DF-591B-473D-BE9B-3902167304BC",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "responseCurve" : "drift",
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "hueSpeed"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "D771E34C-E13D-48F5-8063-B21613EF9E62",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "responseCurve" : "drift",
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "saturation"
+    },
+    {
+      "amount" : 0.98420066,
+      "hybridCombo" : 0.35,
+      "id" : "6DE9E767-D81E-4EB3-8FEE-1F6C66E8885A",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "responseCurve" : "drift",
+      "smoothingWindow" : 0.9572831,
+      "source" : "mid",
+      "target" : "formulaParam1"
+    }
+  ],
+  "name" : "Unpale",
+  "position" : [
+    0.4486587,
+    1.3425777,
+    -2.115085
+  ],
+  "pulseEffect" : {
+    "amount" : 0.5,
+    "enabled" : true,
+    "speed" : 1
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 1,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 1.8,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 0,
+  "worldRotationW" : -0.0034287167,
+  "worldRotationX" : -0.6155819,
+  "worldRotationY" : -0.24285948,
+  "worldRotationZ" : -0.7497387
+}

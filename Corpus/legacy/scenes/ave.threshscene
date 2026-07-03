@@ -1,0 +1,217 @@
+{
+  "aoStrength" : 0,
+  "audioReactiveConfig" : {
+    "bassSensitivity" : 1,
+    "beatSensitivity" : 1,
+    "fractalAudioAmount" : 0.6,
+    "fractalAudioDamping" : 1.7101045,
+    "fractalAudioReactiveEnabled" : true,
+    "fractalBeatPunch" : 0.7,
+    "midSensitivity" : 1,
+    "trebleSensitivity" : 1,
+    "tripletMusicGains" : {
+
+    }
+  },
+  "beatFlashEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "bloomEffect" : {
+    "enabled" : false,
+    "strength" : 0
+  },
+  "cellShadingEnabled" : false,
+  "cellShadingLevels" : 4,
+  "colorIterations" : 8,
+  "colorMix" : 0.5328592,
+  "colorScheme" : "classic",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.08,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.85,
+  "colorSchemeHighlights" : 0.02,
+  "colorSchemeSaturation" : 1.7,
+  "colorSchemeShadows" : -0.018,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.8,
+  "createdAt" : "2026-06-30T17:01:56Z",
+  "detailScale" : 3.241725,
+  "fogEffect" : {
+    "colorBlue" : 0,
+    "colorGreen" : 0,
+    "colorRed" : 0.45115662,
+    "enabled" : true,
+    "hueRotateEnabled" : false,
+    "hueRotateSpeed" : 0.1,
+    "intensity" : 0.0783591
+  },
+  "foldingLimit" : 0.32271492,
+  "formulaParamValues" : [
+    -1.795984,
+    0.32271492,
+    0.5,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 12,
+  "fractalScale" : 8,
+  "fractalType" : "mandelbox",
+  "glowEffect" : {
+    "enabled" : false,
+    "intensity" : 0.5542985
+  },
+  "gradientCycleEffect" : {
+    "enabled" : false,
+    "mirrorLoop" : true,
+    "speed" : 0
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "140E74B6-F5A4-4BAD-B414-0EB362661975",
+      "mappingMode" : 5,
+      "name" : "Classic",
+      "offset" : 0,
+      "repeatCount" : 1,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "DC7C71A3-F71F-4B0A-A387-C3E6A81389A6",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "FB7021A0-7B7A-4797-9822-5B75E879EE11",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "46187195-1CE1-405E-9D25-554DABBCD4AF",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "F1C3F172-A74C-48C0-AB2B-2443876DADB2",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "CD697AFD-5B60-494F-9ECE-B35C192A1322",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : false,
+    "intensity" : 0,
+    "speed" : 0
+  },
+  "id" : "E3A9B5A8-35C3-40B4-BE44-14175966E09C",
+  "juliaDriftEffect" : {
+    "enabled" : false,
+    "speed" : 0
+  },
+  "lightVariationRate" : 0.5,
+  "lightingMode" : "animated",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "linearRailEffect" : {
+    "amplitude" : 0,
+    "axis" : "z",
+    "enabled" : false,
+    "multiplier" : 1,
+    "orbitAmount" : 0,
+    "orbitSpeed" : 0.18,
+    "speed" : 0
+  },
+  "maxRaySteps" : 150,
+  "minDistance" : -1.795984,
+  "name" : "ave",
+  "platformEnabled" : true,
+  "platformRadius" : 1.888,
+  "polarRotationEffect" : {
+    "direction" : "off",
+    "speed" : 0
+  },
+  "position" : [
+    0.61110806,
+    2.098184,
+    -26.580141
+  ],
+  "pulseEffect" : {
+    "amount" : 0,
+    "enabled" : false,
+    "speed" : 0
+  },
+  "rating" : 0,
+  "resolutionScale" : 0.84,
+  "safetyBubbleBlend" : 0.5,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleFadeEnabled" : true,
+  "safetyBubbleFadeWidth" : 0.1,
+  "safetyBubbleRadius" : 1.9247978,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "spaceWarpOps" : [
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "64F8E71C-58CE-4367-B2A9-116E52A078CC",
+      "isEnabled" : true,
+      "p1" : 1.2104781,
+      "p2" : 0,
+      "strength" : 0.9366723,
+      "type" : 9
+    }
+  ],
+  "sphereProjectionBlend" : 1,
+  "sphereProjectionEnabled" : false,
+  "sphereProjectionRadius" : 1,
+  "sphereRadius" : 0.5,
+  "sphericalInversionMode" : "off",
+  "sphericalInversionRadius" : 2,
+  "tileSize" : 0,
+  "tonemapStrength" : 0,
+  "worldRotationW" : -0.28077382,
+  "worldRotationX" : 0.046638347,
+  "worldRotationY" : -0.94143915,
+  "worldRotationZ" : -0.1807924
+}

@@ -1,0 +1,185 @@
+{
+  "id": "95B889CF-3C8E-5F65-B5D6-DA1AC9A14725",
+  "name": "Pseudo MandalayBox",
+  "createdAt": "2026-06-28T00:00:00Z",
+  "rating": 0,
+  "fractalType": "custom",
+  "fractalIterations": 10,
+  "colorIterations": 9.0,
+  "maxRaySteps": 140,
+  "minDistance": 0.08,
+  "colorMix": 0.55,
+  "position": [
+    0.0,
+    0.0,
+    -12.0
+  ],
+  "scale": 1.0,
+  "detailScale": 1.0,
+  "fractalScale": 2.8,
+  "foldingLimit": 1.0,
+  "sphereRadius": 0.5,
+  "colorScheme": "classic",
+  "colorSchemeSaturation": 1.5,
+  "colorSchemeContrast": 1.08,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeVibrance": 0.9,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeHighlights": 0.03,
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.22,
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.14
+  },
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "safetyBubbleBlend": 0.0,
+  "resolutionScale": 1.0,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0,
+  "formulaParamValues": [
+    2.0,
+    0.07524,
+    1.17118,
+    0.2943,
+    1.6096,
+    1.12994,
+    0.69436,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "embeddedFormula": {
+    "schemaVersion": 1,
+    "id": "com.puppypower.threshold.embedded.pseudomandalaybox",
+    "name": "Pseudo MandalayBox",
+    "category": "Box Folds",
+    "author": "Knighty (Fragmentarium), ported by Threshold",
+    "description": "Knighty's Pseudo-MandalayBox: DarkBeam's \"DBFold\" (a diagonal-fold + max/min reinterpretation applied per-axis, parallel or serial) combined with a Mandelbox-style optional box fold, a sphere fold (clamp(1/r2,1,1/MinRad2)), and a scale+shift. Produces architectural, city-like \"town\" structures and crystalline box growths. Iterations map to the renderer iteration count; gw is baked to 0 (zero in every preset), Julia is baked off, the in-DE RotVector/RotAngle is replaced by the Threshold world rotation, and sr=30 is constant.",
+    "functionStem": "PseudoMandalayBox",
+    "metalSource": "// ---- Pseudo MandalayBox (Knighty) port ----\n// DarkBeam's \"fold\" reinterpreted (scalar, per-axis).\n// gw baked to 0 (zero in all source presets) so the 'w' term vanishes.\nFORCE_INLINE float PseudoMandalayBox_DBFold(float3 p, float fo, float g, float w) {\n    if (p.z > p.y) { p.yz = p.zy; } // diagonal fold\n    float vx = p.x - 2.0f * fo;\n    float vy = p.y - 4.0f * fo;\n    float v  = max(abs(vx + fo) - fo, vy);\n    float v1 = max(vx - g, p.y - w);\n    v1 = max(v1, -abs(p.x));\n    v  = min(v, v1);\n    return min(v, p.x);\n}\n\n// Parallel version: all three reads come from the ORIGINAL p (p1).\nFORCE_INLINE float3 PseudoMandalayBox_DBFoldParallel(float3 p, float3 fo, float3 g, float3 w) {\n    float3 p1 = p;\n    float3 r;\n    r.x = PseudoMandalayBox_DBFold(p1, fo.x, g.x, w.x);\n    r.y = PseudoMandalayBox_DBFold(p1.yzx, fo.y, g.y, w.y);\n    r.z = PseudoMandalayBox_DBFold(p1.zxy, fo.z, g.z, w.z);\n    return r;\n}\n\n// Serial version: p is mutated between axis writes (reads see prior results).\nFORCE_INLINE float3 PseudoMandalayBox_DBFoldSerial(float3 p, float3 fo, float3 g, float3 w) {\n    p.x = PseudoMandalayBox_DBFold(p, fo.x, g.x, w.x);\n    p.y = PseudoMandalayBox_DBFold(p.yzx, fo.y, g.y, w.y);\n    p.z = PseudoMandalayBox_DBFold(p.zxy, fo.z, g.z, w.z);\n    return p;\n}\n\nFORCE_INLINE float DE_PseudoMandalayBox(float3 pos, FormulaParams fp, float3x3 rot,\n                                        int iterations, int colorIterations,\n                                        thread OrbitData& orbit) {\n    // Params\n    float  Scale   = fp.params[0];\n    float  MinRad2 = max(fp.params[1], 1e-4f);\n    float3 fo      = float3(fp.params[2], fp.params[3], fp.params[4]);\n    float3 gh      = float3(fp.params[5], fp.params[6], fp.params[7]);\n    bool   doBox   = fp.params[8] > 0.5f;\n    bool   serial  = fp.params[9] > 0.5f;\n    const float3 gw = float3(0.0f);   // baked: zero in every preset\n    const float  sr = 30.0f;          // baked constant\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = pos;\n\n    float r2 = dot(p, p);\n    float dd = 1.0f;\n\n    float trap = 1e20f; int trapIter = 0; float3 trapPos = pos;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    int n = clamp(iterations, 0, 40);\n    int i = 0;\n    for (; i < n && r2 < 10000.0f; ++i) {\n        if (doBox) p = p - clamp(p, -1.0f, 1.0f) * 2.0f; // mandelbox box fold\n\n        // sign-preserved DBFold\n        float3 signs = sign(p);\n        p = abs(p);\n        if (serial) p = PseudoMandalayBox_DBFoldSerial(p, fo, gh, gw);\n        else        p = PseudoMandalayBox_DBFoldParallel(p, fo, gh, gw);\n        p *= signs;\n\n        // sphere fold\n        r2 = dot(p, p);\n        float t = clamp(1.0f / max(r2, 1e-12f), 1.0f, 1.0f / MinRad2);\n        p *= t; dd *= t;\n\n        // scale and shift (Julia baked off -> JC.xyz = initial pos, JC.w = 1)\n        p = p * Scale; dd = dd * Scale + 1.0f; // JC.w = 1\n        p += pos; // JC.xyz = initial pos (Julia off)\n\n        // world rotation (replaces in-DE RotVector/RotAngle)\n        if (hasRotation) p = rot * p;\n\n        // coloring / bailout\n        r2 = dot(p, p);\n        if (i < trapIterations) {\n            UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, trapIterations, p);\n        }\n    }\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p;\n    orbit.iterationsUsed = i;\n\n    dd = abs(dd);\n    return (sqrt(max(r2, 0.0f)) - sr) / max(dd, 1e-6f);\n}\n\nFORCE_INLINE float DE_PseudoMandalayBox_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float  Scale   = fp.params[0];\n    float  MinRad2 = max(fp.params[1], 1e-4f);\n    float3 fo      = float3(fp.params[2], fp.params[3], fp.params[4]);\n    float3 gh      = float3(fp.params[5], fp.params[6], fp.params[7]);\n    bool   doBox   = fp.params[8] > 0.5f;\n    bool   serial  = fp.params[9] > 0.5f;\n    const float3 gw = float3(0.0f);\n    const float  sr = 30.0f;\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = pos;\n\n    float r2 = dot(p, p);\n    float dd = 1.0f;\n\n    int n = clamp(iterations, 0, 40);\n    int i = 0;\n    for (; i < n && r2 < 10000.0f; ++i) {\n        if (doBox) p = p - clamp(p, -1.0f, 1.0f) * 2.0f;\n\n        float3 signs = sign(p);\n        p = abs(p);\n        if (serial) p = PseudoMandalayBox_DBFoldSerial(p, fo, gh, gw);\n        else        p = PseudoMandalayBox_DBFoldParallel(p, fo, gh, gw);\n        p *= signs;\n\n        r2 = dot(p, p);\n        float t = clamp(1.0f / max(r2, 1e-12f), 1.0f, 1.0f / MinRad2);\n        p *= t; dd *= t;\n\n        p = p * Scale; dd = dd * Scale + 1.0f;\n        p += pos;\n\n        if (hasRotation) p = rot * p;\n\n        r2 = dot(p, p);\n    }\n\n    dd = abs(dd);\n    return (sqrt(max(r2, 0.0f)) - sr) / max(dd, 1e-6f);\n}",
+    "params": [
+      {
+        "index": 0,
+        "name": "Scale",
+        "default": 2,
+        "min": -6,
+        "max": 6,
+        "step": 0.01
+      },
+      {
+        "index": 1,
+        "name": "MinRad2",
+        "default": 0.07524,
+        "min": 0.001,
+        "max": 1,
+        "step": 0.001
+      },
+      {
+        "index": 2,
+        "name": "Fold Offset X",
+        "default": 1.17118,
+        "min": 0,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 3,
+        "name": "Fold Offset Y",
+        "default": 0.2943,
+        "min": 0,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 4,
+        "name": "Fold Offset Z",
+        "default": 1.6096,
+        "min": 0,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 5,
+        "name": "Gap X",
+        "default": 1.12994,
+        "min": 0,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 6,
+        "name": "Gap Y",
+        "default": 0.69436,
+        "min": 0,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 7,
+        "name": "Gap Z",
+        "default": 0,
+        "min": 0,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 8,
+        "name": "Box Fold",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 1
+      },
+      {
+        "index": 9,
+        "name": "Serial Fold",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 1
+      }
+    ],
+    "defaultIterations": 10,
+    "defaultColorIterations": 9,
+    "supportedEffectTags": [
+      "safetyBubble"
+    ]
+  }
+}

@@ -1,0 +1,314 @@
+{
+  "aoStrength" : 0,
+  "audioReactiveConfig" : {
+    "bassSensitivity" : 1,
+    "beatSensitivity" : 1,
+    "fractalAudioAmount" : 0.25,
+    "fractalAudioDamping" : 0,
+    "fractalAudioReactiveEnabled" : false,
+    "fractalBeatPunch" : 0.3,
+    "midSensitivity" : 1,
+    "musicReactiveMappings" : [
+
+    ],
+    "trebleSensitivity" : 1,
+    "tripletMusicGains" : {
+
+    }
+  },
+  "beatFlashEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.5
+  },
+  "cellShadingEnabled" : false,
+  "cellShadingLevels" : 4,
+  "colorIterations" : 4,
+  "colorMix" : 0.55,
+  "colorScheme" : "ocean",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.78,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 2.2,
+  "colorSchemeShadows" : 0.016128246,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2026-07-01T02:03:51Z",
+  "detailScale" : 0.05255973,
+  "embeddedFormula" : {
+    "author" : "Knighty (Fragmentarium), ported by Threshold",
+    "category" : "Kleinian",
+    "defaultColorIterations" : 3,
+    "defaultIterations" : 9,
+    "description" : "Knighty's pseudo-knightyan: a clamp box-fold plus sphere inversion with a cylindrical cross-section distance estimate. The CSize vector sets the per-axis box-fold half-width, Size drives the sphere fold, DEfactor seeds the derivative accumulator (a smooth-blob knob via the +0.05 term), and TwiddleRXY pinches the cylindrical radius. Lives near the origin; orbit-trap colored on the folded position.",
+    "functionStem" : "PseudoKnightyan",
+    "id" : "com.puppypower.threshold.embedded.pseudoknightyan",
+    "metalSource" : "\/\/ Pseudo Knightyan (Knighty) — clamp box-fold + sphere inversion, cylindrical DE.\n\/\/ Source: Fragmentarium PseudoKnightyan.frag (DE only; raytracer extras ignored).\n\/\/ Params: [0-2]=CSize.xyz, [3]=Size, [4]=DEfactor, [5]=TwiddleRXY.\n\/\/ Iter -> iterations, ColorIterations -> colorIterations (NOT params).\n\/\/ NOTE: derivative accumulates as j *= (k + 0.05), seeded by DEfactor; final\n\/\/       DE = max(rxy - TwiddleRXY, abs(rxy*p.z)\/len(p)) \/ j  (no 0.7 fudge).\n\nFORCE_INLINE float DE_PseudoKnightyan(float3 pos, FormulaParams fp, float3x3 rot,\n                                      int iterations, int colorIterations,\n                                      thread OrbitData& orbit) {\n    float3 cSize    = max(abs(float3(fp.params[0], fp.params[1], fp.params[2])), float3(1e-4f));\n    float3 negCSize = -cSize;\n    float  size     = fp.params[3];\n    float  deFactor = fp.params[4];\n    float  twiddle  = fp.params[5];\n    bool hasRotation = hasRot1Precomputed(fp);\n\n    float3 p = pos;\n    float j = (deFactor != 0.0f) ? deFactor : 1.0f;\n\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = pos;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    int n = clamp(iterations, 0, 200);\n    int i = 0;\n    if (hasRotation) {\n        for (; i < n; ++i) {\n            p = rot * p;\n            \/\/ Box fold: 2*clamp(p,-CSize,CSize) - p\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            \/\/ Sphere fold: k = max(Size\/dot(p,p), 1)\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n            if (i < trapIterations) {\n                float r2 = dot(p, p);\n                if (r2 < trap) { trap = r2; trapIter = i; trapPos = p; }\n            }\n        }\n    } else {\n        for (; i < n; ++i) {\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n            if (i < trapIterations) {\n                float r2 = dot(p, p);\n                if (r2 < trap) { trap = r2; trapIter = i; trapPos = p; }\n            }\n        }\n    }\n\n    float rxy = length(p.xy);\n    float lenP = max(length(p), 1e-6f);\n    float de = max(rxy - twiddle, abs(rxy * p.z) \/ lenP) \/ max(abs(j), 1e-6f);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p;\n    orbit.iterationsUsed = i;\n\n    return de;\n}\n\nFORCE_INLINE float DE_PseudoKnightyan_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float3 cSize    = max(abs(float3(fp.params[0], fp.params[1], fp.params[2])), float3(1e-4f));\n    float3 negCSize = -cSize;\n    float  size     = fp.params[3];\n    float  deFactor = fp.params[4];\n    float  twiddle  = fp.params[5];\n    bool hasRotation = hasRot1Precomputed(fp);\n\n    float3 p = pos;\n    float j = (deFactor != 0.0f) ? deFactor : 1.0f;\n\n    int n = clamp(iterations, 0, 200);\n    if (hasRotation) {\n        for (int i = 0; i < n; ++i) {\n            p = rot * p;\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n        }\n    } else {\n        for (int i = 0; i < n; ++i) {\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size \/ max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n        }\n    }\n\n    float rxy = length(p.xy);\n    float lenP = max(length(p), 1e-6f);\n    return max(rxy - twiddle, abs(rxy * p.z) \/ lenP) \/ max(abs(j), 1e-6f);\n}\n",
+    "name" : "Pseudo Knightyan",
+    "params" : [
+      {
+        "default" : 0.485771,
+        "index" : 0,
+        "max" : 2,
+        "min" : -2,
+        "name" : "CSize X",
+        "step" : 0.001
+      },
+      {
+        "default" : 0.8034414,
+        "index" : 1,
+        "max" : 2,
+        "min" : -2,
+        "name" : "CSize Y",
+        "step" : 0.001
+      },
+      {
+        "default" : 1.062872,
+        "index" : 2,
+        "max" : 2,
+        "min" : -2,
+        "name" : "CSize Z",
+        "step" : 0.001
+      },
+      {
+        "default" : 0.70968,
+        "index" : 3,
+        "max" : 2,
+        "min" : -2,
+        "name" : "Size",
+        "step" : 0.001
+      },
+      {
+        "default" : 1,
+        "index" : 4,
+        "max" : 10,
+        "min" : 0,
+        "name" : "DEfactor",
+        "step" : 0.01
+      },
+      {
+        "default" : 0.8412322,
+        "index" : 5,
+        "max" : 2,
+        "min" : -2,
+        "name" : "TwiddleRXY",
+        "step" : 0.001
+      }
+    ],
+    "schemaVersion" : 1,
+    "supportedEffectTags" : [
+      "safetyBubble"
+    ]
+  },
+  "fogEffect" : {
+    "colorBlue" : 0.02,
+    "colorGreen" : 0.015,
+    "colorRed" : 0.01,
+    "enabled" : true,
+    "hueRotateEnabled" : false,
+    "hueRotateSpeed" : 0.1,
+    "intensity" : 0.016561195
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    -0.59239715,
+    0.21263722,
+    0.78755057,
+    0.21859066,
+    0.99479735,
+    0.9025176,
+    0,
+    0,
+    3.5935857,
+    3.9990177,
+    0.014200037,
+    -0.13234594,
+    -0.13082975,
+    0.020645827,
+    0,
+    0
+  ],
+  "fractalIterations" : 5,
+  "fractalScale" : 2.8,
+  "fractalType" : "custom",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.7
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.15
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "B2D3A1C2-FFFB-485C-92C3-A4F4D417945A",
+      "mappingMode" : 0,
+      "name" : "Classic",
+      "offset" : 0.23636815,
+      "repeatCount" : 5,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "109A79E1-E4F2-4296-A22B-14214AB18498",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "33BF507C-399D-446F-BC90-1AC34B0C0748",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "9A5DD207-D644-4819-B750-73A4610C3C2E",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "0CE809B5-D523-4FC4-968E-A38334D75C46",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "1F5F66AE-4639-4F7F-AC17-C109CAD8634D",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 1,
+    "speed" : 0.19930087
+  },
+  "id" : "88040B51-1BA8-49F0-9C12-8BCD16E7F11E",
+  "juliaDriftEffect" : {
+    "enabled" : false,
+    "speed" : 0
+  },
+  "lightVariationRate" : 0.5,
+  "lightingMode" : "staticLight",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.22,
+  "linearRailEffect" : {
+    "amplitude" : 0.7,
+    "axis" : "z",
+    "enabled" : false,
+    "multiplier" : 1,
+    "orbitAmount" : 0,
+    "orbitSpeed" : 0.18,
+    "speed" : 0.14
+  },
+  "maxRaySteps" : 200,
+  "minDistance" : 0.08000652,
+  "musicReactiveMappings" : [
+
+  ],
+  "name" : "Box",
+  "platformEnabled" : true,
+  "platformRadius" : 0.94279927,
+  "polarRotationEffect" : {
+    "direction" : "off",
+    "speed" : 0
+  },
+  "position" : [
+    0.12749968,
+    2.1217856,
+    -2.594345
+  ],
+  "pulseEffect" : {
+    "amount" : 0.5,
+    "enabled" : false,
+    "speed" : 1
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.5731642,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleFadeEnabled" : true,
+  "safetyBubbleFadeWidth" : 0.1,
+  "safetyBubbleRadius" : 1.632224,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "spaceWarpOps" : [
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "CFCFA97D-F67D-4E4F-B9B9-B182A3A87E45",
+      "isEnabled" : true,
+      "p1" : 4,
+      "p2" : 3,
+      "strength" : 1,
+      "type" : 11
+    },
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "295B77CF-60BB-4554-8B3E-1B46B986C9FA",
+      "isEnabled" : true,
+      "p1" : 0.64262605,
+      "p2" : 0,
+      "strength" : 1.3370508,
+      "type" : 5
+    },
+    {
+      "axis" : [
+        0,
+        1,
+        0
+      ],
+      "id" : "30E57387-F4F3-4D98-8FDE-011A58911D43",
+      "isEnabled" : false,
+      "p1" : 1.1,
+      "p2" : 0,
+      "strength" : 1,
+      "type" : 10
+    }
+  ],
+  "sphereProjectionBlend" : 0.19832604,
+  "sphereProjectionEnabled" : true,
+  "sphereProjectionRadius" : 2.1073549,
+  "sphereRadius" : 0.5,
+  "sphericalInversionMode" : "off",
+  "sphericalInversionRadius" : 2,
+  "tileSize" : 0,
+  "tonemapStrength" : 0,
+  "worldRotationW" : 0.6996732,
+  "worldRotationX" : 0.13605109,
+  "worldRotationY" : 0.6926899,
+  "worldRotationZ" : 0.11012882
+}

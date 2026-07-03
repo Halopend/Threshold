@@ -1,0 +1,55 @@
+{
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.7048401
+  },
+  "colorIterations" : 16,
+  "colorMix" : 0.45099074,
+  "colorScheme" : "neonSunset",
+  "colorSchemeContrast" : 1.02,
+  "colorSchemeCurve" : -0.2481237,
+  "colorSchemeGamma" : 0.75,
+  "colorSchemeHighlights" : 0.3,
+  "colorSchemeSaturation" : 1.5,
+  "colorSchemeShadows" : -0.023361081,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2025-01-01T00:00:00Z",
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.14822857
+  },
+  "foldingLimit" : 0.98709714,
+  "fractalIterations" : 7,
+  "fractalScale" : 3.8917305,
+  "fractalType" : "mandelbox",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.18124515
+  },
+  "hueRotationEffect" : {
+    "enabled" : false,
+    "intensity" : 0.5,
+    "speed" : 0
+  },
+  "id" : "00000000-0003-0000-0000-000000000001",
+  "lightingMode" : "staticLight",
+  "lightingPreset" : "Atmospheric",
+  "maxRaySteps" : 48,
+  "minDistance" : 1.3423144,
+  "name" : "Metallic Pink",
+  "position" : [
+    0.09840668,
+    1.4379398,
+    -3.6177335
+  ],
+  "pulseEffect" : {
+    "amount" : 0.1637325,
+    "enabled" : true,
+    "speed" : 0.46227682
+  },
+  "rating" : 0,
+  "safetyBubbleEnabled" : false,
+  "safetyBubbleRadius" : 1.8,
+  "scale" : 1,
+  "sphereRadius" : 0.05
+}

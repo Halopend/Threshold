@@ -1,0 +1,44 @@
+{
+  "id" : "00000000-0022-0000-0000-000000000001",
+  "name" : "Bulatov Limit Set",
+  "createdAt" : "2026-06-30T00:00:00Z",
+  "fractalType" : "bulatovLimitSet",
+  "fractalIterations" : 12,
+  "maxRaySteps" : 300,
+  "minDistance" : 0.8,
+  "fractalScale" : 2.8,
+  "foldingLimit" : 1.0,
+  "sphereRadius" : 0.5,
+  "formulaParamValues" : [
+    0.5, 3.1334, 0.57735, 0.408248, 4, 7, 1, 0.55555,
+    17, 0.15, 31, 0, 0, 0, 0, 0
+  ],
+  "colorMix" : 0.5,
+  "colorIterations" : 8,
+  "colorScheme" : "nebula",
+  "colorSchemeContrast" : 1.1,
+  "colorSchemeGamma" : 0.6,
+  "colorSchemeSaturation" : 1.55,
+  "colorSchemeVibrance" : 1.0,
+  "position" : [0, 0, -4.0],
+  "scale" : 1,
+  "spaceWarpOps" : [
+    {
+      "id" : "00000000-0022-0000-0000-0000000000A0",
+      "type" : 0,
+      "strength" : 0.2,
+      "p1" : 0,
+      "p2" : 0,
+      "axis" : [0, 1, 0],
+      "isEnabled" : true
+    }
+  ],
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.35
+  },
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.25
+  }
+}

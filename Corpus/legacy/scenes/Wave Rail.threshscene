@@ -1,0 +1,200 @@
+{
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.14
+  },
+  "colorIterations": 4.0,
+  "colorMix": 0.62,
+  "colorScheme": "rainbow",
+  "colorSchemeContrast": 1.08,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeGamma": 0.92,
+  "colorSchemeHighlights": 0.06,
+  "colorSchemeSaturation": 1.45,
+  "colorSchemeShadows": -0.01,
+  "colorSchemeVibrance": 0.82,
+  "createdAt": "2026-05-04T15:50:00Z",
+  "detailScale": 1.0,
+  "embeddedFormula": {
+    "author": "Threshold Sample",
+    "category": "Custom",
+    "defaultColorIterations": 4,
+    "defaultIterations": 4,
+    "description": "Shadertoy-style waved rail distance estimator translated into Threshold's embedded Metal formula format. The scene keeps the mirrored corridor repeat and cutout rail profile from the supplied DE snippet, with the optional wave term exposed as manual parameters instead of a time uniform.",
+    "functionStem": "WaveRail",
+    "id": "com.puppypower.threshold.sample.wave-rail",
+    "metalSource": "static FORCE_INLINE float wrap_wr(float x, float period) {\n    return x - period * floor(x / period);\n}\n\nstatic FORCE_INLINE float mirrorRepeat_wr(float x, float period) {\n    return abs(0.5f * period - wrap_wr(x, period));\n}\n\nstatic FORCE_INLINE float4 waveRailFormula_wr(float4 p, float foldLimit, float formulaScale, float minR2, float fixedR2, float twist) {\n    p.xyz = clamp(p.xyz, -foldLimit, foldLimit) * 2.0f - p.xyz;\n\n    float r2 = dot(p.xyz, p.xyz);\n    float k = 1.0f;\n    if (r2 < minR2) {\n        k = fixedR2 / minR2;\n    } else if (r2 < fixedR2) {\n        k = fixedR2 / max(r2, 1e-6f);\n    }\n\n    float angle = twist * (0.35f + 0.10f * p.z);\n    float c = fast::cos(angle);\n    float s = fast::sin(angle);\n    p.xy = float2(c * p.x - s * p.y, s * p.x + c * p.y);\n\n    p.xz = abs(p.xz + float2(0.62f, 0.18f)) - float2(0.62f, 0.18f);\n\n    float scaleK = clamp(formulaScale * k, 0.25f, 4.0f);\n    p.xyz = p.xyz * scaleK - float3(0.90f, 0.22f, 0.0f);\n    p.w = p.w * abs(scaleK) + 1.0f;\n    return p;\n}\n\nFORCE_INLINE float DE_WaveRail(float3 pos, FormulaParams fp, float3x3 rot,\n                               int iterations, int colorIterations,\n                               thread OrbitData& orbit) {\n    float waveAmount = fp.params[0];\n    float wavePhase = fp.params[1];\n    float corridorPeriod = max(fp.params[2], 0.5f);\n    float foldLimit = max(fp.params[3], 0.1f);\n    float formulaScale = max(fp.params[4], 0.25f);\n    float minR2 = max(fp.params[5], 1e-4f);\n    float fixedR2 = max(fp.params[6], minR2);\n    float twist = fp.params[7];\n    float tubeOffset = max(fp.params[8], 0.1f);\n    float tubeRadius = max(fp.params[9], 0.05f);\n    float railOffsetX = fp.params[10];\n    float railHalfWidth = max(fp.params[11], 0.02f);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 q = pos;\n    if (hasRotation) q = rot * q;\n    q.y += fast::sin(q.z - wavePhase) * waveAmount;\n\n    float3 tpos = q;\n    tpos.z = mirrorRepeat_wr(tpos.z, corridorPeriod);\n\n    float4 p = float4(tpos, 1.0f);\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = q;\n\n    int loopCount = clamp(iterations, 1, 8);\n    int trapIterations = min(max(colorIterations, 0), loopCount);\n    for (int i = 0; i < loopCount; ++i) {\n        p = waveRailFormula_wr(p, foldLimit, formulaScale, minR2, fixedR2, twist);\n        float r2 = dot(p.xyz, p.xyz);\n        UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, trapIterations, p.xyz);\n    }\n\n    float2 shellQ = max(float2(0.0f), p.yz - float2(tubeOffset));\n    float fr = (length(shellQ) - tubeRadius) / max(abs(p.w), 1e-4f);\n\n    float ro = max(abs(q.x + railOffsetX) - railHalfWidth, q.y - 0.35f);\n    ro = max(ro, -max(abs(q.x + railOffsetX) - 0.10f, q.y - 0.50f));\n\n    float railZ = abs(0.25f - wrap_wr(q.z, 0.5f));\n    ro = max(ro, -max(abs(railZ) - 0.20f, q.y - 0.30f));\n    ro = max(ro, -max(abs(railZ) - 0.01f, -q.y + 0.32f));\n\n    float d = min(fr, ro);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p.xyz;\n    orbit.iterationsUsed = loopCount;\n    return d;\n}\n\nFORCE_INLINE float DE_WaveRail_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float waveAmount = fp.params[0];\n    float wavePhase = fp.params[1];\n    float corridorPeriod = max(fp.params[2], 0.5f);\n    float foldLimit = max(fp.params[3], 0.1f);\n    float formulaScale = max(fp.params[4], 0.25f);\n    float minR2 = max(fp.params[5], 1e-4f);\n    float fixedR2 = max(fp.params[6], minR2);\n    float twist = fp.params[7];\n    float tubeOffset = max(fp.params[8], 0.1f);\n    float tubeRadius = max(fp.params[9], 0.05f);\n    float railOffsetX = fp.params[10];\n    float railHalfWidth = max(fp.params[11], 0.02f);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 q = pos;\n    if (hasRotation) q = rot * q;\n    q.y += fast::sin(q.z - wavePhase) * waveAmount;\n\n    float3 tpos = q;\n    tpos.z = mirrorRepeat_wr(tpos.z, corridorPeriod);\n\n    float4 p = float4(tpos, 1.0f);\n    int loopCount = clamp(iterations, 1, 8);\n    for (int i = 0; i < loopCount; ++i) {\n        p = waveRailFormula_wr(p, foldLimit, formulaScale, minR2, fixedR2, twist);\n    }\n\n    float2 shellQ = max(float2(0.0f), p.yz - float2(tubeOffset));\n    float fr = (length(shellQ) - tubeRadius) / max(abs(p.w), 1e-4f);\n\n    float ro = max(abs(q.x + railOffsetX) - railHalfWidth, q.y - 0.35f);\n    ro = max(ro, -max(abs(q.x + railOffsetX) - 0.10f, q.y - 0.50f));\n\n    float railZ = abs(0.25f - wrap_wr(q.z, 0.5f));\n    ro = max(ro, -max(abs(railZ) - 0.20f, q.y - 0.30f));\n    ro = max(ro, -max(abs(railZ) - 0.01f, -q.y + 0.32f));\n\n    return min(fr, ro);\n}\n",
+    "name": "Wave Rail",
+    "params": [
+      {
+        "default": 0.15,
+        "index": 0,
+        "max": 0.4,
+        "min": 0.0,
+        "name": "Wave Amount",
+        "step": 0.005
+      },
+      {
+        "default": 0.0,
+        "index": 1,
+        "max": 6.2832,
+        "min": -6.2832,
+        "name": "Wave Phase",
+        "step": 0.01
+      },
+      {
+        "default": 6.0,
+        "index": 2,
+        "max": 12.0,
+        "min": 1.0,
+        "name": "Corridor Period",
+        "step": 0.05
+      },
+      {
+        "default": 1.15,
+        "index": 3,
+        "max": 2.0,
+        "min": 0.25,
+        "name": "Fold Limit",
+        "step": 0.01
+      },
+      {
+        "default": 1.65,
+        "index": 4,
+        "max": 3.0,
+        "min": 0.25,
+        "name": "Formula Scale",
+        "step": 0.01
+      },
+      {
+        "default": 0.25,
+        "index": 5,
+        "max": 1.5,
+        "min": 0.01,
+        "name": "Min R²",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 6,
+        "max": 3.0,
+        "min": 0.05,
+        "name": "Fixed R²",
+        "step": 0.01
+      },
+      {
+        "default": 0.45,
+        "index": 7,
+        "max": 2.0,
+        "min": -2.0,
+        "name": "Twist",
+        "step": 0.01
+      },
+      {
+        "default": 1.5,
+        "index": 8,
+        "max": 3.0,
+        "min": 0.2,
+        "name": "Tube Offset",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 9,
+        "max": 2.0,
+        "min": 0.1,
+        "name": "Tube Radius",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 10,
+        "max": 2.0,
+        "min": -2.0,
+        "name": "Rail Offset X",
+        "step": 0.01
+      },
+      {
+        "default": 0.3,
+        "index": 11,
+        "max": 1.0,
+        "min": 0.05,
+        "name": "Rail Half Width",
+        "step": 0.01
+      }
+    ],
+    "schemaVersion": 1,
+    "supportedEffectTags": []
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.18
+  },
+  "foldingLimit": 1.0,
+  "formulaParamValues": [
+    0.15,
+    0.0,
+    6.0,
+    1.15,
+    1.65,
+    0.25,
+    1.0,
+    0.45,
+    1.5,
+    1.0,
+    1.0,
+    0.3,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "foldingLimit": 1.0,
+  "fractalIterations": 4,
+  "fractalScale": 2.3,
+  "fractalType": "custom",
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "id": "B4234FA7-8F8B-4700-A0EA-9C4321E635C0",
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.2,
+  "maxRaySteps": 84,
+  "minDistance": 0.45,
+  "name": "Wave Rail",
+  "position": [
+    0.85,
+    0.08,
+    -3.6
+  ],
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "rating": 0,
+  "resolutionScale": 1.0,
+  "safetyBubbleBlend": 0.0,
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "scale": 1.0,
+  "sphereRadius": 0.5,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0
+}

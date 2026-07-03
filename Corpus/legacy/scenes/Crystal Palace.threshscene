@@ -1,0 +1,251 @@
+{
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.7048401
+  },
+  "colorIterations" : 8,
+  "colorMix" : 0.90205216,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : -0.2481237,
+  "colorSchemeGamma" : 0.78,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 1.8678629,
+  "colorSchemeShadows" : -0.023361081,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2026-04-23T23:46:23Z",
+  "detailScale" : 1.6395253,
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.358955
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    -0.48409075,
+    -0.19129969,
+    -1.3978658,
+    3,
+    1.7821064,
+    -0.48178723,
+    0.10999137,
+    1.5612423,
+    1.9928894,
+    2.9945393,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 8,
+  "fractalScale" : 2.6275954,
+  "fractalType" : "kleinian",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.18124515
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.15156057
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "97C65047-EC91-4F8D-86ED-F600052259E7",
+      "mappingMode" : 1,
+      "name" : "Classic",
+      "offset" : 0,
+      "repeatCount" : 0.4702508,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "7A6F5191-9D10-466C-A21B-DBE1571FC4C6",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "BB55A282-1007-476F-BACA-77EF46BABD28",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "DD7A54BB-4539-42AE-9E60-07B382DE91E7",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "48650D8C-27EE-4EC3-87FC-07F16FCE5998",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "B83BB3F6-925E-420A-9C57-C31FD60EEE61",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 0.5,
+    "speed" : 0.034390755
+  },
+  "id" : "92400E5E-0EDF-4C72-AFC3-9CB9F2D6CF1B",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0,
+  "maxRaySteps" : 56,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "7CB4F2EE-C08B-4844-9734-AD947F9D2DEE",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.9,
+      "rangeMin" : 0.2,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "colorMix"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "EB9ACA26-56ED-4832-9F15-59D2AF735F9C",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.5,
+      "rangeMin" : 0.05,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "fog"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "65A6D3DF-591B-473D-BE9B-3902167304BC",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.25,
+      "rangeMin" : 0.02,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "hueSpeed"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "D771E34C-E13D-48F5-8063-B21613EF9E62",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 2,
+      "rangeMin" : 0.8,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "saturation"
+    },
+    {
+      "amount" : 2.0149808,
+      "hybridCombo" : 0.35,
+      "id" : "B2DF0186-A39B-4981-ACA5-85BC8BDCC347",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.47480002,
+      "rangeMin" : -1.1252,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.6273517,
+      "source" : "bass",
+      "target" : "formulaParam0"
+    }
+  ],
+  "name" : "Crystal Palace",
+  "position" : [
+    0.10291105,
+    -4.620385,
+    2.089306
+  ],
+  "pulseEffect" : {
+    "amount" : 0.1637325,
+    "enabled" : false,
+    "speed" : 0.46227682
+  },
+  "rating" : 4,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.097609855,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 1.6496406,
+  "safetyBubbleShape" : 0.5,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 0,
+  "worldRotationW" : 0.29991233,
+  "worldRotationX" : -0.9525167,
+  "worldRotationY" : 0.029131537,
+  "worldRotationZ" : 0.04377084
+}

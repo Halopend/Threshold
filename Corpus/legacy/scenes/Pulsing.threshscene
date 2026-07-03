@@ -1,0 +1,187 @@
+{
+  "audioReactiveConfig" : {
+    "bassSensitivity" : 1,
+    "beatSensitivity" : 1,
+    "fractalAudioAmount" : 0.25,
+    "fractalAudioDamping" : 0,
+    "fractalAudioReactiveEnabled" : false,
+    "fractalBeatPunch" : 0.3,
+    "midSensitivity" : 1,
+    "musicReactiveMappings" : [
+
+    ],
+    "trebleSensitivity" : 1,
+    "tripletMusicGains" : {
+
+    }
+  },
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.9135956
+  },
+  "colorIterations" : 16,
+  "colorMix" : 1,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : -0.3,
+  "colorSchemeGamma" : 0.78,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 2.2,
+  "colorSchemeShadows" : 0.05,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2026-06-27T10:47:31Z",
+  "detailScale" : 1.8079251,
+  "fogEffect" : {
+    "colorBlue" : 0.02,
+    "colorGreen" : 0.015,
+    "colorRed" : 0.01,
+    "enabled" : true,
+    "hueRotateEnabled" : false,
+    "hueRotateSpeed" : 0.1,
+    "intensity" : 0.6014268
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    2.2960358,
+    1,
+    0.01,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 8,
+  "fractalScale" : 2.8,
+  "fractalType" : "mandelbox",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.37757903
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.42642036
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "87D98D23-8102-4C89-B9E2-129478FD74D6",
+      "mappingMode" : 5,
+      "name" : "Classic",
+      "offset" : 0,
+      "repeatCount" : 0.35299826,
+      "smoothing" : 0.36210927,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "07BD3A08-B627-4BE3-AA2C-31C72BDD6550",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "A4A54A9E-350A-48C1-9A9F-D449A30658F0",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "D21A8F4C-3868-4B72-B9A8-D74FC6513545",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "74C8C414-1195-42DE-B906-AF2D53489599",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "FFAA3FE5-E4E5-4AC2-BB6F-DF6D9DB41D9B",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 1,
+    "speed" : 0.10003874
+  },
+  "id" : "0D2ABAF6-499A-467A-8A87-741464DE5B57",
+  "lightingMode" : "staticLight",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0,
+  "linearRailEffect" : {
+    "amplitude" : 2.3527048,
+    "axis" : "z",
+    "enabled" : true,
+    "multiplier" : 1,
+    "orbitAmount" : 0,
+    "orbitSpeed" : 0.18,
+    "speed" : 0.020422217
+  },
+  "maxRaySteps" : 72,
+  "minDistance" : 2.2960358,
+  "musicReactiveMappings" : [
+
+  ],
+  "name" : "Paul",
+  "position" : [
+    -0.4755069,
+    -2.2725096,
+    -1.097108
+  ],
+  "pulseEffect" : {
+    "amount" : 0.73458797,
+    "enabled" : true,
+    "speed" : 1
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.2495848,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 2.5,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereProjectionBlend" : 0.3059373,
+  "sphereProjectionEnabled" : true,
+  "sphereProjectionRadius" : 4.1328073,
+  "sphereRadius" : 0.01,
+  "sphericalInversionMode" : "off",
+  "sphericalInversionRadius" : 2,
+  "tileSize" : 0,
+  "worldRotationW" : 0.9972577,
+  "worldRotationX" : 0.044813223,
+  "worldRotationY" : -0.05822866,
+  "worldRotationZ" : -0.008841245
+}

@@ -1,0 +1,48 @@
+{
+  "id" : "00000000-0005-0000-0000-000000000001",
+  "name" : "Inverted Kleinian",
+  "createdAt" : "2026-06-24T00:00:00Z",
+  "fractalType" : "kleinian",
+  "fractalIterations" : 10,
+  "maxRaySteps" : 96,
+  "minDistance" : 0.8,
+  "fractalScale" : 2.8,
+  "foldingLimit" : 1.0,
+  "sphereRadius" : 0.6,
+  "formulaParamValues" : [
+    -0.3252, -0.7862, -0.0948, 0.69, 0.35, 1.0, 1.22, 0.84,
+    0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  "colorMix" : 0.55,
+  "colorIterations" : 8,
+  "colorScheme" : "nebula",
+  "colorSchemeContrast" : 1.1,
+  "colorSchemeGamma" : 0.55,
+  "colorSchemeSaturation" : 1.6,
+  "colorSchemeVibrance" : 1.0,
+  "position" : [0, 0, -1.6],
+  "scale" : 1,
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.4
+  },
+  "schemaVersion" : 2,
+  "modules" : {
+    "space" : {
+      "params" : {
+        "sphereProjectionEnabled" : true,
+        "sphereProjectionBlend" : 0.65,
+        "sphereProjectionRadius" : 1.4
+      }
+    },
+    "lighting" : {
+      "params" : {
+        "hueRotationEnabled" : true,
+        "hueRotationSpeed" : 0.06,
+        "hueRotationIntensity" : 0.4,
+        "fogEnabled" : true,
+        "fogIntensity" : 0.28
+      }
+    }
+  }
+}
