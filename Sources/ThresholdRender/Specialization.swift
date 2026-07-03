@@ -34,10 +34,14 @@ import ThresholdShaderIR
 /// is still bound — Metal requires the argument — but never dispatched
 /// through in the specialized variant.
 public struct SpecializedMarch: @unchecked Sendable {
-    // AUDIT — @unchecked: both properties are immutable Metal objects,
+    // AUDIT — @unchecked: all properties are immutable Metal objects,
     // documented thread-safe (same precedent as GPUContext).
     public let pipeline: MTLComputePipelineState
     public let deTable: MTLVisibleFunctionTable
+    /// Coarse tile prepass pipeline — present iff the variant baked
+    /// `coneMarch: true`. The encoder dispatches it (one thread per 8×8
+    /// tile) before the march and binds its output at texture 3.
+    public let conePrepass: MTLComputePipelineState?
 }
 
 // MARK: - MarchSpec
@@ -67,11 +71,21 @@ public struct MarchSpec: Sendable, Hashable {
     /// Step-count telemetry (function_constant 7): false → drop the per-pixel
     /// stats atomic (totalSteps reads back 0). Benchmark variants bake false.
     public var statsEnabled: Bool?
+    /// Tile cone-march prepass (function_constant 8): true → a separate
+    /// coarse dispatch (march_cone_prepass, one thread per 8×8 tile) writes
+    /// each tile's safe start depth to an r32float texture the march kernel
+    /// reads at texture 3. ENCODER CONTRACT: whoever renders a cone-baked
+    /// pipeline must dispatch `SpecializedMarch.conePrepass` first and bind
+    /// the texture (OffscreenRenderer does; the live session never bakes
+    /// this today). Changes marched output slightly, so the generic/golden
+    /// library never declares it; the CLI --specialize perf path defaults it
+    /// ON (fps-first policy — docs/perf-notes.md block 9).
+    public var coneMarch: Bool?
 
     public init(iterations: Int? = nil, maxSteps: Int? = nil,
                 hasWarpOps: Bool? = nil, colorMapMode: Int? = nil,
                 aoEnabled: Bool? = nil, hasDistanceOps: Bool? = nil,
-                statsEnabled: Bool? = nil) {
+                statsEnabled: Bool? = nil, coneMarch: Bool? = nil) {
         self.iterations = iterations
         self.maxSteps = maxSteps
         self.hasWarpOps = hasWarpOps
@@ -79,20 +93,21 @@ public struct MarchSpec: Sendable, Hashable {
         self.aoEnabled = aoEnabled
         self.hasDistanceOps = hasDistanceOps
         self.statsEnabled = statsEnabled
+        self.coneMarch = coneMarch
     }
 
     /// Nothing baked — the variant is just the direct-call inline.
     public var isEmpty: Bool {
         iterations == nil && maxSteps == nil && hasWarpOps == nil
             && colorMapMode == nil && aoEnabled == nil && hasDistanceOps == nil
-            && statsEnabled == nil
+            && statsEnabled == nil && coneMarch == nil
     }
 
     /// Stable cache-key fragment.
     var keyFragment: String {
         func i(_ v: Int?) -> String { v.map(String.init) ?? "-" }
         func b(_ v: Bool?) -> String { v.map { $0 ? "1" : "0" } ?? "-" }
-        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))"
+        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))"
     }
 
     /// Human-readable summary of what's baked (for the diagnostics readout).
@@ -105,6 +120,7 @@ public struct MarchSpec: Sendable, Hashable {
         if let aoEnabled { parts.append(aoEnabled ? "ao" : "no-ao") }
         if let hasDistanceOps { parts.append(hasDistanceOps ? "dist-ops" : "no-dist-ops") }
         if let statsEnabled { parts.append(statsEnabled ? "stats" : "no-stats") }
+        if let coneMarch { parts.append(coneMarch ? "cone" : "no-cone") }
         return parts.joined(separator: ", ")
     }
 }
@@ -130,12 +146,12 @@ extension GPUContext {
             + abiHeaderSource + "\n" + core
 
         let options = MTLCompileOptions()
-        // Specialized variants are the PERF pipeline: default to .relaxed
-        // (fast-math re-association/FMA, INF/NaN semantics kept — measured
-        // byte-identical on the corpus scenes, docs/perf-notes.md block 3).
-        // The generic pipeline stays .safe and remains the golden/CPU-
-        // equivalence reference; THRESHOLD_MATH_MODE still overrides both.
-        options.mathMode = mathMode ?? GPUContext.mathModeOverride ?? .relaxed
+        // Specialized variants are the PERF pipeline: default to .fast
+        // (adds -ffinite-math-only over .relaxed — the march's non-finite
+        // sentinel guard is a bit-pattern test precisely so it survives
+        // this). The generic pipeline stays .safe and remains the golden/
+        // CPU-equivalence reference; THRESHOLD_MATH_MODE overrides both.
+        options.mathMode = mathMode ?? GPUContext.mathModeOverride ?? .fast
         do {
             return try device.makeLibrary(source: source, options: options)
         } catch {
@@ -164,7 +180,17 @@ extension GPUContext {
         let table = try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized(\(deFunctionName)) DE table")
-        return SpecializedMarch(pipeline: pipeline, deTable: table)
+        // Cone variants also carry the coarse tile-prepass pipeline (same
+        // library, same baked constants — mapScene must fold identically).
+        var prepass: MTLComputePipelineState? = nil
+        if spec.coneMarch == true {
+            prepass = try Self.makeLinkedPipeline(
+                device: device, library: library,
+                kernelName: "march_cone_prepass",
+                deFunctions: builtinDEFunctions, spec: spec)
+        }
+        return SpecializedMarch(pipeline: pipeline, deTable: table,
+                                conePrepass: prepass)
     }
 
     /// One-shot compile + build (the CLI batch tool and tests): compiles the

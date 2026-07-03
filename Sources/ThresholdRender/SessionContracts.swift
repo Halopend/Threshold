@@ -29,6 +29,12 @@ public struct RenderTuning: Sendable, Equatable {
     public var bakeColorMapMode: Bool
     /// Bake AO enablement (function_constant 5): skips the 5-tap AO when off.
     public var gateAO: Bool
+    /// Hierarchical tile cone-march prepass (function_constant 8): a coarse
+    /// dispatch finds each 8×8 tile's safe start depth before the per-pixel
+    /// march (~2× on step-bound scenes, docs/perf-notes.md block 9). Changes
+    /// marched output slightly (start points differ in float) — the toggle is
+    /// the A/B lever.
+    public var conePrepass: Bool
     /// Manual internal render scale in (0, 1] used when the fps governor is
     /// OFF: the march runs at `drawable × scale` and MetalFX upscales to full
     /// resolution. 1 = full-res. Ignored while the governor drives the scale.
@@ -38,6 +44,7 @@ public struct RenderTuning: Sendable, Equatable {
         specializationEnabled: Bool = true, bakeIterations: Bool = false,
         bakeMaxSteps: Bool = false, gateWarpOps: Bool = false,
         bakeColorMapMode: Bool = false, gateAO: Bool = false,
+        conePrepass: Bool = false,
         manualRenderScale: Float = 1
     ) {
         self.specializationEnabled = specializationEnabled
@@ -46,6 +53,7 @@ public struct RenderTuning: Sendable, Equatable {
         self.gateWarpOps = gateWarpOps
         self.bakeColorMapMode = bakeColorMapMode
         self.gateAO = gateAO
+        self.conePrepass = conePrepass
         self.manualRenderScale = manualRenderScale
     }
 
@@ -57,7 +65,8 @@ public struct RenderTuning: Sendable, Equatable {
     public static var envDefault: RenderTuning {
         RenderTuning(specializationEnabled: true,
                      bakeIterations: true, bakeMaxSteps: true,
-                     gateWarpOps: true, bakeColorMapMode: true, gateAO: true)
+                     gateWarpOps: true, bakeColorMapMode: true, gateAO: true,
+                     conePrepass: true)
     }
 }
 

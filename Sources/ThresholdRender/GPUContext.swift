@@ -209,7 +209,7 @@ public final class GPUContext: @unchecked Sendable {
         spec: MarchSpec? = nil
     ) throws -> MTLComputePipelineState {
         let kernel: MTLFunction
-        if kernelName == "march_offscreen" {
+        if kernelName == "march_offscreen" || kernelName == "march_cone_prepass" {
             // The march kernel references the THRESH_AUX function constant,
             // so Metal requires the specialized-function creation path even
             // for the default (false) variant.
@@ -233,6 +233,13 @@ public final class GPUContext: @unchecked Sendable {
                 setInt(spec.aoEnabled.map { $0 ? 1 : 0 } ?? -1, 5)
                 setInt(spec.hasDistanceOps.map { $0 ? 1 : 0 } ?? -1, 6)
                 setInt(spec.statsEnabled.map { $0 ? 1 : 0 } ?? -1, 7)
+            }
+            // Cone-march gate (index 8) uses the aux-style bool pattern
+            // (is_function_constant_defined → absent = false), so it is set
+            // ONLY when requested — generic/golden pipelines never see it.
+            if let cone = spec?.coneMarch {
+                var v = cone
+                constants.setConstantValue(&v, type: .bool, index: 8)
             }
             do {
                 kernel = try library.makeFunction(

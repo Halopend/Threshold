@@ -368,6 +368,10 @@ final class SessionGPUEncoder {
     /// The pipeline choice made last encode — returned on dropped frames so the
     /// diagnostics readout doesn't flicker to a default (render-thread only).
     private var lastDiagnostics = RenderDiagnostics()
+    /// Cone-prepass depth textures, one per in-flight frame (ring parallel to
+    /// statsRing): frame N+1's prepass must not overwrite the texture frame
+    /// N's march is still reading. Rebuilt on size change.
+    private var coneRing: [MTLTexture?] = [nil, nil, nil]
 
     /// Swift mirror of RaymarchCore.metal's ThreshAuxUniforms (private
     /// live-path contract, buffer 7 / textures 1–2 — not ABI).
@@ -424,7 +428,8 @@ final class SessionGPUEncoder {
             colorMapMode: tuning.bakeColorMapMode
                 ? Int(params[Int(THRESH_SLOT_MAP_MODE)]) : nil,
             aoEnabled: tuning.gateAO
-                ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil)
+                ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil,
+            coneMarch: tuning.conePrepass ? true : nil)
     }
 
     /// Record this frame's zoom-rebase octave; returns true when it changed
@@ -552,6 +557,61 @@ final class SessionGPUEncoder {
         }
         lastDiagnostics = diagnostics
 
+        // Hierarchical cone prepass (perf block 9, ported from the offscreen
+        // path): one thread per 8×8 tile of the MARCH TARGET (the reduced-
+        // resolution texture when MetalFX is engaged) finds the tile's safe
+        // start depth. Ring slot matches the stats ring so in-flight frames
+        // never share a texture.
+        var coneTexture: MTLTexture? = nil
+        if program == nil, let prepass = specialized?.conePrepass {
+            let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
+            let cw = (marchTarget.width + tile - 1) / tile
+            let ch = (marchTarget.height + tile - 1) / tile
+            let slot = (ringCursor + statsRing.count - 1) % statsRing.count
+            var coneTex = coneRing[slot]
+            if coneTex == nil || coneTex!.width != cw || coneTex!.height != ch {
+                let desc = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .r32Float, width: cw, height: ch, mipmapped: false)
+                desc.usage = [.shaderWrite, .shaderRead]
+                desc.storageMode = .private
+                coneTex = context.device.makeTexture(descriptor: desc)
+                coneRing[slot] = coneTex
+            }
+            if let coneTex,
+               let pre = commandBuffer.makeComputeCommandEncoder() {
+                pre.label = "session cone prepass"
+                pre.setComputePipelineState(prepass)
+                withUnsafeBytes(of: uniforms) { raw in
+                    pre.setBytes(raw.baseAddress!, length: raw.count,
+                                 index: Int(THRESH_BUFFER_UNIFORMS))
+                }
+                pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
+                pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
+                pre.setVisibleFunctionTable(
+                    specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
+                var dims = SIMD2<UInt32>(UInt32(marchTarget.width),
+                                         UInt32(marchTarget.height))
+                withUnsafeBytes(of: &dims) { raw in
+                    pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
+                }
+                pre.setTexture(coneTex, index: 3)
+                pre.dispatchThreadgroups(
+                    MTLSize(width: (cw + 7) / 8, height: (ch + 7) / 8, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+                pre.endEncoding()
+                coneTexture = coneTex
+            }
+        }
+
+        // A cone-baked pipeline REQUIRES texture 3 (THRESH_CONE gates the
+        // argument in): if the prepass could not run (texture/encoder alloc
+        // failure), render generic this frame instead of tripping validation.
+        if program == nil, specialized?.conePrepass != nil, coneTexture == nil {
+            specialized = nil
+            diagnostics.pipeline = auxOutputs ? .genericAux : .generic
+            lastDiagnostics = diagnostics
+        }
+
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return lastDiagnostics }
         encoder.label = "session march"
         encoder.setComputePipelineState(
@@ -574,6 +634,9 @@ final class SessionGPUEncoder {
                              index: Int(THRESH_BUFFER_PALETTE))
         }
         encoder.setTexture(marchTarget, index: Int(THRESH_TEXTURE_OUTPUT))
+        if let coneTexture {
+            encoder.setTexture(coneTexture, index: 3)
+        }
 
         // Temporal-input bindings (aux pipeline only): previous camera for
         // motion vectors, this frame's Halton(2,3) sub-pixel jitter, and the

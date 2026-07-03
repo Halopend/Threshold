@@ -6,3 +6,4 @@ DerivedData/
 *.xcuserstate
 /artifacts/
 bench-results/
+.bench-history/

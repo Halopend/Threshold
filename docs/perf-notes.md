@@ -334,3 +334,85 @@ Suite upgrades (user ask: longer runs, CSV memory, consistency):
 
 Block total (7+8): 2048² mandelbox 42.3 → 25.0 ms (23.6 → 40.1 fps).
 390/390 tests green.
+
+## Hierarchical cone-march prepass + CPU/precision rounds — 2026-07-03 (perf block 9)
+
+**The headline: 2048² mandelbox 25.0 → 14.0 ms (40 → 71 fps). The suite goal
+(30 fps @2048²) now passes at 2.4×.**
+
+| Round | Change | 2048² median |
+|---|---|---|
+| 15a | tile cone-march IN-KERNEL (threadgroup mem + barrier) | 28.6 ms — REGRESSION, discarded |
+| 15b | cone-march as SEPARATE COARSE DISPATCH | 12.9 ms (77.6 fps) |
+| 15c | verify-panel safety fixes (see below) | 14.0 ms (71.2 fps) |
+| 16 | CPU caching: output/cone/stats reuse, bench readback skip, env-read hoists | GPU flat; p95 tightened (alloc spikes gone), ~2-5 ms CPU/frame saved at 2048² |
+| 17 | specialized mathMode .fast + bit-pattern NaN guards | ~2.5% (12.9→12.6-class, pre-15c) |
+| 18 | sincos pairing in bulb DEs | 4.61→5.56 ms on warped-bulb — REGRESSION, reverted |
+
+Cone-march design (RaymarchCore.metal march_cone_prepass + THRESH_CONE gate,
+function constant 8, aux-style bool):
+
+- One thread per 8×8 tile marches the tile's CENTRAL ray, accepting steps
+  only while the DE clears the tile's whole angular footprint
+  (coneK·t; coneK = 1.1 × max corner-ray deviation, corners pushed 1 px for
+  jitter). Safe depth → r32float texture; the fine kernel starts there.
+- The in-kernel threadgroup version LOST (63 idle threads behind a barrier
+  while thread 0 marches); the separate coarse dispatch (fully parallel,
+  64× fewer threads, no barrier) is the winning shape.
+- Adversarial verification (3-agent panel) CONFIRMED the geometry (corner
+  bound valid — quasi-convex angular deviation; step formula keeps the whole
+  advanced segment inside the empty sphere) and found two real majors, both
+  fixed: (1) prepass stop threshold now 3× the fine hit epsilon so edge
+  pixels can't immediate-hit at the tile-shared depth (was: 8×8-quantized
+  silhouettes); (2) poisoned-start recovery — warp-op dScale corrections are
+  local bounds, so a center-ray overshoot INSIDE the surface froze a bad
+  depth for all 64 pixels; the fine march now restarts from t=0 when its
+  first sample at tileStart is already inside (negative distance). Plus a
+  loop-top far-plane guard (prepass t=maxDist must miss, not sample there).
+- Warped-bulb visual check cone on/off: indistinguishable, no tile blocks.
+  Warped-bulb is now 4.8 ms @1024² (was 19.7 at block-7 baseline — 4.1×).
+- Known accepted gaps: prepass steps aren't in totalSteps telemetry (gpuMs
+  is the metric); live session never bakes coneMarch (encoder contract
+  documented on MarchSpec.coneMarch); no unit test renders a cone variant
+  (CLI bench is the gate); tile size 8 hardcoded in Swift + MSL (cross-ref
+  comments at both sites).
+
+Precision scout verdict (2-agent audit): half-precision shading/output is
+below the noise floor on M1 Pro (skip; revisit for Vision Pro thermals);
+MTLCompileOptions.mathFloatingPointFunctions already defaults .fast so
+hand-written metal::fast:: qualifiers would be a no-op; sincos pairing
+measured as a regression under .fast (compiler already optimal) — reverted.
+
+CLI --specialize contract update: it is the PERF pipeline (fast math, cone
+prepass, all bakes) and NO LONGER byte-identical to generic. Goldens gate
+the generic .safe pipeline (unchanged, 390/390 green).
+
+## Live-path cone prepass + perf-tracked commits — 2026-07-03 (perf block 10)
+
+**Live port (Mac/iOS compute path):** `RenderTuning.conePrepass` (default ON
+via envDefault; UI/A-B toggle like every bake), `SessionGPUEncoder` now
+dispatches `march_cone_prepass` before the march when the specialized
+variant carries it, with a 3-deep cone-texture ring parallel to the stats
+ring (in-flight frames must not share the prepass texture) and a generic-
+pipeline fallback if the texture allocation fails (a cone-baked pipeline
+requires texture 3). The prepass sizes to the MARCH TARGET, so it composes
+with MetalFX temporal (reduced-res input). New ConePrepassTests: offscreen
+cone-variant render (tolerance + no-NaN-tile guard) and a real
+CAMetalLayer-drawable live-encoder test that waits for the specialized cone
+variant to land (392 tests green).
+
+**visionOS Compositor NOT ported** (documented in RenderFeatureTable as
+compute-shells-only): the raster path has no specialization seam at all yet
+— porting needs specialized fragment pipelines + per-view (invProj-based)
+prepass ray generation + a per-view cone texture array. Own block; the
+compositor's win today is unchanged (renderQuality governor).
+
+**Perf-tracked commit flow** (`Scripts/bench-commit.sh -m "..."`):
+commit code → bench the CLEAN sha (CSV rows never say +dirty) → attach the
+result table as a git note (refs/notes/bench) on the code commit → archive
+CSV/JSONL + per-run sample JSONs to the results-only orphan branch
+`bench-history` (each commit there names the measured main sha).
+`bench-results/` is gitignored on main. Reading history:
+`git log --oneline --notes=bench` (perf inline with code history) /
+`git show bench-history:history.csv` (the full CSV) — a perf regression
+bisects by walking either one.

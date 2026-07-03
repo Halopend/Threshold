@@ -406,6 +406,20 @@ static inline bool threshHasDistOps(uint runtimeOpCount) {
 #endif
 }
 
+// Tile cone-march prepass (function_constant 8, aux-style bool gate):
+// hierarchical march — a COARSE DISPATCH (march_cone_prepass, one thread per
+// 8x8 tile) cone-marches each tile's central ray and writes the shared safe
+// start depth into a small r32float texture; the fine kernel reads its
+// tile's depth instead of re-marching the same near-field empty space 64
+// times. Absent constant → false: goldens and the specialized==generic
+// equivalence tests are untouched; perf pipelines bake TRUE.
+constant bool thresh_cone_defined [[function_constant(8)]];
+constant bool THRESH_CONE = is_function_constant_defined(thresh_cone_defined)
+    ? thresh_cone_defined : false;
+#define THRESH_TEXTURE_CONE    3
+#define THRESH_BUFFER_CONE_DIMS 8
+#define THRESH_CONE_TILE       8
+
 // Stats instrumentation: the per-pixel atomic step-count add is telemetry,
 // not image data — a variant that bakes FALSE drops one device atomic per
 // thread per frame (totalSteps reads back 0). Generic always counts.
@@ -841,7 +855,8 @@ static inline ThreshMarchResult marchShade(
     device const float* params,
     device const ThreshWarpOp* ops,
     visible_function_table<ThreshDE> deTable,
-    constant ThreshPalette& palette)
+    constant ThreshPalette& palette,
+    float startT = 0.0f)   // hierarchical prepass hands a tile-safe depth
 {
     // Engine params from the reserved slots of the FULL param table.
     const int maxSteps     = threshMaxSteps(int(params[THRESH_SLOT_MAX_STEPS]));
@@ -853,7 +868,7 @@ static inline ThreshMarchResult marchShade(
     // normal-probe floor and AO walk (mapScene returns WORLD distances).
     const float featureScale = 1.0f / max(U.scaleCtx.z, 1e-6f);
 
-    float t = 0.0f;
+    float t = startT;
     float hitEps = 0.0f;
     float trap = 0.0f;
     float hitRadius = 0.0f;   // DE value at the accepted hit (normal center)
@@ -873,10 +888,28 @@ static inline ThreshMarchResult marchShade(
     float stepLength = 0.0f;
 
     for (int i = 0; i < maxSteps; ++i) {
+        if (t > maxDist) { break; }   // loop-top: a prepass start at/near the
+                                      // far plane must MISS, not sample there
         float3 pos = ro + rd * t;
         float2 dm = mapScene(pos, U, params, ops, deTable);
         steps += 1;
-        if (isnan(dm.x) || isinf(dm.x)) { bad = true; break; }
+        // Non-finite guard by BIT PATTERN (exponent all-ones ⇒ Inf/NaN):
+        // isnan/isinf fold to false under -ffinite-math-only (mathMode
+        // .fast), which would silence the sentinel — integer classify
+        // survives every math mode.
+        if ((as_type<uint>(dm.x) & 0x7F800000u) == 0x7F800000u) {
+            bad = true; break;
+        }
+        // Poisoned-start recovery (verified finding): a fractal DE is only
+        // approximately Lipschitz-corrected under warp ops, so the tile
+        // prepass can rarely overshoot INSIDE the surface — every pixel
+        // would then false-hit at the frozen tile depth. A first sample
+        // that is already inside (negative distance) restarts the ray from
+        // the camera as if there were no prepass.
+        if (i == 0 && t > 0.0f && dm.x < 0.0f && startT > 0.0f) {
+            t = 0.0f;
+            continue;
+        }
         const float radius = dm.x;
         const bool sorFail = (omega > 1.0f) && (radius + prevRadius) < stepLength;
         if (sorFail) {
@@ -964,6 +997,19 @@ constant bool THRESH_AUX = is_function_constant_defined(thresh_aux_defined)
 #define THRESH_TEXTURE_DEPTH   1
 #define THRESH_TEXTURE_MOTION  2
 
+// Pixel-center → world ray direction for the compute path's pinhole model
+// (one derivation for the per-pixel rays AND the tile prepass ray).
+static inline float3 threshRayDir(float2 pixel, float w, float h,
+                                  float aspect, float fovTan, float4 camQuat)
+{
+    const float2 ndc = float2(pixel.x / w * 2.0f - 1.0f,
+                              1.0f - pixel.y / h * 2.0f);
+    const float3 dirLocal = normalize(float3(ndc.x * aspect * fovTan,
+                                             ndc.y * fovTan,
+                                             -1.0f));
+    return quatRotate(camQuat, dirLocal);
+}
+
 struct ThreshAuxUniforms {
     float4 prevCamPosFov;  // xyz previous camera position, w previous fovTan
     float4 prevCamQuat;    // previous camera orientation
@@ -984,6 +1030,8 @@ kernel void march_offscreen(
                                                function_constant(THRESH_AUX)]],
     texture2d<float, access::write> motionTex [[texture(THRESH_TEXTURE_MOTION),
                                                 function_constant(THRESH_AUX)]],
+    texture2d<float, access::read> coneTex   [[texture(THRESH_TEXTURE_CONE),
+                                               function_constant(THRESH_CONE)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
     const uint w = outTex.get_width();
@@ -992,21 +1040,28 @@ kernel void march_offscreen(
 
     const float aspect = float(w) / float(h);
     const float fovTan = U.camPosFov.w;
+    const float3 ro = U.camPosFov.xyz;
+
+    // Hierarchical start (perf round 15): the coarse dispatch already
+    // cone-marched this tile — start where it stopped. Every prepass step
+    // was empty space for EVERY pixel ray in the tile (shared origin;
+    // |p_pixel(t) − p_center(t)| = t·|rd_p − rd_c| ≤ coneK·t).
+    float tileStart = 0.0f;
+    if (THRESH_CONE) {
+        tileStart = coneTex.read(gid / THRESH_CONE_TILE).x;
+    }
+
     // Aux path: the jitter shifts this frame's sample point within the pixel
     // (the ray-gen equivalent of MetalFX's expected clip-space projection
     // translate); the scaler receives the same offset and removes it while
     // accumulating history into sub-pixel detail.
     float2 pixel = float2(gid) + 0.5f;
     if (THRESH_AUX) { pixel -= aux.jitter.xy; }
-    const float2 ndc = float2(pixel.x / float(w) * 2.0f - 1.0f,
-                              1.0f - pixel.y / float(h) * 2.0f);
-    const float3 dirLocal = normalize(float3(ndc.x * aspect * fovTan,
-                                             ndc.y * fovTan,
-                                             -1.0f));
-    const float3 rd = quatRotate(U.camQuat, dirLocal);
-    const float3 ro = U.camPosFov.xyz;
+    const float3 rd = threshRayDir(pixel, float(w), float(h),
+                                   aspect, fovTan, U.camQuat);
 
-    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette);
+    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
+                                     tileStart);
 
     // Per-thread step count added ONCE into the device stats counter
     // (baked off in benchmark variants — pure telemetry).
@@ -1043,6 +1098,74 @@ kernel void march_offscreen(
         }
         motionTex.write(float4(motion, 0.0f, 0.0f), gid);
     }
+}
+
+// ---------------------- hierarchical cone prepass ---------------------------
+//
+// One thread per 8x8 output tile: cone-march the tile's central ray with an
+// acceptance radius covering the tile's whole angular footprint (coneK·t) and
+// write the safe start depth. Fully parallel — no intra-group serialization;
+// the fine kernel reads the result (function constant 8 gates both sides).
+// dims buffer (private contract with OffscreenRenderer, buffer 8): the FULL
+// output w/h — the coarse texture's own dims are rounded up and cannot
+// reproduce exact ray directions.
+kernel void march_cone_prepass(
+    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+    constant uint2& fullDims                 [[buffer(THRESH_BUFFER_CONE_DIMS)]],
+    texture2d<float, access::write> coneTex  [[texture(THRESH_TEXTURE_CONE)]],
+    uint2 gid                                [[thread_position_in_grid]])
+{
+    const uint cw = coneTex.get_width();
+    const uint ch = coneTex.get_height();
+    if (gid.x >= cw || gid.y >= ch) { return; }
+
+    const float w = float(fullDims.x);
+    const float h = float(fullDims.y);
+    const float aspect = w / h;
+    const float fovTan = U.camPosFov.w;
+    const float3 ro = U.camPosFov.xyz;
+
+    const float2 base = float2(gid) * float(THRESH_CONE_TILE);
+    const float2 centerPx = base + 0.5f * float(THRESH_CONE_TILE);
+    const float3 rdC = threshRayDir(centerPx, w, h, aspect, fovTan, U.camQuat);
+
+    // Angular spread bound: max deviation of the tile's corner rays (±1 px
+    // beyond the corners to cover the aux path's sub-pixel jitter) + 10%.
+    float coneK = 0.0f;
+    for (int cy = 0; cy <= 1; ++cy) {
+        for (int cx = 0; cx <= 1; ++cx) {
+            const float2 px = base
+                + float2(cx, cy) * (float(THRESH_CONE_TILE) + 2.0f) - 1.0f;
+            const float3 rdX = threshRayDir(px, w, h, aspect, fovTan, U.camQuat);
+            coneK = max(coneK, length(rdX - rdC));
+        }
+    }
+    coneK *= 1.1f;
+
+    const float maxDist = params[THRESH_SLOT_MAX_DIST];
+    const float epsBase = U.scaleCtx.y;
+    float t = 0.0f;
+    for (int i = 0; i < 48; ++i) {
+        float d = mapScene(ro + rdC * t, U, params, ops, deTable).x;
+        // Bit-pattern non-finite test — survives mathMode .fast (see march).
+        if ((as_type<uint>(d) & 0x7F800000u) == 0x7F800000u) {
+            t = 0.0f; break;                             // fall back: no skip
+        }
+        // Largest Δt keeping the WHOLE advanced cone segment inside the
+        // empty sphere: Δ + coneK·(t+Δ) ≤ d.
+        const float slack = d - coneK * t;
+        // Stop 3× ABOVE the fine march's hit epsilon (verified finding: an
+        // equal threshold lets edge pixels immediate-hit at the tile-shared
+        // depth — 8×8-quantized silhouettes). The margin leaves the per-pixel
+        // march refinement room.
+        if (slack <= 3.0f * epsBase * t) { break; }
+        t += slack * 0.9f / (1.0f + coneK);
+        if (t > maxDist) { t = maxDist; break; }
+    }
+    coneTex.write(float4(t, 0.0f, 0.0f, 0.0f), gid);
 }
 
 // ========================== stereo raster path ==============================

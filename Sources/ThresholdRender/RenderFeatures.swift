@@ -67,5 +67,12 @@ public enum RenderFeatureTable {
         // scenes apply their params/palette but render on compute shells.
         RenderFeature(
             id: "de.external", paths: [.offscreen, .interactive], requiredOnAll: false),
+        // Hierarchical cone-march prepass (perf block 9): coarse tile dispatch
+        // + THRESH_CONE-gated march start. Compute shells only — the
+        // compositor's raster path has no specialization seam yet (its port
+        // needs per-view prepass raygen + specialized fragment pipelines).
+        RenderFeature(
+            id: "march.conePrepass", paths: [.offscreen, .interactive],
+            requiredOnAll: false),
     ]
 }

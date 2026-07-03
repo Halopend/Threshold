@@ -304,9 +304,11 @@ if opts.specialize, program == nil {
         // _MAXSTEPS / _HASOPS / _MAPMODE / _AO = 1. Read once here: a static
         // scene resolves constant values; an animated value keeps this initial
         // one and would surface as a --compare mismatch, not a silent drift.
-        // All bakes ON by default (perf round 6): each is measured
-        // byte-identical, and the CLI resolves a static scene's values once.
-        // THRESHOLD_SPEC_<KNOB>=0 disables one for A/B.
+        // All bakes ON by default. The constant bakes (iterations/steps/ops/
+        // map/AO) are byte-identical; --specialize as a whole is the PERF
+        // pipeline (fast math since block 8, cone prepass since block 9) and
+        // NO LONGER byte-identical to generic — goldens gate the generic
+        // pipeline. THRESHOLD_SPEC_<KNOB>=0 disables one knob for A/B.
         let r = engine.resolve().values
         let flags = ProcessInfo.processInfo.environment
         func on(_ key: String) -> Bool { flags[key] != "0" }
@@ -325,7 +327,9 @@ if opts.specialize, program == nil {
             },
             // Benchmark runs drop the per-pixel stats atomic unless --stats
             // asked for step counts (pure telemetry; image unchanged).
-            statsEnabled: !(opts.benchFrames > 0 && opts.statsPath == nil))
+            statsEnabled: !(opts.benchFrames > 0 && opts.statsPath == nil),
+            // Hierarchical tile prepass (THRESHOLD_SPEC_CONE=0 for A/B).
+            coneMarch: on("THRESHOLD_SPEC_CONE"))
         specialized = try context.makeSpecializedMarch(
             deFunctionName: descriptor.mslFunctionName, spec: spec)
         if !opts.quiet {
@@ -361,8 +365,16 @@ let scene = envelope
 /// One frame through the full scene path: advance the fixed-step clock,
 /// resolve, build the request, render. Shared by the normal frame loop and
 /// --bench mode so the benchmark measures exactly the production path.
+// Env measurement seams, parsed once (ProcessInfo.environment re-bridges the
+// whole dictionary per access — not free inside the frame loop).
+let envStepMultiplier = ProcessInfo.processInfo.environment["THRESHOLD_STEP_MULTIPLIER"]
+    .flatMap(Float.init)
+let envEpsScale = ProcessInfo.processInfo.environment["THRESHOLD_EPS_SCALE"]
+    .flatMap(Float.init) ?? 1
+
+/// `readback: false` skips the pixel copy for timing-only bench frames.
 @MainActor
-func renderOneFrame(_ frame: Int) throws -> RenderResult {
+func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult {
     clock.advance()
     let resolved = engine.resolve()
 
@@ -380,8 +392,7 @@ func renderOneFrame(_ frame: Int) throws -> RenderResult {
     // Measurement override: engine.stepSafety is .deviceLocal (not scene-
     // persisted), so THRESHOLD_STEP_MULTIPLIER is the CLI A/B knob for the
     // over-relaxation factor ω.
-    if let omega = ProcessInfo.processInfo.environment["THRESHOLD_STEP_MULTIPLIER"]
-        .flatMap(Float.init) {
+    if let omega = envStepMultiplier {
         engineParams.stepSafety = omega
     }
     engineParams.iterations = resolved.values[Int(THRESH_SLOT_ITERATIONS)]
@@ -424,10 +435,8 @@ func renderOneFrame(_ frame: Int) throws -> RenderResult {
         octave: scene.scaleOctave)
     // Measurement seam: THRESHOLD_EPS_SCALE multiplies the cone-epsilon base
     // (accuracy↔steps A/B knob; > 1 accepts surfaces earlier).
-    let epsScale = ProcessInfo.processInfo.environment["THRESHOLD_EPS_SCALE"]
-        .flatMap(Float.init) ?? 1
     uniforms.scaleCtx = SIMD4(
-        Float(clock.now), scaleContext.epsilonBase * epsScale,
+        Float(clock.now), scaleContext.epsilonBase * envEpsScale,
         scaleContext.modelScale, 1)
     uniforms.meta = SIMD4(
         UInt32(ops.count), descriptor.index,
@@ -437,7 +446,8 @@ func renderOneFrame(_ frame: Int) throws -> RenderResult {
         uniforms: uniforms, params: params, ops: ops,
         palette: scene.palette?.stops ?? [],
         width: opts.width, height: opts.height)
-    return try renderer.render(request, program: program, specialized: specialized)
+    return try renderer.render(request, program: program,
+                               specialized: specialized, readback: readback)
 }
 
 if opts.benchFrames > 0 {
@@ -446,12 +456,15 @@ if opts.benchFrames > 0 {
     // statistics live in the library's FrameBenchmark.summarize.)
     do {
         for frame in 0..<max(0, opts.benchWarmup) {
-            _ = try renderOneFrame(frame)
+            _ = try renderOneFrame(frame, readback: false)
         }
         var samples: [Double] = []
         var benchSteps: UInt64 = 0
         for frame in 0..<opts.benchFrames {
-            let r = try renderOneFrame(opts.benchWarmup + frame)
+            // Pixels are only needed on the final frame, and only for --out.
+            let last = frame == opts.benchFrames - 1
+            let r = try renderOneFrame(opts.benchWarmup + frame,
+                                       readback: last && opts.outPathExplicit)
             samples.append(r.stats.gpuMilliseconds)
             benchSteps += r.stats.totalSteps
             lastResult = r
