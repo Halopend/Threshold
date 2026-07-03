@@ -191,13 +191,23 @@ public final class InteractiveSession: @unchecked Sendable {
             return
         }
 
+        // Profiling instrumentation (render-thread confined). Signposts are
+        // always on (free when no Instruments tool is attached); the periodic
+        // os_log summary is opt-in via THRESHOLD_PROFILE so normal runs stay
+        // quiet. See RenderTelemetry.swift.
+        let env = ProcessInfo.processInfo.environment
+        let profiler = FrameProfiler(
+            telemetry: RenderTelemetry(),
+            logSummaries: env["THRESHOLD_PROFILE"] != nil,
+            filePath: env["THRESHOLD_PROFILE_FILE"])
+
         let link = CAMetalDisplayLink(metalLayer: layer)
         let proxy = DisplayLinkProxy { [self] update in
             if stopRequested.load(ordering: .acquiring) {
                 CFRunLoopStop(CFRunLoopGetCurrent())
                 return
             }
-            renderFrame(core: core, gpu: gpu, update: update)
+            renderFrame(core: core, gpu: gpu, update: update, profiler: profiler)
         }
         link.delegate = proxy
         link.add(to: .current, forMode: .default)
@@ -214,23 +224,55 @@ public final class InteractiveSession: @unchecked Sendable {
     }
 
     /// The thin shell: SessionCore does the frame; this presents it.
+    /// Instrumented per phase so Instruments (and the periodic log summary) can
+    /// attribute the frame cost: drawable acquisition (where CAMetalDisplayLink
+    /// backpressure surfaces), the CPU step, and the encode.
     private func renderFrame(
-        core: SessionCore, gpu: SessionGPUEncoder, update: CAMetalDisplayLink.Update
+        core: SessionCore, gpu: SessionGPUEncoder, update: CAMetalDisplayLink.Update,
+        profiler: FrameProfiler
     ) {
+        let sp = profiler.signposter
+        let entry = Mono.now()
+        let frameState = sp.beginInterval("frame")
+
+        // Drawable acquisition — a blocking point when the drawable pool is
+        // drained (GPU behind), so it is measured separately from encode.
+        let drawableStart = Mono.now()
+        let drawableState = sp.beginInterval("drawable")
         let drawable = update.drawable
         let texture = drawable.texture
+        sp.endInterval("drawable", drawableState)
+        let drawableMs = Mono.ms(drawableStart, Mono.now())
+
         // targetTimestamp is the ONE permitted time source (Invariant 9);
         // the dispatch grid follows the drawable's ACTUAL size each frame.
+        let stepStart = Mono.now()
+        let stepState = sp.beginInterval("core.step")
         let frame = core.step(
             now: update.targetTimestamp,
             width: texture.width,
             height: texture.height)
+        sp.endInterval("core.step", stepState)
+        let stepMs = Mono.ms(stepStart, Mono.now())
+
         // Previous completed frame's stats — the frame path never waits.
         let stats = gpu.lastCompleted()
+
+        let encodeStart = Mono.now()
+        let encodeState = sp.beginInterval("encode")
         gpu.encode(frame.request, to: drawable)
+        sp.endInterval("encode", encodeState)
+        let encodeMs = Mono.ms(encodeStart, Mono.now())
+
         snapshots.publish(frame.snapshot(
             gpuMilliseconds: stats.gpuMilliseconds,
             totalSteps: stats.totalSteps))
+
+        sp.endInterval("frame", frameState)
+        profiler.record(
+            entry: entry, stepMs: stepMs, drawableMs: drawableMs, encodeMs: encodeMs,
+            gpuMs: stats.gpuMilliseconds, frameIndex: frame.frameIndex,
+            pixels: texture.width * texture.height)
     }
 }
 
