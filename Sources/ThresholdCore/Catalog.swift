@@ -242,6 +242,8 @@ public final class Catalog {
                       range: 0...1, default: 0,
                       composition: .replace, persistence: .scene, group: .color),
             atSlot: EngineSlot.tonemap.rawValue)
+        // Zoom (plan §6.3): rate + integrator phase feeding ScaleContext.
+        try! catalog.registerScaleParams()
         // swiftlint:enable force_try
         return catalog
     }

@@ -508,9 +508,13 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
 //
 // THE single scene distance function (Invariant 7). March loop, tetrahedron
 // normals, and AO all evaluate the identical pipeline:
-//   (p', dScale) = applyPointOps(worldP)
-//   d = de(p', ctx).x / dScale
-//   d = applyDistanceOps(worldP, d)
+//   (p', dScale) = applyPointOps(worldP * modelScale), dScale seeded modelScale
+//   d = de(p', ctx).x / dScale          — a WORLD-space bound at any zoom
+//   d = applyDistanceOps(worldP, d)     — hand/world-space ops stay unscaled
+//
+// modelScale (scaleCtx.z) is the zoom: model space shrinks relative to the
+// world, positions scale in, distances divide back out (plan §6.3 —
+// ScaleContext.swift is the CPU derivation site).
 
 static float2 mapScene(float3 worldP,
                        constant ThreshFrameUniforms& U,
@@ -518,8 +522,9 @@ static float2 mapScene(float3 worldP,
                        device const ThreshWarpOp* ops,
                        visible_function_table<ThreshDE> deTable)
 {
-    float dScale = 1.0f;
-    float3 q = applyPointOps(worldP, ops, U.meta.x, dScale);
+    const float modelScale = U.scaleCtx.z;
+    float dScale = modelScale;
+    float3 q = applyPointOps(worldP * modelScale, ops, U.meta.x, dScale);
 
     ThreshDEContext ctx;
     ctx.params = params + U.meta.w;          // DE param slice at deParamOffset
@@ -619,7 +624,9 @@ static float3 calcNormal(float3 pos, float h,
 }
 
 // Cheap 5-tap ambient occlusion along the normal, scaled by aoStrength.
-static float cheapAO(float3 pos, float3 n, float aoStrength, float modelScale,
+// `featureScale` = 1/modelScale — world-space size of a unit model feature
+// (ScaleContext.swift): AO probes walk world distances, so they scale with it.
+static float cheapAO(float3 pos, float3 n, float aoStrength, float featureScale,
                      constant ThreshFrameUniforms& U,
                      device const float* params,
                      device const ThreshWarpOp* ops,
@@ -628,7 +635,7 @@ static float cheapAO(float3 pos, float3 n, float aoStrength, float modelScale,
     float occ = 0.0f;
     float sca = 1.0f;
     for (int i = 1; i <= 5; ++i) {
-        float h = (0.01f + 0.12f * float(i)) * modelScale;
+        float h = (0.01f + 0.12f * float(i)) * featureScale;
         float d = mapScene(pos + n * h, U, params, ops, deTable).x;
         occ += (h - d) * sca;
         sca *= 0.7f;
@@ -679,7 +686,9 @@ kernel void march_offscreen(
     const float stepSafety = params[THRESH_SLOT_STEP_SAFETY];
     const float aoStrength = params[THRESH_SLOT_AO_STRENGTH];
     const float epsBase    = U.scaleCtx.y;
-    const float modelScale = U.scaleCtx.z;
+    // World-space size of a unit model feature at this zoom — scales the
+    // normal-probe floor and AO walk (mapScene returns WORLD distances).
+    const float featureScale = 1.0f / max(U.scaleCtx.z, 1e-6f);
 
     float t = 0.0f;
     float hitEps = 0.0f;
@@ -693,7 +702,8 @@ kernel void march_offscreen(
         float2 dm = mapScene(pos, U, params, ops, deTable);
         steps += 1;
         if (isnan(dm.x) || isinf(dm.x)) { bad = true; break; }
-        hitEps = epsBase * modelScale * t;      // distance-proportional epsilon
+        hitEps = epsBase * t;   // distance-proportional (cone) epsilon —
+                                // scale-invariant: dm.x is already world-space
         if (dm.x < hitEps) { hit = true; trap = dm.y; break; }
         t += dm.x * stepSafety;
         if (t > maxDist) { break; }
@@ -707,7 +717,7 @@ kernel void march_offscreen(
         color = float4(1.0f, 0.0f, 1.0f, 0.0f);              // NaN sentinel
     } else if (hit) {
         float3 pos = ro + rd * t;
-        float nEps = max(hitEps, 1e-4f * modelScale);
+        float nEps = max(hitEps, 1e-4f * featureScale);
         float3 n = calcNormal(pos, nEps, U, params, ops, deTable);
         float3 lightDir = normalize(float3(1.0f, 0.8f, 0.6f));
         float lambert = max(dot(n, lightDir), 0.0f);
@@ -731,7 +741,7 @@ kernel void march_offscreen(
             params[THRESH_SLOT_GRAD_REPEAT],
             params[THRESH_SLOT_GRAD_OFFSET],
             params[THRESH_SLOT_GRAD_SMOOTH]);
-        float occ = cheapAO(pos, n, aoStrength, modelScale, U, params, ops, deTable);
+        float occ = cheapAO(pos, n, aoStrength, featureScale, U, params, ops, deTable);
         float3 lit = albedo * (lambert + 0.2f) * occ;
         color = float4(applyGrading(lit, params), 1.0f);
     } else {

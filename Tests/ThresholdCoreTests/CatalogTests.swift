@@ -59,15 +59,16 @@ struct CatalogTests {
         let c = try catalog.register(spec("t.vec4", kind: .float4))
         let d = try catalog.register(spec("t.scalar2"))
 
-        #expect(a == 16)
-        #expect(b == 17)  // 17, 18, 19
-        #expect(c == 20)  // 20, 21, 22, 23
-        #expect(d == 24)
+        // withEngineDefaults registers the two scale params first (16, 17).
+        #expect(a == 18)
+        #expect(b == 19)  // 19, 20, 21
+        #expect(c == 22)  // 22, 23, 24, 25
+        #expect(d == 26)
 
         let layout = catalog.freeze(dynamicArenaSlots: 0)
-        #expect(layout.entry(for: ParamKey("t.vec3"))?.slotRange == 17..<20)
-        #expect(layout.entry(for: ParamKey("t.vec4"))?.slotRange == 20..<24)
-        #expect(layout.slotCount == 25)
+        #expect(layout.entry(for: ParamKey("t.vec3"))?.slotRange == 19..<22)
+        #expect(layout.entry(for: ParamKey("t.vec4"))?.slotRange == 22..<26)
+        #expect(layout.slotCount == 27)
     }
 
     @Test("freeze appends the dynamic arena after the static slots")
@@ -116,7 +117,8 @@ struct CatalogTests {
         let catalog = Catalog.withEngineDefaults()
         try catalog.register(spec("t.x"))
         let layout = catalog.freeze()
-        #expect(layout.slot(for: ParamKey("t.x")) == 16)
+        // Scale params occupy 16–17 (withEngineDefaults), so t.x lands at 18.
+        #expect(layout.slot(for: ParamKey("t.x")) == 18)
         #expect(layout.slot(for: .engineStepSafety) == 2)
         #expect(layout.slot(for: ParamKey("t.missing")) == nil)
         #expect(layout.entry(for: ParamKey("t.x"))?.kind == .float)

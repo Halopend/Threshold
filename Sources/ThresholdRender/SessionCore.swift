@@ -169,7 +169,12 @@ final class SessionCore {
         uniforms.camQuat = quatLength > 1e-6 && quatLength.isFinite
             ? rawQuat / quatLength
             : SIMD4(0, 0, 0, 1)
-        uniforms.scaleCtx = SIMD4(Float(clock.now), 1e-3, 1, 1)
+        // Zoom (plan §6.3): resolved scale.zoom (integrator phase driven by
+        // scale.zoomSpeed) → ScaleContext, THE scale derivation site.
+        let scaleContext = ScaleContext(
+            zoomOctaves: layout.slot(for: .scaleZoom).map { resolved.values[$0] } ?? 0)
+        uniforms.scaleCtx = SIMD4(
+            Float(clock.now), scaleContext.epsilonBase, scaleContext.modelScale, 1)
         uniforms.meta = SIMD4(
             UInt32(gpuOps.count), descriptor.index,
             UInt32(params.count), UInt32(deParamOffset))
