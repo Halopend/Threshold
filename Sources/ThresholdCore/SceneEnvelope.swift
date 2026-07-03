@@ -29,11 +29,20 @@ public struct EmbeddedDEParam: Sendable, Equatable, Codable {
 /// Compilation/validation is the render layer's job; persistence just carries
 /// the source and its provenance.
 public struct EmbeddedDE: Sendable, Equatable, Codable {
+    /// The DE ABI version this build targets. MUST mirror
+    /// THRESHOLD_ABI_VERSION in ThresholdShaderABI.h — ThresholdCore cannot
+    /// import the header (Foundation-only rule), so a cross-target test in
+    /// ThresholdRenderTests asserts the two are equal. Writers (snapshots,
+    /// migrations) stamp this into embedded DEs.
+    public static let currentABIVersion = 2
+
     /// MSL source defining `[[visible]] float2 de_main(float3, thread const
     /// ThreshDEContext&)` — compiled at load against the published ABI header.
     public var source: String
     public var abiVersion: Int
-    /// Content hash of `source` (hex); cache key and tamper check.
+    /// Content hash of `source` (hex); cache key and tamper check. Empty
+    /// means the author declared none (e.g. migrated legacy formulas) — the
+    /// loader then computes it for cache identity only.
     public var hash: String
     /// Declared params, in GPU slice order (same convention as built-in
     /// descriptors: the iteration count is appended after these).

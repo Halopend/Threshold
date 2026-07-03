@@ -138,6 +138,52 @@ public enum LegacyScene {
             }
         }
 
+        // --- embedded formulas (fractalType "custom") -----------------------
+        // The original's user-authored DEs, adapted verbatim onto the
+        // rebuild's external-DE pipeline: shim prelude + untouched
+        // metalSource + generated de_main (LegacyFormulaShim). No declared
+        // hash — the loader computes one for cache identity. The raw
+        // embeddedFormula stays in the tree (never delete).
+        if case .string("custom")? = tree["fractalType"],
+           case .object(let formula)? = tree["embeddedFormula"],
+           case .string(let metalSource)? = formula["metalSource"],
+           case .string(let stem)? = formula["functionStem"] {
+            var declared: [(index: Int, param: JSONValue)] = []
+            if case .array(let rawParams)? = formula["params"] {
+                for value in rawParams {
+                    guard case .object(let p) = value,
+                          case .string(let name)? = p["name"],
+                          case .number(let def)? = p["default"],
+                          case .number(let lo)? = p["min"],
+                          case .number(let hi)? = p["max"]
+                    else { continue }
+                    var index = declared.count
+                    if case .number(let i)? = p["index"], let exact = Int(exactly: i.rounded()) {
+                        index = exact
+                    }
+                    declared.append((index, .object([
+                        "name": .string(name),
+                        "defaultValue": .number(def),
+                        "min": .number(lo),
+                        "max": .number(hi),
+                    ])))
+                }
+            }
+            declared.sort { $0.index < $1.index }  // GPU slice order
+            let source = LegacyFormulaShim.adapt(
+                metalSource: metalSource, stem: stem, declaredParams: declared.count)
+            tree["embeddedDE"] = .object([
+                "source": .string(source),
+                "abiVersion": .number(Double(EmbeddedDE.currentABIVersion)),
+                "hash": .string(""),
+                "params": .array(declared.map(\.param)),
+            ])
+            if case .number(let iters)? = formula["defaultIterations"],
+               params[ParamKey.engineIterations.rawValue] == nil {
+                params[ParamKey.engineIterations.rawValue] = .array([.number(iters)])
+            }
+        }
+
         // --- mandelbox DE params -------------------------------------------
         // The original's mandelbox uniforms map 1:1 onto the rebuild's
         // declared layout (mandelboxSDF_exact in the original's

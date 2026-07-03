@@ -137,7 +137,9 @@ public final class ExternalDELoader: @unchecked Sendable {
                 declared: embedded.abiVersion, current: Int(THRESHOLD_ABI_VERSION))
         }
         let hash = Self.sourceHash(embedded.source)
-        guard hash == embedded.hash.lowercased() else {
+        // Empty = no declared hash (migrated legacy formulas): the hash still
+        // keys the cache, there is just nothing to tamper-check against.
+        guard embedded.hash.isEmpty || hash == embedded.hash.lowercased() else {
             throw ExternalDEError.hashMismatch(declared: embedded.hash, computed: hash)
         }
         // Cache key includes the declared params: the same source loaded with
