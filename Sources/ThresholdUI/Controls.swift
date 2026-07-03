@@ -136,17 +136,20 @@ public struct ParameterRow: View {
 // MARK: - Float
 
 /// Slider for one scalar slot, mapped through the spec's ResponseCurve.
+/// Shares `EffectSliderRow`'s geometry (RowMetrics) so catalog rows and
+/// ad-hoc rows line up in the same card.
 struct FloatSlotRow: View {
     let label: String
     let slot: Int
     let range: ClosedRange<Float>
     let curve: ResponseCurve
     let mirror: ParameterMirror
+    var icon: String?
+    var labelWidth: CGFloat = RowMetrics.labelWidth
 
     var body: some View {
-        HStack {
-            Text(label)
-                .lineLimit(1)
+        HStack(spacing: DS.Spacing.sm) {
+            RowLabel(icon: icon, label: label, labelWidth: labelWidth)
             Slider(value: positionBinding, in: 0...1) { editing in
                 if editing {
                     mirror.beginEdit(slot: slot)
@@ -154,11 +157,9 @@ struct FloatSlotRow: View {
                     mirror.endEdit(slot: slot)
                 }
             }
-            Text(ValueFormatting.format(mirror.displayValue(slot: slot)))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 56, alignment: .trailing)
+            RowValueText(text: ValueFormatting.format(mirror.displayValue(slot: slot)))
         }
+        .frame(minHeight: RowMetrics.height)
     }
 
     private var positionBinding: SwiftUI.Binding<Double> {
@@ -249,7 +250,8 @@ struct VectorRow: View {
                     slot: entry.slot + component,
                     range: entry.spec.range,
                     curve: entry.spec.curve,
-                    mirror: mirror)
+                    mirror: mirror,
+                    labelWidth: 24)
             }
         }
     }

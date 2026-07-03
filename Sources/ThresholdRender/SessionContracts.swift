@@ -212,6 +212,30 @@ public final class SceneCaptureSlot: Sendable {
     }
 }
 
+// MARK: - ImageCaptureSlot
+
+/// Single-slot handoff for a still-image capture: the render thread renders
+/// the CURRENT frame's request offscreen at the requested size and publishes
+/// the result; the requesting thread polls `take()`. Same shape as
+/// SceneCaptureSlot — command mailbox in, slot out (Invariant 13).
+public final class ImageCaptureSlot: Sendable {
+    private let slot = Mutex<RenderResult?>(nil)
+
+    public init() {}
+
+    public func publish(_ result: RenderResult) {
+        slot.withLock { $0 = result }
+    }
+
+    /// Removes and returns the captured image, if one has landed.
+    public func take() -> RenderResult? {
+        slot.withLock { captured in
+            defer { captured = nil }
+            return captured
+        }
+    }
+}
+
 // MARK: - SessionCommand
 
 /// Structural changes, drained by the render thread at frame start so a
@@ -260,6 +284,11 @@ public enum SessionCommand: Sendable {
     /// camera + palette + embedded DE) into the slot — the native save path.
     /// Snapshotting needs live engine state, which is render-thread confined.
     case captureScene(into: SceneCaptureSlot)
+    /// Render the CURRENT frame's request offscreen at the given size and
+    /// publish the pixels into the slot (image export). Consumed by live
+    /// shells that build per-frame requests (InteractiveSession); the
+    /// compositor shell ignores it (no flat 2D frame exists there).
+    case captureImage(width: Int, height: Int, into: ImageCaptureSlot)
     /// Enable (or with nil, disable) the fps-holding quality governor
     /// (ADR-003): a registered system-lane writer emitting a 0…1 factor on
     /// the quality-class params. Disabling clears its lane writes.

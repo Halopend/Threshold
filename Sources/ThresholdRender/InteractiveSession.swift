@@ -193,6 +193,11 @@ public final class InteractiveSession: @unchecked Sendable {
             return
         }
 
+        // Image export (captureImage command): renders the live frame's
+        // request offscreen. Render-thread confined like everything else;
+        // nil (allocation failure) just means exports never land.
+        let exporter = try? OffscreenRenderer(context: context)
+
         // Profiling instrumentation (render-thread confined). Signposts are
         // always on (free when no Instruments tool is attached); the periodic
         // os_log summary is opt-in via THRESHOLD_PROFILE so normal runs stay
@@ -209,7 +214,9 @@ public final class InteractiveSession: @unchecked Sendable {
                 CFRunLoopStop(CFRunLoopGetCurrent())
                 return
             }
-            renderFrame(core: core, gpu: gpu, update: update, profiler: profiler)
+            renderFrame(
+                core: core, gpu: gpu, exporter: exporter, update: update,
+                profiler: profiler)
         }
         link.delegate = proxy
         link.add(to: .current, forMode: .default)
@@ -230,8 +237,8 @@ public final class InteractiveSession: @unchecked Sendable {
     /// attribute the frame cost: drawable acquisition (where CAMetalDisplayLink
     /// backpressure surfaces), the CPU step, and the encode.
     private func renderFrame(
-        core: SessionCore, gpu: SessionGPUEncoder, update: CAMetalDisplayLink.Update,
-        profiler: FrameProfiler
+        core: SessionCore, gpu: SessionGPUEncoder, exporter: OffscreenRenderer?,
+        update: CAMetalDisplayLink.Update, profiler: FrameProfiler
     ) {
         let sp = profiler.signposter
         let entry = Mono.now()
@@ -261,6 +268,23 @@ public final class InteractiveSession: @unchecked Sendable {
             gpuMilliseconds: stats.gpuMilliseconds)
         sp.endInterval("core.step", stepState)
         let stepMs = Mono.ms(stepStart, Mono.now())
+
+        // Image export: the SAME request the drawable is about to present,
+        // re-rendered offscreen at the export size (renderScale 1 — exports
+        // never go through the live upscale path). Synchronous on the render
+        // thread: one hitch frame per export, by design.
+        if let capture = core.takePendingImageCapture() {
+            if let exporter {
+                var exportRequest = frame.request
+                exportRequest.width = capture.width
+                exportRequest.height = capture.height
+                exportRequest.renderScale = 1
+                if let result = try? exporter.render(
+                    exportRequest, program: frame.externalProgram) {
+                    capture.slot.publish(result)
+                }
+            }
+        }
 
         let encodeStart = Mono.now()
         let encodeState = sp.beginInterval("encode")

@@ -203,17 +203,16 @@ struct MainView: View {
                 .frame(minWidth: 480, minHeight: 480)
                 .layoutPriority(1)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Toggle("React to Audio (mic)", isOn: $audioReactive)
-                        .onChange(of: audioReactive) { _, on in
-                            model.setAudioReactive(on)
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 8)
-                    Divider()
-                    ControlSidebar(mirror: model.mirror, layout: model.layout)
-                }
+            // The sidebar scrolls itself (tab strip stays fixed on top).
+            VStack(spacing: 0) {
+                Toggle("React to Audio (mic)", isOn: $audioReactive)
+                    .onChange(of: audioReactive) { _, on in
+                        model.setAudioReactive(on)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                Divider()
+                ControlSidebar(mirror: model.mirror, layout: model.layout)
             }
             .frame(minWidth: 320, idealWidth: 360, maxWidth: 480)
         }

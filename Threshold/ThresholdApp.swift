@@ -14,6 +14,8 @@
 #if os(visionOS)
 import CompositorServices
 #endif
+import ImageIO
+import os
 import SwiftUI
 import ThresholdCore
 import ThresholdInputs
@@ -23,6 +25,9 @@ import ThresholdUI
 import UniformTypeIdentifiers
 
 // MARK: - Shared shell pieces (all platforms)
+
+/// Shell diagnostics (`log stream --predicate 'subsystem == "com.pupppower.threshold"'`).
+let appLog = Logger(subsystem: "com.pupppower.threshold", category: "shell")
 
 /// Constants shared by the desktop and visionOS composition roots.
 enum AppModelShared {
@@ -72,6 +77,45 @@ struct SceneFileDocument: FileDocument {
     }
 }
 
+/// Export wrapper for still-image capture (Export PNG).
+struct PNGFileDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.png] }
+
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// RGBA8 render result → PNG bytes (ImageIO; same encode as the offscreen
+/// CLI's writePNG, minus the file write).
+func pngData(from result: RenderResult) -> Data? {
+    let bytesPerRow = result.width * 4
+    guard let provider = CGDataProvider(data: Data(result.rgba8) as CFData),
+          let image = CGImage(
+            width: result.width, height: result.height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent)
+    else { return nil }
+    let out = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(
+        out, UTType.png.identifier as CFString, 1, nil)
+    else { return nil }
+    CGImageDestinationAddImage(dest, image, nil)
+    guard CGImageDestinationFinalize(dest) else { return nil }
+    return out as Data
+}
+
 #if os(macOS) || os(iOS)
 
 // MARK: - Composition root (live-render platforms)
@@ -93,6 +137,12 @@ final class AppModel {
     var lastOpenError: String?
     /// Camera gestures → gesture-lane writes (plan §8.3).
     @ObservationIgnored let camera: CameraInteraction
+    /// The on-disk scene library behind the Scenes tab.
+    @ObservationIgnored let sceneLibrary = SceneLibrary()
+    #if os(macOS)
+    /// Arrow-key / WASD camera control (Settings ▸ Input toggles it).
+    @ObservationIgnored let keyboardNav = KeyboardCameraNav()
+    #endif
 
     init() throws {
         // Catalog: engine params + every built-in DE's params — one
@@ -131,9 +181,15 @@ final class AppModel {
         session.start()
         mirror.startPolling()
         mirror.setQualityGovernor(.platformDefault)
+        #if os(macOS)
+        keyboardNav.install(camera: camera)
+        #endif
     }
 
     func stop() {
+        #if os(macOS)
+        keyboardNav.remove()
+        #endif
         audio.stop()
         mirror.stopPolling()
         session.stop()
@@ -190,11 +246,14 @@ final class AppModel {
 
     /// Capture the authored scene from the render thread (plan §7.1: save is
     /// a catalog walk — nothing hand-written to forget). The command lands on
-    /// the next frame; polling covers a paused-but-stepping loop.
+    /// the next frame; the deadline is wall-clock (a busy main actor can
+    /// stretch individual sleeps well past their nominal 25 ms).
     func captureScene() async -> SceneEnvelope? {
         let slot = SceneCaptureSlot()
         session.commands.publish(.captureScene(into: slot))
-        for _ in 0..<40 {
+        appLog.info("captureScene: published")
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline {
             if var envelope = slot.take() {
                 // Migrated legacy formulas carry no hash — stamp one so the
                 // saved file is a fully-formed native document.
@@ -202,11 +261,50 @@ final class AppModel {
                     embedded.hash = ExternalDELoader.sourceHash(embedded.source)
                     envelope.embeddedDE = embedded
                 }
+                appLog.info("captureScene: landed")
                 return envelope
             }
             try? await Task.sleep(for: .milliseconds(25))
         }
+        appLog.error("captureScene: timed out after 4s")
         lastOpenError = "scene capture timed out — is the render loop running?"
+        return nil
+    }
+
+    /// Capture the live scene and write it into the library under `name`.
+    func saveCurrentScene(named name: String) async -> Bool {
+        guard let envelope = await captureScene() else { return false }
+        guard let url = sceneLibrary.save(envelope, name: name) else {
+            appLog.error("library save failed: \(self.sceneLibrary.lastError ?? "?")")
+            lastOpenError = sceneLibrary.lastError
+            return false
+        }
+        appLog.info("library save: \(url.lastPathComponent)")
+        return true
+    }
+
+    /// Render the current frame offscreen at export size → PNG bytes.
+    /// The render thread services the capture on its next frame; large
+    /// exports legitimately take a few seconds of polling.
+    func exportImage(width: Int, height: Int) async -> Data? {
+        let slot = ImageCaptureSlot()
+        session.commands.publish(.captureImage(width: width, height: height, into: slot))
+        appLog.info("exportImage: published \(width)x\(height)")
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if let result = slot.take() {
+                guard let png = pngData(from: result) else {
+                    appLog.error("exportImage: PNG encode failed")
+                    lastOpenError = "PNG encode failed"
+                    return nil
+                }
+                appLog.info("exportImage: landed (\(png.count) bytes)")
+                return png
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        appLog.error("exportImage: timed out after 15s")
+        lastOpenError = "image export timed out — is the render loop running?"
         return nil
     }
 
@@ -241,6 +339,9 @@ struct MainView: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: SceneFileDocument?
+    @State private var exportingImage = false
+    @State private var imageDocument: PNGFileDocument?
+    @State private var renderingExport = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -264,44 +365,80 @@ struct MainView: View {
                     model.open(url: url)
                     return true
                 }
+                // Presentation modifiers live on DIFFERENT nodes: several
+                // stacked on one view is the classic silently-dropped-sheet
+                // SwiftUI pitfall. PNG exporter here; scene file dialogs on
+                // the sidebar; the error alert on the split container.
+                .fileExporter(
+                    isPresented: $exportingImage,
+                    document: imageDocument,
+                    contentType: .png,
+                    defaultFilename: "Threshold.png"
+                ) { _ in
+                    imageDocument = nil
+                }
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Button("Open…") { importing = true }
-                        Button("Save…") { saveScene() }
-                        Button("Reset View") { model.camera.reset() }
-                    }
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    Toggle("React to Audio (mic)", isOn: $audioReactive)
-                        .onChange(of: audioReactive) { _, on in
-                            model.setAudioReactive(on)
+            // The sidebar scrolls itself (tab strip stays fixed on top).
+            VStack(spacing: 0) {
+                HStack {
+                    Button("Open…") { importing = true }
+                    Button("Save…") { saveScene() }
+                    Button {
+                        exportImage()
+                    } label: {
+                        if renderingExport {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Export PNG")
                         }
-                        .padding(.horizontal)
-                    Divider()
-                    ControlSidebar(mirror: model.mirror, layout: model.layout)
+                    }
+                    .disabled(renderingExport)
+                    .help("Render the current view to a PNG at 2× resolution")
+                    Spacer()
+                    Button {
+                        model.camera.reset()
+                    } label: {
+                        Image(systemName: "camera.metering.center.weighted")
+                    }
+                    .help("Reset the view to the scene's camera")
+                    Toggle(isOn: $audioReactive) {
+                        Image(systemName: audioReactive ? "waveform" : "waveform.slash")
+                    }
+                    .toggleStyle(.button)
+                    .help("React to audio (microphone)")
+                    .onChange(of: audioReactive) { _, on in
+                        model.setAudioReactive(on)
+                    }
                 }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                Divider()
+                ControlSidebar(
+                    mirror: model.mirror, layout: model.layout,
+                    sceneActions: SceneActions(
+                        library: model.sceneLibrary,
+                        load: { model.open(url: $0) },
+                        saveCurrent: { await model.saveCurrentScene(named: $0) }))
             }
             .frame(width: 340)
-        }
-        .fileImporter(
-            isPresented: $importing,
-            allowedContentTypes: AppModelShared.openableTypes
-        ) { result in
-            if case .success(let url) = result {
-                model.open(url: url)
+            .fileImporter(
+                isPresented: $importing,
+                allowedContentTypes: AppModelShared.openableTypes
+            ) { result in
+                if case .success(let url) = result {
+                    model.open(url: url)
+                }
             }
-        }
-        .fileExporter(
-            isPresented: $exporting,
-            document: exportDocument,
-            contentType: SceneFileDocument.sceneType,
-            defaultFilename: "Scene.threshscene"
-        ) { _ in
-            exportDocument = nil
+            .fileExporter(
+                isPresented: $exporting,
+                document: exportDocument,
+                contentType: SceneFileDocument.sceneType,
+                defaultFilename: "Scene.threshscene"
+            ) { _ in
+                exportDocument = nil
+            }
         }
         .alert(
             "Could not open file",
@@ -327,6 +464,22 @@ struct MainView: View {
             }
         }
     }
+
+    /// Export the live view at 2× the drawable, capped to 4K per side
+    /// (drawable size is already backing-scale pixels).
+    private func exportImage() {
+        let drawable = model.surface.layer.drawableSize
+        let width = min(max(Int(drawable.width) * 2, 640), 4096)
+        let height = min(max(Int(drawable.height) * 2, 640), 4096)
+        renderingExport = true
+        Task {
+            if let data = await model.exportImage(width: width, height: height) {
+                imageDocument = PNGFileDocument(data: data)
+                exportingImage = true
+            }
+            renderingExport = false
+        }
+    }
 }
 
 #endif  // os(macOS) || os(iOS)
@@ -348,6 +501,7 @@ final class VisionAppModel {
     @ObservationIgnored let loader: ExternalDELoader
     @ObservationIgnored let audio: AudioAnalyzer
     @ObservationIgnored let hands: HandTracker
+    @ObservationIgnored let sceneLibrary = SceneLibrary()
     var lastOpenError: String?
 
     init() throws {
@@ -448,7 +602,8 @@ final class VisionAppModel {
     func captureScene() async -> SceneEnvelope? {
         let slot = SceneCaptureSlot()
         session.commands.publish(.captureScene(into: slot))
-        for _ in 0..<40 {
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline {
             if var envelope = slot.take() {
                 if var embedded = envelope.embeddedDE, embedded.hash.isEmpty {
                     embedded.hash = ExternalDELoader.sourceHash(embedded.source)
@@ -460,6 +615,16 @@ final class VisionAppModel {
         }
         lastOpenError = "scene capture needs the immersive space open"
         return nil
+    }
+
+    /// Capture the live scene and write it into the library under `name`.
+    func saveCurrentScene(named name: String) async -> Bool {
+        guard let envelope = await captureScene() else { return false }
+        guard sceneLibrary.save(envelope, name: name) != nil else {
+            lastOpenError = sceneLibrary.lastError
+            return false
+        }
+        return true
     }
 }
 
@@ -476,58 +641,69 @@ struct VisionMainView: View {
     @State private var exportDocument: SceneFileDocument?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle(isOn: $immersed) {
-                    Label(
-                        immersed ? "Leave the Fractal" : "Enter the Fractal",
-                        systemImage: "visionpro")
+        // The sidebar scrolls itself (tab strip stays fixed on top).
+        VStack(spacing: 0) {
+            Toggle(isOn: $immersed) {
+                Label(
+                    immersed ? "Leave the Fractal" : "Enter the Fractal",
+                    systemImage: "visionpro")
+            }
+            .toggleStyle(.button)
+            .onChange(of: immersed) { _, on in
+                Task {
+                    if on {
+                        switch await openImmersiveSpace(id: ThresholdApp.immersiveSpaceID) {
+                        case .opened: break
+                        default: immersed = false
+                        }
+                    } else {
+                        await dismissImmersiveSpace()
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+
+            HStack {
+                Button("Open…") { importing = true }
+                Button("Save…") { saveScene() }
+                Spacer()
+                Toggle(isOn: $audioReactive) {
+                    Image(systemName: audioReactive ? "waveform" : "waveform.slash")
                 }
                 .toggleStyle(.button)
-                .onChange(of: immersed) { _, on in
-                    Task {
-                        if on {
-                            switch await openImmersiveSpace(id: ThresholdApp.immersiveSpaceID) {
-                            case .opened: break
-                            default: immersed = false
-                            }
-                        } else {
-                            await dismissImmersiveSpace()
-                        }
+                .help("React to audio (microphone)")
+                .onChange(of: audioReactive) { _, on in
+                    model.setAudioReactive(on)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            Divider()
+            ControlSidebar(
+                mirror: model.mirror, layout: model.layout,
+                sceneActions: SceneActions(
+                    library: model.sceneLibrary,
+                    load: { model.open(url: $0) },
+                    saveCurrent: { await model.saveCurrentScene(named: $0) }))
+                // Distinct nodes for each presentation modifier (stacking
+                // several on one view silently drops some of them).
+                .fileImporter(
+                    isPresented: $importing,
+                    allowedContentTypes: AppModelShared.openableTypes
+                ) { result in
+                    if case .success(let url) = result {
+                        model.open(url: url)
                     }
                 }
-                .padding(.horizontal)
-                .padding(.top, 8)
-
-                HStack {
-                    Button("Open…") { importing = true }
-                    Button("Save…") { saveScene() }
+                .fileExporter(
+                    isPresented: $exporting,
+                    document: exportDocument,
+                    contentType: SceneFileDocument.sceneType,
+                    defaultFilename: "Scene.threshscene"
+                ) { _ in
+                    exportDocument = nil
                 }
-                .padding(.horizontal)
-                Toggle("React to Audio (mic)", isOn: $audioReactive)
-                    .onChange(of: audioReactive) { _, on in
-                        model.setAudioReactive(on)
-                    }
-                    .padding(.horizontal)
-                Divider()
-                ControlSidebar(mirror: model.mirror, layout: model.layout)
-            }
-        }
-        .fileImporter(
-            isPresented: $importing,
-            allowedContentTypes: AppModelShared.openableTypes
-        ) { result in
-            if case .success(let url) = result {
-                model.open(url: url)
-            }
-        }
-        .fileExporter(
-            isPresented: $exporting,
-            document: exportDocument,
-            contentType: SceneFileDocument.sceneType,
-            defaultFilename: "Scene.threshscene"
-        ) { _ in
-            exportDocument = nil
         }
         .alert(
             "Could not open file",

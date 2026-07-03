@@ -80,6 +80,10 @@ final class SessionCore {
     /// built-in stops until a scene or `setPalette` command replaces it.
     private(set) var palette = Palette(stops: PaletteWire.defaultStops)
     private var frameIndex: UInt64 = 0
+    /// Latched image-export request (captureImage command). The shell's frame
+    /// loop consumes it via `takePendingImageCapture` right after building a
+    /// frame, so the export renders exactly what the screen shows.
+    private var pendingImageCapture: (width: Int, height: Int, slot: ImageCaptureSlot)?
 
     init(
         layout: CatalogLayout,
@@ -256,6 +260,12 @@ final class SessionCore {
             externalProgram: externalProgram)
     }
 
+    /// Removes and returns the latched image-export request, if any.
+    func takePendingImageCapture() -> (width: Int, height: Int, slot: ImageCaptureSlot)? {
+        defer { pendingImageCapture = nil }
+        return pendingImageCapture
+    }
+
     // MARK: - Commands
 
     private func handle(_ command: SessionCommand) {
@@ -337,6 +347,12 @@ final class SessionCore {
 
         case .setRenderTuning(let newTuning):
             tuning = newTuning
+
+        case .captureImage(let width, let height, let slot):
+            // Latched for the shell's frame loop: the request that renders
+            // this export is the SAME one the next frame presents, just at
+            // the export size (takePendingImageCapture).
+            pendingImageCapture = (width: width, height: height, slot: slot)
 
         case .captureScene(let slot):
             // Authored content only: scene lane + structure. Transient lanes

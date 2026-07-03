@@ -2,6 +2,10 @@
 // (plan §2.2, phase 4). Every parameter row here comes from walking
 // CatalogLayout; the only hand-built sections are the structural ones the
 // catalog cannot describe (DE choice, warp stack, render stats).
+//
+// Navigation and card styling port the legacy app's control panel (tab strip
+// → tinted module cards → compact slider rows); the data flow is unchanged:
+// read the mirror, publish commands.
 
 import SwiftUI
 import ThresholdCore
@@ -9,52 +13,72 @@ import ThresholdRender
 import ThresholdShaderABI
 import ThresholdShaderIR
 
-// MARK: - CatalogSectionView
+// MARK: - ControlTab
 
-/// All rows of one UI group: `layout.entries` filtered by `spec.group`,
-/// rendered by the generic `ParameterRow`. Zero per-param code.
-public struct CatalogSectionView: View {
-    let group: GroupID
-    let layout: CatalogLayout
-    let mirror: ParameterMirror
-    /// Base slots rendered by a dedicated section elsewhere (e.g. the color
-    /// mapping picker lives in PaletteSection) — skip them here to avoid
-    /// duplicate controls.
-    let excludedSlots: Set<Int>
+/// Top-level control panel tabs (the legacy sidebar-tab taxonomy fitted to
+/// the rebuild's structure; Music and Transition await their features).
+public enum ControlTab: String, CaseIterable, Sendable {
+    case scenes
+    case fractal
+    case warps
+    case color
+    case motion
+    case performance
+    case settings
 
-    public init(
-        group: GroupID, layout: CatalogLayout, mirror: ParameterMirror,
-        excludedSlots: Set<Int> = []
-    ) {
-        self.group = group
-        self.layout = layout
-        self.mirror = mirror
-        self.excludedSlots = excludedSlots
+    public var label: String {
+        switch self {
+        case .scenes: return "Scenes"
+        case .fractal: return "Fractal"
+        case .warps: return "Warps"
+        case .color: return "Color"
+        case .motion: return "Motion"
+        case .performance: return "Perf"
+        case .settings: return "Setup"
+        }
     }
 
-    public var body: some View {
-        Section(group.rawValue.capitalized) {
-            ForEach(
-                layout.entries.filter { $0.spec.group == group && !excludedSlots.contains($0.slot) },
-                id: \.slot
-            ) { entry in
-                ParameterRow(entry: entry, mirror: mirror)
-            }
+    public var icon: String {
+        switch self {
+        case .scenes: return "photo.on.rectangle.angled"
+        case .fractal: return "cube.fill"
+        case .warps: return "square.stack.3d.up"
+        case .color: return "paintpalette.fill"
+        case .motion: return "film.stack"
+        case .performance: return "speedometer"
+        case .settings: return "gearshape.fill"
         }
     }
 }
 
 // MARK: - ControlSidebar
 
-/// The whole control surface: structural sections + one CatalogSectionView
-/// per group present in the layout, in first-registration order.
+/// The whole control surface: a tab strip over per-tab card stacks. Tab
+/// selection persists across launches (AppStorage, device-local UI state —
+/// not scene content).
 public struct ControlSidebar: View {
     let mirror: ParameterMirror
     let layout: CatalogLayout
+    /// Scene-library verbs from the shell; nil hides the Scenes tab (the
+    /// SwiftPM dev shell passes nothing and keeps its lean surface).
+    let sceneActions: SceneActions?
 
-    public init(mirror: ParameterMirror, layout: CatalogLayout) {
+    @AppStorage("threshold.ui.controlTab")
+    private var storedTab = ControlTab.fractal.rawValue
+    @AppStorage(DS.textSizeStorageKey)
+    private var textSizeIndex = DS.defaultTextSizeIndex
+
+    public init(
+        mirror: ParameterMirror, layout: CatalogLayout,
+        sceneActions: SceneActions? = nil
+    ) {
         self.mirror = mirror
         self.layout = layout
+        self.sceneActions = sceneActions
+    }
+
+    private var tabs: [ControlTab] {
+        ControlTab.allCases.filter { $0 != .scenes || sceneActions != nil }
     }
 
     /// Groups present in the layout, ordered by first appearance
@@ -68,42 +92,214 @@ public struct ControlSidebar: View {
         return ordered
     }
 
+    /// Groups a dedicated tab already renders. Anything else (a future
+    /// registration) falls through to a generic card on the Fractal tab so
+    /// no parameter can silently vanish from the UI.
+    nonisolated static let placedGroups: Set<GroupID> = [
+        .shape, .color, .camera, .performance,
+    ]
+
+    private var tabBinding: SwiftUI.Binding<ControlTab> {
+        SwiftUI.Binding(
+            get: {
+                // A stored tab this shell does not offer (e.g. .scenes in the
+                // dev shell) falls back rather than rendering nothing.
+                let tab = ControlTab(rawValue: storedTab) ?? .fractal
+                return tabs.contains(tab) ? tab : .fractal
+            },
+            set: { storedTab = $0.rawValue })
+    }
+
     public var body: some View {
-        Form {
+        VStack(spacing: 0) {
+            TabStrip(
+                items: tabs.map {
+                    TabStrip.Item($0, label: $0.label, icon: $0.icon)
+                },
+                selection: tabBinding
+            )
+            .padding(.horizontal, DS.Spacing.sm)
+            .padding(.vertical, DS.Spacing.xs)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                    content(for: tabBinding.wrappedValue)
+                }
+                .padding(DS.Spacing.md)
+                // Settings ▸ Display drives the PANEL's text size only —
+                // reflowed Dynamic Type, chrome untouched.
+                .dynamicTypeSize(DS.textSize(forIndex: textSizeIndex))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(for tab: ControlTab) -> some View {
+        switch tab {
+        case .scenes:
+            if let sceneActions {
+                ScenesSection(actions: sceneActions)
+            }
+        case .fractal:
             FractalSwitcherSection(mirror: mirror)
-            StatsSection(mirror: mirror)
-            PipelineSection(mirror: mirror)
             CustomDESection(mirror: mirror)
-            AnimationSection(mirror: mirror)
+            ShapeParamsSection(mirror: mirror, layout: layout)
+            ForEach(
+                Self.groupsInOrder(layout).filter { !Self.placedGroups.contains($0) },
+                id: \.self
+            ) { group in
+                CatalogSectionView(group: group, layout: layout, mirror: mirror)
+            }
+        case .warps:
             #if os(visionOS)
             HandsSection(mirror: mirror)
             #endif
             WarpStackSection(mirror: mirror)
+        case .color:
             PaletteSection(mirror: mirror, layout: layout)
-            ForEach(Self.groupsInOrder(layout), id: \.self) { group in
-                // The color mapping picker is rendered by PaletteSection, so
-                // exclude its slot from the generic color group.
-                CatalogSectionView(
-                    group: group, layout: layout, mirror: mirror,
-                    excludedSlots: group == .color ? Self.colorMappingSlots(layout) : [])
-            }
+            ColorMappingSection(mirror: mirror, layout: layout)
+            KeyedParamsSection(
+                title: "Grading", icon: "camera.filters", accent: .orange,
+                keys: [
+                    .colorSaturation, .colorContrast, .colorVibrance,
+                    .colorBrightness, .colorGamma, .colorTonemap,
+                ],
+                mirror: mirror, layout: layout)
+        case .motion:
+            ZoomSection(mirror: mirror, layout: layout)
+            AnimationSection(mirror: mirror)
+            KeyedParamsSection(
+                title: "Camera", icon: "move.3d", accent: .cyan,
+                keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
+                mirror: mirror, layout: layout,
+                footer: "Drag the view to orbit · pinch or scroll to dolly.")
+        case .performance:
+            StatsSection(mirror: mirror)
+            PipelineSection(mirror: mirror)
+            CatalogSectionView(group: .performance, layout: layout, mirror: mirror)
+        case .settings:
+            DisplaySettingsSection()
+            InputSettingsSection()
         }
-        .formStyle(.grouped)
+    }
+}
+
+// MARK: - CatalogSectionView
+
+/// All rows of one UI group: `layout.entries` filtered by `spec.group`,
+/// rendered by the generic `ParameterRow`. Zero per-param code.
+public struct CatalogSectionView: View {
+    let group: GroupID
+    let layout: CatalogLayout
+    let mirror: ParameterMirror
+    /// Base slots rendered by a dedicated section elsewhere — skip them here
+    /// to avoid duplicate controls.
+    let excludedSlots: Set<Int>
+
+    public init(
+        group: GroupID, layout: CatalogLayout, mirror: ParameterMirror,
+        excludedSlots: Set<Int> = []
+    ) {
+        self.group = group
+        self.layout = layout
+        self.mirror = mirror
+        self.excludedSlots = excludedSlots
     }
 
-    /// The colorMapMode slot (if registered) — owned by PaletteSection.
-    nonisolated static func colorMappingSlots(_ layout: CatalogLayout) -> Set<Int> {
-        layout.slot(for: .colorMapMode).map { [$0] } ?? []
+    public var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader(group.rawValue.capitalized, icon: "slider.horizontal.3")
+            ForEach(
+                layout.entries.filter { $0.spec.group == group && !excludedSlots.contains($0.slot) },
+                id: \.slot
+            ) { entry in
+                ParameterRow(entry: entry, mirror: mirror)
+            }
+        }
+        .moduleCard(.gray)
+    }
+}
+
+// MARK: - KeyedParamsSection
+
+/// A titled card over an explicit list of catalog keys — the hand-arranged
+/// counterpart of `CatalogSectionView` for tabs that split one group across
+/// several cards (mapping vs grading, zoom vs camera). Rows still come from
+/// the catalog; only membership and ordering are hand-picked. Keys missing
+/// from the layout are skipped; an all-missing card renders nothing.
+public struct KeyedParamsSection: View {
+    let title: String
+    let icon: String
+    let accent: Color
+    let keys: [ParamKey]
+    let mirror: ParameterMirror
+    let layout: CatalogLayout
+    let footer: String?
+
+    public init(
+        title: String, icon: String, accent: Color,
+        keys: [ParamKey], mirror: ParameterMirror, layout: CatalogLayout,
+        footer: String? = nil
+    ) {
+        self.title = title
+        self.icon = icon
+        self.accent = accent
+        self.keys = keys
+        self.mirror = mirror
+        self.layout = layout
+        self.footer = footer
+    }
+
+    public var body: some View {
+        let entries = keys.compactMap { layout.entry(for: $0) }
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                SectionHeader(title, icon: icon)
+                KeyedParamRows(entries: entries, mirror: mirror)
+                if let footer {
+                    Text(footer)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .moduleCard(accent)
+        }
+    }
+}
+
+/// The rows of a keyed card: float entries get an icon slider row; other
+/// kinds fall through to the generic `ParameterRow`.
+struct KeyedParamRows: View {
+    let entries: [CatalogEntry]
+    let mirror: ParameterMirror
+
+    var body: some View {
+        ForEach(entries, id: \.slot) { entry in
+            if case .float = entry.spec.kind {
+                FloatSlotRow(
+                    label: entry.spec.label,
+                    slot: entry.slot,
+                    range: entry.spec.range,
+                    curve: entry.spec.curve,
+                    mirror: mirror,
+                    icon: DisplayIcons.param(entry.spec.key))
+            } else {
+                ParameterRow(entry: entry, mirror: mirror)
+            }
+        }
     }
 }
 
 // MARK: - FractalSwitcherSection
 
-/// A prominent, tappable fractal (DE) switcher — a grid of big buttons with
-/// the active one highlighted. Replaces the dropdown picker: far easier to hit
-/// in a headset (visionOS control window) and shows the current fractal at a
-/// glance. Built-ins only; an active external DE leaves none highlighted (and
-/// tapping a built-in switches to it, clearing the external — setDE contract).
+/// A prominent, tappable fractal (DE) switcher — a grid of big icon buttons
+/// with the active one highlighted. Far easier to hit in a headset than a
+/// dropdown and shows the current fractal at a glance. Built-ins only; an
+/// active external DE leaves none highlighted (and tapping a built-in
+/// switches to it, clearing the external — setDE contract).
 public struct FractalSwitcherSection: View {
     let mirror: ParameterMirror
 
@@ -111,20 +307,27 @@ public struct FractalSwitcherSection: View {
         self.mirror = mirror
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
+    private let columns = [GridItem(.adaptive(minimum: 92), spacing: DS.Spacing.xs)]
 
     public var body: some View {
-        Section("Fractal") {
-            LazyVGrid(columns: columns, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Fractal", icon: "cube.fill")
+            LazyVGrid(columns: columns, spacing: DS.Spacing.xs) {
                 ForEach(DERegistry.builtin, id: \.key) { descriptor in
                     let active = mirror.deKey == descriptor.key
                     Button {
                         mirror.setDE(key: descriptor.key)
                     } label: {
-                        Text(descriptor.displayName)
-                            .font(.callout)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity, minHeight: 42)
+                        VStack(spacing: DS.Spacing.xxs) {
+                            Image(systemName: DisplayIcons.fractal(descriptor.key))
+                                .font(.title3)
+                            Text(descriptor.displayName)
+                                .font(.caption)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 56)
                     }
                     .buttonStyle(.bordered)
                     .tint(active ? .accentColor : .secondary)
@@ -136,16 +339,18 @@ public struct FractalSwitcherSection: View {
                                 .padding(3)
                         }
                     }
+                    .accessibilityAddTraits(active ? .isSelected : [])
                 }
             }
-            .padding(.vertical, 2)
         }
+        .moduleCard(.purple)
     }
 }
 
 // MARK: - DEPickerSection
 
 /// Distance-estimator picker over `DERegistry.builtin` → `mirror.setDE`.
+/// (Compact alternative to the switcher grid; not in the default sidebar.)
 public struct DEPickerSection: View {
     let mirror: ParameterMirror
 
@@ -154,20 +359,102 @@ public struct DEPickerSection: View {
     }
 
     public var body: some View {
-        Section("Distance Estimator") {
-            Picker("Fractal", selection: SwiftUI.Binding(
-                get: { mirror.deKey },
-                set: { mirror.setDE(key: $0) }
-            )) {
-                // Before the first snapshot the mirror's deKey may not match
-                // any registered DE; give it a placeholder tag so the Picker
-                // stays consistent instead of logging selection warnings.
-                if !DERegistry.builtin.contains(where: { $0.key == mirror.deKey }) {
-                    Text("—").tag(mirror.deKey)
+        Picker("Fractal", selection: SwiftUI.Binding(
+            get: { mirror.deKey },
+            set: { mirror.setDE(key: $0) }
+        )) {
+            // Before the first snapshot the mirror's deKey may not match
+            // any registered DE; give it a placeholder tag so the Picker
+            // stays consistent instead of logging selection warnings.
+            if !DERegistry.builtin.contains(where: { $0.key == mirror.deKey }) {
+                Text("—").tag(mirror.deKey)
+            }
+            ForEach(DERegistry.builtin, id: \.key) { descriptor in
+                Text(descriptor.displayName).tag(descriptor.key)
+            }
+        }
+    }
+}
+
+// MARK: - ShapeParamsSection
+
+/// The ACTIVE fractal's parameters (the legacy formula editor): rows for the
+/// current DE's declared params only — inactive DEs' entries stay registered
+/// but are not shown — plus a reset-to-defaults button. Renders nothing when
+/// an external DE is active (CustomDESection owns that case).
+public struct ShapeParamsSection: View {
+    let mirror: ParameterMirror
+    let layout: CatalogLayout
+
+    public init(mirror: ParameterMirror, layout: CatalogLayout) {
+        self.mirror = mirror
+        self.layout = layout
+    }
+
+    private var descriptor: DEDescriptor? {
+        DERegistry.descriptor(forKey: mirror.deKey)
+    }
+
+    /// "minRadius" → "Min Radius" (labels registered as "Mandelbox minRadius"
+    /// read poorly inside a card already titled with the fractal's name).
+    nonisolated static func prettify(_ name: String) -> String {
+        var words: [String] = []
+        var current = ""
+        for character in name {
+            if character.isUppercase && !current.isEmpty {
+                words.append(current)
+                current = String(character)
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { words.append(current) }
+        return words.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    public var body: some View {
+        if let descriptor {
+            let entries = descriptor.paramLayout.compactMap { param in
+                layout.entry(for: .de(descriptor.key, param.name)).map { (param.name, $0) }
+            }
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                SectionHeader("Shape", icon: "slider.horizontal.3") {
+                    Button {
+                        reset(entries.map(\.1))
+                    } label: {
+                        Label("Reset", systemImage: "arrow.counterclockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                ForEach(DERegistry.builtin, id: \.key) { descriptor in
-                    Text(descriptor.displayName).tag(descriptor.key)
+                Text(descriptor.equation)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                ForEach(entries, id: \.1.slot) { name, entry in
+                    FloatSlotRow(
+                        label: Self.prettify(name),
+                        slot: entry.slot,
+                        range: entry.spec.range,
+                        curve: entry.spec.curve,
+                        mirror: mirror)
                 }
+            }
+            .moduleCard(.purple)
+        }
+    }
+
+    /// Write every entry back to its spec default through the normal edit
+    /// path (begin → update → end commits to the scene lane).
+    private func reset(_ entries: [CatalogEntry]) {
+        for entry in entries {
+            for component in 0..<entry.spec.kind.slotWidth {
+                let slot = entry.slot + component
+                mirror.beginEdit(slot: slot)
+                mirror.updateEdit(slot: slot, target: entry.spec.defaultValue[component])
+                mirror.endEdit(slot: slot)
             }
         }
     }
@@ -175,10 +462,10 @@ public struct DEPickerSection: View {
 
 // MARK: - AnimationSection
 
-/// Transport for the loaded animation clip (play/pause/stop + scrub).
-/// Renders nothing until a clip is loaded (the .threshanim open flow or a
-/// scene-shipped clip). All state is snapshot readback; verbs go through the
-/// command mailbox — the mirror computes no transport logic.
+/// Transport for the loaded animation clip (play/pause/stop + scrub) with an
+/// empty-state hint when nothing is loaded. All state is snapshot readback;
+/// verbs go through the command mailbox — the mirror computes no transport
+/// logic.
 public struct AnimationSection: View {
     let mirror: ParameterMirror
 
@@ -187,10 +474,11 @@ public struct AnimationSection: View {
     }
 
     public var body: some View {
-        if mirror.animation.hasClip {
-            Section("Animation") {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Animation", icon: "film.stack")
+            if mirror.animation.hasClip {
                 LabeledContent("Clip", value: mirror.animation.clipName ?? "Untitled")
-                HStack(spacing: 12) {
+                HStack(spacing: DS.Spacing.lg) {
                     Button {
                         mirror.animationTransport(
                             mirror.animation.isPlaying ? .pause : .play)
@@ -221,8 +509,14 @@ public struct AnimationSection: View {
                         set: { mirror.animationTransport(.seek($0)) }
                     ), in: 0...mirror.animation.duration)
                 }
+            } else {
+                Text("No animation loaded — open a .threshanim or a scene that ships a clip.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .moduleCard(.blue)
     }
 
     static func timecode(_ seconds: Double) -> String {
@@ -230,6 +524,39 @@ public struct AnimationSection: View {
         return String(format: "%d:%02d.%d",
                       whole / 60, whole % 60,
                       Int((seconds - Double(whole)) * 10))
+    }
+}
+
+// MARK: - ZoomSection
+
+/// Infinite zoom (plan §6.3): the zoom-speed integrator rate, the zoom phase,
+/// and the live rebase-aware depth readout.
+public struct ZoomSection: View {
+    let mirror: ParameterMirror
+    let layout: CatalogLayout
+
+    public init(mirror: ParameterMirror, layout: CatalogLayout) {
+        self.mirror = mirror
+        self.layout = layout
+    }
+
+    public var body: some View {
+        let entries = [ParamKey.scaleZoomSpeed, .scaleZoom].compactMap { layout.entry(for: $0) }
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                SectionHeader("Infinite Zoom", icon: "plus.magnifyingglass") {
+                    Text(String(format: "%+.1f oct", mirror.zoomDepthOctaves))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                KeyedParamRows(entries: entries, mirror: mirror)
+                Text("Speed keeps zooming; Zoom scrubs the current depth.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .moduleCard(.blue)
+        }
     }
 }
 
@@ -248,18 +575,20 @@ public struct CustomDESection: View {
 
     public var body: some View {
         if !mirror.dynamicEntries.isEmpty {
-            Section("Custom DE") {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                SectionHeader("Custom DE", icon: "chevron.left.forwardslash.chevron.right")
                 ForEach(mirror.dynamicEntries, id: \.slot) { entry in
                     ParameterRow(entry: entry, mirror: mirror)
                 }
             }
+            .moduleCard(.indigo)
         }
     }
 }
 
 // MARK: - StatsSection
 
-/// fps / GPU ms / steps readout + the pause toggle.
+/// fps / GPU ms / steps / zoom-depth tiles + the pause and governor toggles.
 public struct StatsSection: View {
     let mirror: ParameterMirror
     // On by default: the app shell enables the governor at startup (stutter
@@ -271,13 +600,26 @@ public struct StatsSection: View {
     }
 
     public var body: some View {
-        Section("Session") {
-            LabeledContent("FPS", value: String(format: "%.1f", mirror.stats.fps))
-            LabeledContent("GPU", value: String(format: "%.2f ms", mirror.stats.gpuMilliseconds))
-            LabeledContent("Steps", value: "\(mirror.stats.totalSteps)")
-            LabeledContent(
-                "Zoom Depth",
-                value: String(format: "%+.1f oct", mirror.zoomDepthOctaves))
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Session", icon: "gauge.with.dots.needle.67percent")
+            HStack(spacing: DS.Spacing.xs) {
+                StatBox(
+                    label: "FPS",
+                    value: String(format: "%.0f", mirror.stats.fps),
+                    color: .green)
+                StatBox(
+                    label: "GPU ms",
+                    value: String(format: "%.2f", mirror.stats.gpuMilliseconds),
+                    color: .orange)
+                StatBox(
+                    label: "Steps",
+                    value: "\(mirror.stats.totalSteps)",
+                    color: .blue)
+                StatBox(
+                    label: "Zoom",
+                    value: String(format: "%+.1f", mirror.zoomDepthOctaves),
+                    color: .purple)
+            }
             Toggle("Paused", isOn: SwiftUI.Binding(
                 get: { mirror.paused },
                 set: { mirror.setPaused($0) }
@@ -289,6 +631,7 @@ public struct StatsSection: View {
                     mirror.setQualityGovernor(on ? .platformDefault : nil)
                 }
         }
+        .moduleCard(.green)
     }
 }
 
@@ -314,11 +657,13 @@ public struct PipelineSection: View {
     }
 
     public var body: some View {
-        Section("Shader Pipeline") {
-            LabeledContent("Active") {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Shader Pipeline", icon: "cpu") {
                 HStack(spacing: 6) {
                     Circle().fill(status.color).frame(width: 8, height: 8)
                     Text(status.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             if !mirror.diagnostics.bakedConstants.isEmpty {
@@ -355,6 +700,7 @@ public struct PipelineSection: View {
             }
             .disabled(!mirror.renderTuning.specializationEnabled)
         }
+        .moduleCard(.orange)
     }
 
     /// Binding onto one Bool field of the mirror's RenderTuning; a write
@@ -484,6 +830,12 @@ public enum WarpMenu {
         public var id: String { name }
     }
 
+    /// The family a constructible op kind belongs to (display metadata for
+    /// op rows). Reserved kinds (`none`, `bounding`) have no family.
+    public static func familyName(forKindRaw raw: UInt32) -> String? {
+        families.first { $0.items.contains { $0.kindRawValue == raw } }?.name
+    }
+
     /// Families follow the WarpKind declaration grouping (WarpOps.swift).
     public static let families: [Family] = [
         Family(name: "Bend & Wave", items: [
@@ -593,10 +945,11 @@ public enum PaletteEdit {
 
 // MARK: - PaletteSection
 
-/// The gradient editor (plan §5.5 stage 2): preset menu, live preview bar,
-/// per-stop color/position rows, and a named color-mapping picker. The palette
-/// is scene content, so edits publish the whole `Palette` — the same
-/// replace-the-content contract as the warp stack.
+/// The gradient editor (plan §5.5 stage 2): live preview bar, a tappable
+/// preset grid (the legacy browse pattern — the active preset is outlined),
+/// and per-stop color/position rows. The palette is scene content, so edits
+/// publish the whole `Palette` — the same replace-the-content contract as the
+/// warp stack.
 public struct PaletteSection: View {
     let mirror: ParameterMirror
     let layout: CatalogLayout
@@ -608,63 +961,60 @@ public struct PaletteSection: View {
 
     private var palette: Palette { mirror.palette }
 
-    /// SwiftUI colors from the LINEAR stop rgb (correct-space preview/edit).
-    private static func color(_ s: GradientStop) -> Color {
-        Color(.sRGBLinear, red: Double(s.red), green: Double(s.green), blue: Double(s.blue))
-    }
-
-    private var previewGradient: LinearGradient {
-        let stops = palette.stops.map { s in
-            Gradient.Stop(color: Self.color(s), location: Double(s.position))
-        }
-        return LinearGradient(
-            gradient: Gradient(stops: stops.isEmpty
-                ? [Gradient.Stop(color: .gray, location: 0)] : stops),
-            startPoint: .leading, endPoint: .trailing)
-    }
+    private let presetColumns = [GridItem(.adaptive(minimum: 64), spacing: DS.Spacing.xxs)]
 
     public var body: some View {
-        Section("Palette") {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(previewGradient)
-                .frame(height: 22)
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Palette", icon: "paintpalette.fill")
+            GradientPreviewBar(palette: palette)
 
-            Menu("Preset") {
+            LazyVGrid(columns: presetColumns, spacing: DS.Spacing.xs) {
                 ForEach(PalettePreset.builtIn) { preset in
-                    Button(preset.name) { mirror.setPalette(preset.palette) }
+                    let active = preset.palette == palette
+                    Button {
+                        mirror.setPalette(preset.palette)
+                    } label: {
+                        VStack(spacing: 2) {
+                            GradientPreviewBar(palette: preset.palette, height: 14)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: DS.Radius.xs)
+                                        .strokeBorder(
+                                            active ? Color.accentColor : .clear,
+                                            lineWidth: 2))
+                            Text(preset.name)
+                                .font(.caption2)
+                                .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(active ? .isSelected : [])
                 }
             }
 
-            if let slot = layout.slot(for: .colorMapMode) {
-                Picker("Mapping", selection: mappingBinding(slot: slot)) {
-                    ForEach(ColorMapMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
+            HStack {
+                Text("Stops")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if palette.stops.count < Palette.maxStops {
+                    Button {
+                        mirror.setPalette(PaletteEdit.addingStop(palette))
+                    } label: {
+                        Label("Add", systemImage: "plus.circle.fill")
+                            .font(.caption)
                     }
+                    .buttonStyle(.borderless)
                 }
             }
+            .padding(.top, DS.Spacing.xxs)
 
             ForEach(Array(palette.stops.enumerated()), id: \.offset) { index, stop in
                 StopRow(index: index, stop: stop, mirror: mirror, canDelete: palette.stops.count > 1)
             }
-
-            if palette.stops.count < Palette.maxStops {
-                Button {
-                    mirror.setPalette(PaletteEdit.addingStop(palette))
-                } label: {
-                    Label("Add Stop", systemImage: "plus")
-                }
-            }
         }
-    }
-
-    private func mappingBinding(slot: Int) -> SwiftUI.Binding<ColorMapMode> {
-        SwiftUI.Binding(
-            get: {
-                ColorMapMode(rawValue: Int(mirror.displayValue(slot: slot).rounded())) ?? .orbitTrap
-            },
-            set: { mirror.updateEdit(slot: slot, target: Float($0.rawValue)) }
-        )
+        .moduleCard(.pink)
     }
 }
 
@@ -676,14 +1026,11 @@ struct StopRow: View {
     let canDelete: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Spacing.sm) {
             ColorPicker("", selection: colorBinding, supportsOpacity: false)
                 .labelsHidden()
             Slider(value: positionBinding, in: 0...1)
-            Text(ValueFormatting.format(stop.position))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 44, alignment: .trailing)
+            RowValueText(text: ValueFormatting.format(stop.position))
             Button(role: .destructive) {
                 mirror.setPalette(PaletteEdit.deleting(mirror.palette, at: index))
             } label: {
@@ -713,6 +1060,51 @@ struct StopRow: View {
         SwiftUI.Binding(
             get: { Double(stop.position) },
             set: { mirror.setPalette(PaletteEdit.setPosition(mirror.palette, at: index, to: Float($0))) }
+        )
+    }
+}
+
+// MARK: - ColorMappingSection
+
+/// How geometry becomes gradient position: the named color-mapping picker
+/// plus the palette-sampling transforms (repeat / offset / smoothing).
+public struct ColorMappingSection: View {
+    let mirror: ParameterMirror
+    let layout: CatalogLayout
+
+    public init(mirror: ParameterMirror, layout: CatalogLayout) {
+        self.mirror = mirror
+        self.layout = layout
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Mapping", icon: "swatchpalette.fill")
+            if let slot = layout.slot(for: .colorMapMode) {
+                Picker("Mapping", selection: mappingBinding(slot: slot)) {
+                    ForEach(ColorMapMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            KeyedParamRows(
+                entries: [
+                    ParamKey.colorGradientRepeat, .colorGradientOffset,
+                    .colorGradientSmoothing,
+                ].compactMap { layout.entry(for: $0) },
+                mirror: mirror)
+        }
+        .moduleCard(.teal)
+    }
+
+    private func mappingBinding(slot: Int) -> SwiftUI.Binding<ColorMapMode> {
+        SwiftUI.Binding(
+            get: {
+                ColorMapMode(rawValue: Int(mirror.displayValue(slot: slot).rounded())) ?? .orbitTrap
+            },
+            set: { mirror.updateEdit(slot: slot, target: Float($0.rawValue)) }
         )
     }
 }
@@ -770,7 +1162,8 @@ public struct HandsSection: View {
     }
 
     public var body: some View {
-        Section("Hands") {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Hands", icon: "hand.raised.fingers.spread")
             Toggle("Right Hand Sculpts", isOn: SwiftUI.Binding(
                 get: { hasOp(Self.attractOp()) },
                 set: { toggleOp(Self.attractOp(), on: $0) }
@@ -779,16 +1172,21 @@ public struct HandsSection: View {
                 get: { hasOp(Self.carveOp()) },
                 set: { toggleOp(Self.carveOp(), on: $0) }
             ))
+            Text("Each toggle adds a live hand-driven op to the warp stack below.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .moduleCard(.green)
     }
 }
 
 // MARK: - WarpStackSection
 
-/// Editor over the AUTHORED warp stack: per-op rows (name, strength slider,
-/// reorder, delete) + the add menu. Every mutation builds a full modified
-/// stack with the pure `WarpStackEdit` helpers and publishes it via
-/// `mirror.setWarpStack`.
+/// Editor over the AUTHORED warp stack: per-op cards (index badge, family
+/// icon, name, reorder, delete, strength) + the add menu. Every mutation
+/// builds a full modified stack with the pure `WarpStackEdit` helpers and
+/// publishes it via `mirror.setWarpStack`.
 public struct WarpStackSection: View {
     let mirror: ParameterMirror
 
@@ -797,29 +1195,41 @@ public struct WarpStackSection: View {
     }
 
     public var body: some View {
-        Section("Warp Stack") {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            SectionHeader("Warp Stack", icon: "square.stack.3d.up") {
+                Menu {
+                    ForEach(WarpMenu.families) { family in
+                        Menu(family.name) {
+                            ForEach(family.items) { item in
+                                Button(item.name) {
+                                    mirror.setWarpStack(mirror.warpStack + [item.makeDefault()])
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus.circle.fill")
+                        .font(.caption)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
             if mirror.warpStack.isEmpty {
-                Text("No warp ops")
-                    .foregroundStyle(.secondary)
+                Text("No warp ops — Add stacks space transforms that reshape the fractal.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(mirror.warpStack.enumerated()), id: \.offset) { index, op in
                 WarpOpRow(index: index, op: op, mirror: mirror)
             }
-            Menu("Add Warp") {
-                ForEach(WarpMenu.families) { family in
-                    Menu(family.name) {
-                        ForEach(family.items) { item in
-                            Button(item.name) {
-                                mirror.setWarpStack(mirror.warpStack + [item.makeDefault()])
-                            }
-                        }
-                    }
-                }
-            }
         }
+        .moduleCard(.indigo)
     }
 }
 
+/// One warp-op card: index badge + family icon + name + reorder/delete row,
+/// over the strength slider.
 struct WarpOpRow: View {
     let index: Int
     let op: WarpOpDTO
@@ -832,11 +1242,23 @@ struct WarpOpRow: View {
         (kind?.isDistanceOp ?? false) ? -2...2 : 0...2
     }
 
+    private var familyIcon: String {
+        DisplayIcons.warpFamily(WarpMenu.familyName(forKindRaw: op.kind) ?? "")
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(kind?.uiName ?? "Unknown (\(op.kind))")
+        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+            HStack(spacing: DS.Spacing.xs) {
+                Text("\(index + 1)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16, height: 16)
+                    .background(Circle().fill(.quaternary))
+                Image(systemName: familyIcon)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(kind?.uiName ?? "Unknown (\(op.kind))")
+                    .font(.subheadline.weight(.medium))
                 Spacer()
                 Button {
                     mirror.setWarpStack(WarpStackEdit.moving(mirror.warpStack, from: index, by: -1))
@@ -857,7 +1279,7 @@ struct WarpOpRow: View {
                 }
             }
             .buttonStyle(.borderless)
-            HStack {
+            HStack(spacing: DS.Spacing.sm) {
                 Slider(value: SwiftUI.Binding(
                     get: { Double(op.strength) },
                     set: { newStrength in
@@ -865,11 +1287,12 @@ struct WarpOpRow: View {
                             mirror.warpStack, at: index, to: Float(newStrength)))
                     }
                 ), in: Double(strengthRange.lowerBound)...Double(strengthRange.upperBound))
-                Text(ValueFormatting.format(op.strength))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 56, alignment: .trailing)
+                RowValueText(text: ValueFormatting.format(op.strength))
             }
         }
+        .padding(DS.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.inset)
+                .fill(.quaternary.opacity(0.5)))
     }
 }

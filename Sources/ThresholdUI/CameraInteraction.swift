@@ -13,9 +13,34 @@ import ThresholdCore
 /// Values are latched (they persist after the gesture ends — the binding
 /// policy for direct camera control); an explicit reset clears the lane
 /// state back to the authored pose.
+/// User-tunable gesture feel, persisted in UserDefaults (device-local UI
+/// state, not scene content). Read fresh per gesture event — UserDefaults
+/// caches in-process, so this costs nothing and needs no plumbing between
+/// the Settings panel and the shells' CameraInteraction instance.
+public struct CameraTuning: Sendable {
+    public var orbitScale: Float
+    public var dollyScale: Float
+    public var invertScroll: Bool
+
+    public static let orbitScaleKey = "threshold.input.orbitScale"
+    public static let dollyScaleKey = "threshold.input.dollyScale"
+    public static let invertScrollKey = "threshold.input.invertScroll"
+
+    public static func load(from defaults: UserDefaults = .standard) -> CameraTuning {
+        func scale(_ key: String) -> Float {
+            let raw = defaults.object(forKey: key) as? Double ?? 1
+            return Float(min(max(raw, 0.25), 4))
+        }
+        return CameraTuning(
+            orbitScale: scale(orbitScaleKey),
+            dollyScale: scale(dollyScaleKey),
+            invertScroll: defaults.bool(forKey: invertScrollKey))
+    }
+}
+
 @MainActor
 public final class CameraInteraction {
-    /// Radians of orbit per point of drag.
+    /// Radians of orbit per point of drag (before the user's orbitScale).
     public static let radiansPerPoint: Float = 0.008
     /// log-dolly per point of scroll (positive scroll = dolly in).
     public static let dollyPerScrollPoint: Float = -0.002
@@ -39,18 +64,39 @@ public final class CameraInteraction {
 
     // MARK: Orbit (drag)
 
+    private var orbitPerPoint: Float {
+        Self.radiansPerPoint * CameraTuning.load().orbitScale
+    }
+
     public func dragChanged(translation: CGSize) {
         publishOrbit(
-            yaw: yaw + Float(translation.width) * Self.radiansPerPoint,
-            pitch: pitch + Float(translation.height) * Self.radiansPerPoint)
+            yaw: yaw + Float(translation.width) * orbitPerPoint,
+            pitch: pitch + Float(translation.height) * orbitPerPoint)
     }
 
     public func dragEnded(translation: CGSize) {
         // Pin committed offsets to the param ranges (same reasoning as the
         // dolly accumulator: no dead travel past the clamp).
-        yaw = min(max(yaw + Float(translation.width) * Self.radiansPerPoint, -25.13), 25.13)
-        pitch = min(max(pitch + Float(translation.height) * Self.radiansPerPoint, -1.53), 1.53)
+        yaw = min(max(yaw + Float(translation.width) * orbitPerPoint, -25.13), 25.13)
+        pitch = min(max(pitch + Float(translation.height) * orbitPerPoint, -1.53), 1.53)
         publishOrbit(yaw: yaw, pitch: pitch)
+    }
+
+    // MARK: Keyboard nudges (committed immediately, like scroll)
+
+    /// Orbit by a fixed step (keyboard navigation). Radians, pre-tuning.
+    public func nudgeOrbit(yawDelta: Float, pitchDelta: Float) {
+        let scale = CameraTuning.load().orbitScale
+        yaw = min(max(yaw + yawDelta * scale, -25.13), 25.13)
+        pitch = min(max(pitch + pitchDelta * scale, -1.53), 1.53)
+        publishOrbit(yaw: yaw, pitch: pitch)
+    }
+
+    /// Dolly by a fixed log step (keyboard navigation): negative = in.
+    public func nudgeDolly(logStep: Float) {
+        let scale = CameraTuning.load().dollyScale
+        logDolly = min(max(logDolly + logStep * scale, -3), 3)
+        publishDolly(logDolly)
     }
 
     // MARK: Dolly (pinch / scroll)
@@ -72,7 +118,9 @@ public final class CameraInteraction {
 
     /// Scroll wheel / two-finger scroll (macOS): immediate committed dolly.
     public func scroll(deltaY: CGFloat) {
-        logDolly = min(max(logDolly + Float(deltaY) * Self.dollyPerScrollPoint, -3), 3)
+        let tuning = CameraTuning.load()
+        let step = Float(deltaY) * Self.dollyPerScrollPoint * tuning.dollyScale
+        logDolly = min(max(logDolly + (tuning.invertScroll ? -step : step), -3), 3)
         publishDolly(logDolly)
     }
 
