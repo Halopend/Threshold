@@ -24,15 +24,13 @@ public enum RenderPath: String, CaseIterable, Sendable, Hashable {
     case offscreen
     /// Live CAMetalDisplayLink → drawable path (macOS + iPadOS).
     case interactive
-    /// visionOS Compositor Services frame loop. Declared ahead of its shell
-    /// so the table already tracks what it must cover (ADR-001 action items
-    /// gate the implementation on a device spike).
+    /// visionOS Compositor Services frame loop (CompositorSession): the
+    /// stereo RASTER path — same march body (marchShade) through
+    /// thresh_march_fragment, so kernel-level features cannot diverge.
     case compositor
 
-    /// The paths that SHIP in the current codebase. The compositor shell is
-    /// not yet implemented, so it is deliberately absent — a feature listing
-    /// it early is fine; a shipping path missing a required feature is not.
-    public static let shipping: Set<RenderPath> = [.offscreen, .interactive]
+    /// The paths that SHIP in the current codebase.
+    public static let shipping: Set<RenderPath> = [.offscreen, .interactive, .compositor]
 }
 
 public struct RenderFeature: Sendable, Hashable {
@@ -55,14 +53,19 @@ public enum RenderFeatureTable {
     public static let features: [RenderFeature] = [
         // The march core itself: uniforms + param table + warp ops + DE
         // visible function table — the kernel's mandatory bindings.
-        RenderFeature(id: "march.core", paths: [.offscreen, .interactive]),
+        RenderFeature(id: "march.core", paths: [.offscreen, .interactive, .compositor]),
         // In-kernel step counter (device atomic; plan §9 "measured steps
-        // always compiled in").
-        RenderFeature(id: "march.stepStats", paths: [.offscreen, .interactive]),
+        // always compiled in"). The raster path adds from the fragment.
+        RenderFeature(id: "march.stepStats", paths: [.offscreen, .interactive, .compositor]),
         // Color pipeline: palette buffer + mapping/grading param slots
         // (plan §5.5).
-        RenderFeature(id: "color.palette", paths: [.offscreen, .interactive]),
+        RenderFeature(id: "color.palette", paths: [.offscreen, .interactive, .compositor]),
         // Warp-op stack applied before de_main (plan §5.2).
-        RenderFeature(id: "warp.stack", paths: [.offscreen, .interactive]),
+        RenderFeature(id: "warp.stack", paths: [.offscreen, .interactive, .compositor]),
+        // External (runtime-compiled) DE programs. NOT on the compositor yet:
+        // the raster pipeline links built-ins only (spike scope) — embedded-DE
+        // scenes apply their params/palette but render on compute shells.
+        RenderFeature(
+            id: "de.external", paths: [.offscreen, .interactive], requiredOnAll: false),
     ]
 }

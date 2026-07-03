@@ -9,9 +9,8 @@
 //
 // macOS + iOS/iPadOS: both drive the SAME CAMetalDisplayLink loop (ADR-001:
 // one compute shell; presentation differences live in the layer host, not
-// here). visionOS is gated out — it renders through the Compositor Services
-// frame loop, which needs the on-device spike ADR-001 action items call for
-// before that shell is written.
+// here). visionOS renders through the Compositor Services frame loop instead
+// (CompositorSession.swift) — same SessionCore frame body, raster encode.
 
 #if os(macOS) || os(iOS)
 
@@ -295,30 +294,6 @@ private final class DisplayLinkProxy: NSObject, CAMetalDisplayLinkDelegate {
         _ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update
     ) {
         onUpdate(update)
-    }
-}
-
-// MARK: - FrameStatsSlot
-
-/// Latest completed-frame GPU stats. Compiler-checked Sendable (a Mutex over
-/// a POD) — written by Metal's completion-handler thread, read by the render
-/// thread at frame start.
-final class FrameStatsSlot: Sendable {
-    struct Stats: Sendable {
-        var gpuMilliseconds: Double = 0
-        var totalSteps: UInt64 = 0
-    }
-
-    private let slot = Mutex<Stats>(Stats())
-
-    func store(gpuMilliseconds: Double, totalSteps: UInt64) {
-        slot.withLock {
-            $0 = Stats(gpuMilliseconds: gpuMilliseconds, totalSteps: totalSteps)
-        }
-    }
-
-    func load() -> Stats {
-        slot.withLock { $0 }
     }
 }
 

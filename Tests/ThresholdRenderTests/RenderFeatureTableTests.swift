@@ -26,10 +26,14 @@ struct RenderFeatureTableTests {
         #expect(RenderFeatureTable.features.contains { $0.id == "march.core" })
     }
 
-    /// The compositor path must not be declared shipping until a shell
-    /// exists — flipping `shipping` without wiring features will then fail
-    /// `requiredFeaturesCoverEveryShippingPath`, which is the intended gate.
-    @Test func compositorIsNotYetShipping() {
-        #expect(!RenderPath.shipping.contains(.compositor))
+    /// The compositor shell ships (CompositorSession) — and its one declared
+    /// gap is explicit: external DE programs render on the compute paths only
+    /// until the raster pipeline links them (spike scope, ADR-001).
+    @Test func compositorShipsWithExternalDEsAsTheDeclaredGap() {
+        #expect(RenderPath.shipping.contains(.compositor))
+        let external = RenderFeatureTable.features.first { $0.id == "de.external" }
+        #expect(external?.paths.contains(.compositor) == false)
+        #expect(external?.requiredOnAll == false,
+                "the gap must be declared, not silently absent from the table")
     }
 }

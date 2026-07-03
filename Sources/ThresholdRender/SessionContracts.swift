@@ -154,3 +154,28 @@ public enum AnimationTransportCommand: Sendable, Equatable {
     case stop
     case seek(Double)
 }
+
+// MARK: - FrameStatsSlot
+
+/// Latest completed-frame GPU stats. Compiler-checked Sendable (a Mutex over
+/// a POD) — written by Metal's completion-handler thread, read by the render
+/// thread at frame start. Shared by every live shell (display-link and
+/// Compositor).
+final class FrameStatsSlot: Sendable {
+    struct Stats: Sendable {
+        var gpuMilliseconds: Double = 0
+        var totalSteps: UInt64 = 0
+    }
+
+    private let slot = Mutex<Stats>(Stats())
+
+    func store(gpuMilliseconds: Double, totalSteps: UInt64) {
+        slot.withLock {
+            $0 = Stats(gpuMilliseconds: gpuMilliseconds, totalSteps: totalSteps)
+        }
+    }
+
+    func load() -> Stats {
+        slot.withLock { $0 }
+    }
+}

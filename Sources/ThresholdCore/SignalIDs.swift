@@ -19,11 +19,28 @@ extension SignalID {
         .audioCentroid,
     ]
 
+    // MARK: hand.* (published by ThresholdInputs.HandTracker on visionOS)
+
+    /// Pinch strength 0…1 in `.x` (thumb–index distance, 1 = touching).
+    public static let handLeftPinch = SignalID("hand.left.pinch")
+    public static let handRightPinch = SignalID("hand.right.pinch")
+    /// Wrist position in room space, meters, in `.xyz`.
+    public static let handLeftPosition = SignalID("hand.left.position")
+    public static let handRightPosition = SignalID("hand.right.position")
+
+    /// The hand signals every session registers (published only where a hand
+    /// tracker runs; registered everywhere so bindings referencing them are
+    /// portable across platforms — Invariant 14).
+    public static let standardHands: [SignalID] = [
+        .handLeftPinch, .handRightPinch, .handLeftPosition, .handRightPosition,
+    ]
+
     // MARK: app.*
 
     public static let appTime = SignalID("app.time")
 
-    /// Everything a default session registers today. Hand/gesture/crown
+    /// Everything a default session registers today. Gesture/crown
     /// namespaces join this list in their build phases.
-    public static let standardSession: [SignalID] = standardAudio + [.appTime]
+    public static let standardSession: [SignalID] =
+        standardAudio + standardHands + [.appTime]
 }

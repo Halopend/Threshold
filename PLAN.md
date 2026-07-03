@@ -575,8 +575,14 @@ infinite zoom). Consequences designed in, not patched in:
 
 ### 6.4 visionOS specifics
 
-- Compute path with adaptive tiling; immersion via progressive style (portal render
-  context) supported from the start — portal mask is a fixed final pass slot.
+- SHIPPED (spike): the Compositor shell renders the shared march body through a
+  fragment pipeline (CompositorSession + thresh_march_fragment) — layered layout,
+  vertex amplification, foveation rate maps, native depth writes for reprojection,
+  full-immersion style. Fragment ≡ compute is enforced by a Mac-hosted parity test.
+  Remaining from the original sketch: the compute path with adaptive tiling
+  (ADR-001's rate-map-sampling question stays open), the progressive-immersion
+  portal pass (drawable render context + stencil mask final-pass slot), and external
+  DE programs on the raster pipeline (declared gap in the feature table).
 - The fps-holding quality governor operates on a `renderQuality` catalog param via the
   *animation lane semantics* (a system writer with its own lane priority below user):
   user slider = ceiling, governor modulates below it. No bespoke override logic.

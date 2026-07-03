@@ -656,30 +656,24 @@ static float cheapAO(float3 pos, float3 n, float aoStrength, float featureScale,
 // float4(1, 0, 1, 0) — alpha 0 — so tests can assert "no NaNs" on the
 // readback (every well-formed pixel, hit or miss, has alpha 1).
 
-kernel void march_offscreen(
-    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
-    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
-    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
-    device atomic_uint* stats                [[buffer(THRESH_BUFFER_STATS)]],
-    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
-    constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
-    texture2d<float, access::write> outTex   [[texture(THRESH_TEXTURE_OUTPUT)]],
-    uint2 gid                                [[thread_position_in_grid]])
+// Shared march + shade body — the ONE implementation both the compute kernel
+// (offscreen/interactive) and the stereo raster path (visionOS Compositor)
+// call, so visual features cannot diverge per shell (plan §6.2, Invariant 8).
+struct ThreshMarchResult {
+    float4 color;   // linear rgba; NaN sentinel (1,0,1,0); miss = opaque black
+    float  t;       // ray distance in WORLD units, clamped to maxDist on miss
+    bool   hit;
+    uint   steps;   // march steps taken (the caller adds to the stats atomic)
+};
+
+static inline ThreshMarchResult marchShade(
+    float3 ro, float3 rd,
+    constant ThreshFrameUniforms& U,
+    device const float* params,
+    device const ThreshWarpOp* ops,
+    visible_function_table<ThreshDE> deTable,
+    constant ThreshPalette& palette)
 {
-    const uint w = outTex.get_width();
-    const uint h = outTex.get_height();
-    if (gid.x >= w || gid.y >= h) { return; }
-
-    const float aspect = float(w) / float(h);
-    const float fovTan = U.camPosFov.w;
-    const float2 ndc = float2((float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
-                              1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
-    const float3 dirLocal = normalize(float3(ndc.x * aspect * fovTan,
-                                             ndc.y * fovTan,
-                                             -1.0f));
-    const float3 rd = quatRotate(U.camQuat, dirLocal);
-    const float3 ro = U.camPosFov.xyz;
-
     // Engine params from the reserved slots of the FULL param table.
     const int maxSteps     = int(params[THRESH_SLOT_MAX_STEPS]);
     const float maxDist    = params[THRESH_SLOT_MAX_DIST];
@@ -708,9 +702,6 @@ kernel void march_offscreen(
         t += dm.x * stepSafety;
         if (t > maxDist) { break; }
     }
-
-    // Per-thread step count added ONCE into the device stats counter.
-    atomic_fetch_add_explicit(&stats[0], steps, memory_order_relaxed);
 
     float4 color;
     if (bad) {
@@ -747,7 +738,122 @@ kernel void march_offscreen(
     } else {
         color = float4(0.0f, 0.0f, 0.0f, 1.0f);              // miss: black
     }
-    outTex.write(color, gid);
+
+    ThreshMarchResult result;
+    result.color = color;
+    result.t = hit ? t : maxDist;
+    result.hit = hit;
+    result.steps = steps;
+    return result;
+}
+
+kernel void march_offscreen(
+    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+    device atomic_uint* stats                [[buffer(THRESH_BUFFER_STATS)]],
+    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+    constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
+    texture2d<float, access::write> outTex   [[texture(THRESH_TEXTURE_OUTPUT)]],
+    uint2 gid                                [[thread_position_in_grid]])
+{
+    const uint w = outTex.get_width();
+    const uint h = outTex.get_height();
+    if (gid.x >= w || gid.y >= h) { return; }
+
+    const float aspect = float(w) / float(h);
+    const float fovTan = U.camPosFov.w;
+    const float2 ndc = float2((float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
+                              1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+    const float3 dirLocal = normalize(float3(ndc.x * aspect * fovTan,
+                                             ndc.y * fovTan,
+                                             -1.0f));
+    const float3 rd = quatRotate(U.camQuat, dirLocal);
+    const float3 ro = U.camPosFov.xyz;
+
+    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette);
+
+    // Per-thread step count added ONCE into the device stats counter.
+    atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+
+    outTex.write(m.color, gid);
+}
+
+// ========================== stereo raster path ==============================
+//
+// The visionOS Compositor shell (and its Mac-hosted parity test) renders the
+// SAME march through a fullscreen triangle: one vertex amplification per
+// drawable view, per-view ThreshViewUniforms for ray generation, and a
+// [[depth(any)]] write so the compositor's reprojection gets real geometry.
+//
+// Ray generation is projection-agnostic: two NDC points unproject through
+// invProj and their difference is the view-local ray — correct for any
+// asymmetric/reverse-Z/infinite-far Compositor projection. The interpolated
+// `ndc` varying is in LOGICAL coordinates, so foveated rendering (variable
+// rasterization rate) yields correct rays with no rate-map decode here.
+
+struct ThreshViewVertexOut {
+    float4 position [[position]];
+    float2 ndc;
+    ushort viewIndex [[render_target_array_index]];
+    ushort ampIndex  [[flat]];
+};
+
+vertex ThreshViewVertexOut thresh_fullscreen_vertex(
+    uint vid   [[vertex_id]],
+    ushort amp [[amplification_id]])
+{
+    // One triangle covering NDC: (-1,-1) (3,-1) (-1,3).
+    const float2 pos = float2(vid == 1 ? 3.0f : -1.0f,
+                              vid == 2 ? 3.0f : -1.0f);
+    ThreshViewVertexOut out;
+    out.position = float4(pos, 0.5f, 1.0f);
+    out.ndc = pos;
+    out.viewIndex = amp;
+    out.ampIndex = amp;
+    return out;
+}
+
+struct ThreshFragmentOut {
+    float4 color [[color(0)]];
+    float  depth [[depth(any)]];
+};
+
+fragment ThreshFragmentOut thresh_march_fragment(
+    ThreshViewVertexOut in                     [[stage_in]],
+    constant ThreshFrameUniforms& U            [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params                 [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops             [[buffer(THRESH_BUFFER_WARP_OPS)]],
+    device atomic_uint* stats                  [[buffer(THRESH_BUFFER_STATS)]],
+    visible_function_table<ThreshDE> deTable   [[buffer(THRESH_BUFFER_DE_TABLE)]],
+    constant ThreshPalette& palette            [[buffer(THRESH_BUFFER_PALETTE)]],
+    device const ThreshViewUniforms* views     [[buffer(THRESH_BUFFER_VIEWS)]])
+{
+    const ThreshViewUniforms view = views[in.ampIndex];
+
+    // Two points on this pixel's ray, any projection convention.
+    const float4 h0 = view.invProj * float4(in.ndc, 0.25f, 1.0f);
+    const float4 h1 = view.invProj * float4(in.ndc, 0.75f, 1.0f);
+    float3 dirLocal = normalize(h1.xyz / h1.w - h0.xyz / h0.w);
+    // The camera looks down -Z in view space — pick that hemisphere (the
+    // unproject order flips under reverse-Z conventions).
+    if (dirLocal.z > 0.0f) { dirLocal = -dirLocal; }
+
+    const float roomScale = max(view.originScale.w, 1e-6f);
+    const float3 ro = view.originScale.xyz;
+    const float3 rd = quatRotate(view.orient, dirLocal);
+
+    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette);
+    atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+
+    // Depth consistent with THIS view's projection: the hit point (or the
+    // far threshold on a miss) back in view-local meters.
+    const float4 clip = view.proj * float4(dirLocal * (m.t / roomScale), 1.0f);
+
+    ThreshFragmentOut out;
+    out.color = m.color;
+    out.depth = clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f);
+    return out;
 }
 
 // ============================== debug kernels ===============================

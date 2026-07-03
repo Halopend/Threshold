@@ -6,7 +6,7 @@ let package = Package(
     platforms: [
         .macOS(.v15),
         .iOS(.v18),
-        .visionOS(.v2),
+        .visionOS("26.0"),
     ],
     products: [
         .library(name: "ThresholdCore", targets: ["ThresholdCore"]),

@@ -15,17 +15,19 @@
 
 #ifdef __METAL_VERSION__
   #include <metal_stdlib>
-  #define THRESH_FLOAT4 float4
-  #define THRESH_UINT4  uint4
-  #define THRESH_UINT   uint
+  #define THRESH_FLOAT4   float4
+  #define THRESH_FLOAT4X4 metal::float4x4
+  #define THRESH_UINT4    uint4
+  #define THRESH_UINT     uint
   #define THRESH_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
 #else
   #include <simd/simd.h>
   #include <stdint.h>
   #include <assert.h>
-  #define THRESH_FLOAT4 simd_float4
-  #define THRESH_UINT4  simd_uint4
-  #define THRESH_UINT   uint32_t
+  #define THRESH_FLOAT4   simd_float4
+  #define THRESH_FLOAT4X4 simd_float4x4
+  #define THRESH_UINT4    simd_uint4
+  #define THRESH_UINT     uint32_t
   #define THRESH_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
@@ -156,6 +158,25 @@ typedef struct ThreshPalette {
 } ThreshPalette;
 
 // ---------------------------------------------------------------------------
+// Per-view uniforms for the stereo raster path (visionOS Compositor shell).
+// One entry per drawable view; the frame's shared state stays in
+// ThreshFrameUniforms (the 64-byte cap is untouched). Ray generation is
+// projection-convention-agnostic: the fragment unprojects two NDC points
+// through invProj and normalizes their difference, so any Compositor
+// projection (reverse-Z, infinite far, asymmetric frusta) yields correct
+// rays. `proj` is the SAME matrix forward — the depth the fragment writes is
+// consistent with the compositor's reprojection by construction.
+// ---------------------------------------------------------------------------
+
+typedef struct ThreshViewUniforms {
+    THRESH_FLOAT4X4 proj;         // view-local -> clip (depth write)
+    THRESH_FLOAT4X4 invProj;      // clip -> view-local (ray generation)
+    THRESH_FLOAT4   originScale;  // xyz = eye origin in FRACTAL world,
+                                  //   w = room meters -> fractal units scale
+    THRESH_FLOAT4   orient;       // quaternion view-local -> fractal world
+} ThreshViewUniforms;
+
+// ---------------------------------------------------------------------------
 // Buffer/texture binding indices for the march kernel.
 // ---------------------------------------------------------------------------
 
@@ -166,6 +187,7 @@ typedef struct ThreshPalette {
 // index 4 is the DE visible-function table (GPUContext.deTableBufferIndex,
 // not an ABI-header constant — it is bound by the Swift encoder).
 #define THRESH_BUFFER_PALETTE    5   // ThreshPalette, by-value (setBytes)
+#define THRESH_BUFFER_VIEWS      6   // device const ThreshViewUniforms* (raster path)
 #define THRESH_TEXTURE_OUTPUT    0
 
 // ---------------------------------------------------------------------------
@@ -195,5 +217,7 @@ THRESH_STATIC_ASSERT(sizeof(ThreshWarpOp) == 48, "WarpOp must be exactly 48 byte
 THRESH_STATIC_ASSERT(sizeof(ThreshFrameUniforms) == 64, "FrameUniforms must be exactly 64 bytes");
 THRESH_STATIC_ASSERT(sizeof(ThreshPalette) == 16 + 16 * THRESH_MAX_GRADIENT_STOPS,
                      "Palette must be 16-byte header + 16B per stop, 16-aligned");
+THRESH_STATIC_ASSERT(sizeof(ThreshViewUniforms) == 160,
+                     "ViewUniforms must be two 4x4 matrices + two float4s");
 
 #endif // THRESHOLD_SHADER_ABI_H
