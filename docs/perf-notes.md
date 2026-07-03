@@ -242,3 +242,26 @@ generic offscreen pipeline preserved).
   when the headset needs the headroom.
 - **mathMode .safe**: deliberate (determinism/CPU-equivalence, GPUContext
   doc). Any fast-math experiment must re-run the full golden corpus.
+
+## Bakes on by default + over-relaxation A/B — 2026-07-03 (perf block 6)
+
+`RenderTuning.envDefault` now enables ALL function-constant bakes
+(iterations, maxSteps, warp-ops gate, color-map mode, AO gate). Measured
+Stress_test @1080p, 30 frames, release CLI:
+
+| Config | avg GPU | totalSteps |
+|---|---|---|
+| generic (no --specialize) | 182.9 ms | 6.42B |
+| specialized, no bakes | 165.5 ms | 6.42B |
+| specialized + all bakes | 153.4 ms | 6.42B |
+| + ω=1.0 (`THRESHOLD_STEP_MULTIPLIER`) | 146.9 ms | 5.77B |
+| + ω=1.2 | **130.4 ms** | 5.06B |
+| + ω=1.6 | 147.6 ms | 5.83B |
+
+- All-bakes output is **byte-identical** to generic (cmp on PNGs).
+- The old 0.9 stepSafety default is a measured pessimization: plain ω=1.0
+  is ~4% faster, ω=1.2 ~15% faster on this (Kleinian) scene. ω=1.6
+  regresses Kleinian — matches the legacy per-DE cap table (1.2 for
+  Kleinian, 1.6 box-fold, 1.1 log-DE). Next port step: per-DE ω caps in
+  DERegistry + raise the default; needs a golden rebaseline since
+  stepSafety changes marched output.

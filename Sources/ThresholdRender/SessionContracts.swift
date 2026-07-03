@@ -49,12 +49,15 @@ public struct RenderTuning: Sendable, Equatable {
         self.manualRenderScale = manualRenderScale
     }
 
-    /// Seeded from the process env (`THRESHOLD_SPEC_ITERATIONS`) so the app
-    /// starts in the same state an env-only build had; the UI overrides live.
-    /// The new bakes default off (measure-first) — flip them in the panel.
+    /// The app's starting tuning; the UI overrides live. All function-constant
+    /// bakes default ON: measured 2026-07 on Stress_test @1080p they are worth
+    /// ~7% GPU (165.5 → 153.4 ms) with byte-identical output (the baked value
+    /// IS the runtime value — marchSpec contract), and the generic pipeline
+    /// still covers frames until the specialized variant finishes compiling.
     public static var envDefault: RenderTuning {
         RenderTuning(specializationEnabled: true,
-                     bakeIterations: GPUContext.bakeIterations)
+                     bakeIterations: true, bakeMaxSteps: true,
+                     gateWarpOps: true, bakeColorMapMode: true, gateAO: true)
     }
 }
 
