@@ -12,6 +12,8 @@
 //   fractalType            → fractalTypeKey (name-level)
 //   position + worldRotationXYZW → camera
 //   fractalIterations / maxRaySteps / aoStrength → engine.* params
+//   fractalScale / foldingLimit / sphereRadius / minDistance → de.mandelbox.*
+//   scale × detailScale → scale.zoom integrator phase (octaves)
 //   colorScheme* / tonemapStrength → color.* grading params
 //   gradientState.gradient → palette + color.gradient.* params
 //   spaceWarpOps           → warpStack (kind + payload remap, disabled ops
@@ -22,6 +24,9 @@
 // Legacy files carry `schemaVersion` (or nothing) instead of `version`;
 // SceneCodec.decode treats a version-less tree with a `fractalType` as
 // version 0 and routes it here.
+
+import Foundation
+import simd
 
 public enum LegacyScene {
     /// True when a version-less JSON tree looks like an original-app scene.
@@ -85,19 +90,35 @@ public enum LegacyScene {
         // `name` carries over verbatim (same key both formats).
 
         // --- camera ------------------------------------------------------
-        var position: [JSONValue] = [.number(0), .number(0), .number(3)]
-        if case .array(let p)? = tree["position"], p.count == 3 {
-            position = p
+        // The original moved the MODEL, not the camera: world transform
+        // T(position)·R(worldRotation)·S(scale·detailScale) on the fractal,
+        // camera at the origin looking −Z. The rebuild keeps the fractal at
+        // the origin, so the equivalent camera pose is the INVERSE:
+        // position′ = R⁻¹·(−position), orientation′ = R⁻¹. The scale part
+        // cancels out of the camera because zoom rescales MODEL space
+        // (mapScene), leaving world distances — and the camera — untouched.
+        var legacyPosition = SIMD3<Double>(0, 0, -3)
+        if case .array(let p)? = tree["position"], p.count == 3,
+           case .number(let px) = p[0], case .number(let py) = p[1],
+           case .number(let pz) = p[2] {
+            legacyPosition = SIMD3(px, py, pz)
         }
-        let orientation: [JSONValue] = [
-            .number(number("worldRotationX") ?? 0),
-            .number(number("worldRotationY") ?? 0),
-            .number(number("worldRotationZ") ?? 0),
-            .number(number("worldRotationW") ?? 1),
-        ]
+        // R⁻¹ = conjugate of the (normalized) legacy world rotation.
+        var q = SIMD4<Double>(
+            number("worldRotationX") ?? 0, number("worldRotationY") ?? 0,
+            number("worldRotationZ") ?? 0, number("worldRotationW") ?? 1)
+        let qLen = (q * q).sum().squareRoot()
+        q = qLen > 1e-9 ? q / qLen : SIMD4(0, 0, 0, 1)
+        let inv = SIMD4(-q.x, -q.y, -q.z, q.w)
+        // v′ = v + 2·(inv.xyz × (inv.xyz × v + inv.w·v))
+        let v = -legacyPosition
+        let im = SIMD3(inv.x, inv.y, inv.z)
+        let cameraPosition = v + 2 * simd_cross(im, simd_cross(im, v) + inv.w * v)
         tree["camera"] = .object([
-            "position": .array(position),
-            "orientation": .array(orientation),
+            "position": .array(cameraPosition.indices.map { .number(cameraPosition[$0]) }),
+            "orientation": .array([
+                .number(inv.x), .number(inv.y), .number(inv.z), .number(inv.w),
+            ]),
             "fovYRadians": .number(Double.pi / 3),
         ])
 
@@ -115,6 +136,36 @@ public enum LegacyScene {
                     params["de.kleinian.\(name)"] = .array([.number(n)])
                 }
             }
+        }
+
+        // --- mandelbox DE params -------------------------------------------
+        // The original's mandelbox uniforms map 1:1 onto the rebuild's
+        // declared layout (mandelboxSDF_exact in the original's
+        // ProgressiveShaders.metal): fractalScale → scale, foldingLimit →
+        // foldLimit, sphereRadius → fixedRadius. Legacy `minDistance` is the
+        // mandelbox minRadius SQUARED (despite the name — it is passed as the
+        // `minDistance // minRadius²` argument), so it maps through sqrt.
+        if case .string(let type)? = tree["fractalType"],
+           type == "mandelbox" || type == "mandelboxSphereProjection" {
+            copyParam("fractalScale", to: .de("mandelbox", "scale"))
+            copyParam("foldingLimit", to: .de("mandelbox", "foldLimit"))
+            copyParam("sphereRadius", to: .de("mandelbox", "fixedRadius"))
+            if let mr2 = number("minDistance"), mr2 > 0 {
+                params["de.mandelbox.minRadius"] = .array([.number(mr2.squareRoot())])
+            }
+        }
+
+        // --- zoom (plan §6.3) ----------------------------------------------
+        // The original scaled the model matrix by `scale × detailScale`
+        // (RaymarchRenderView's effectiveScale); the rebuild's zoom is the
+        // scale.zoom integrator phase in octaves. Written into
+        // integratorPhases — a params write would be overridden by the
+        // engine's integrator post-pass (Invariant 17).
+        let magnification = (number("scale") ?? 1) * (number("detailScale") ?? 1)
+        if magnification > 0, magnification.isFinite, magnification != 1 {
+            tree["integratorPhases"] = .object([
+                ParamKey.scaleZoom.rawValue: .number(log2(magnification)),
+            ])
         }
 
         // --- engine + grading scalars -------------------------------------

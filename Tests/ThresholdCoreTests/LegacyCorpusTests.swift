@@ -101,6 +101,25 @@ struct LegacyCorpusTests {
         #expect(envelope.params["de.kleinian.crossRadius"]?.count == 1)
     }
 
+    @Test("Blue hero: mandelbox DE params + zoom migrate")
+    func mandelboxScaleAndZoomMapping() throws {
+        let data = try Data(
+            contentsOf: scenesDir.appendingPathComponent("Blue hero.threshscene"))
+        let envelope = try SceneCodec.decode(data)
+        #expect(envelope.fractalTypeKey == "mandelbox")
+        // fractalScale/foldingLimit/sphereRadius map 1:1; legacy minDistance
+        // is minRadius² (see LegacyMigration) so 0.8 → sqrt.
+        #expect(envelope.params["de.mandelbox.scale"] == [2.8])
+        #expect(envelope.params["de.mandelbox.foldLimit"] == [1])
+        #expect(envelope.params["de.mandelbox.fixedRadius"] == [0.5])
+        let minRadius = try #require(envelope.params["de.mandelbox.minRadius"]?.first)
+        #expect(abs(minRadius - Float(0.8).squareRoot()) < 1e-5)
+        // scale(1) × detailScale(1.4763585) → zoom octaves, in
+        // integratorPhases (a params write would lose to the integrator).
+        let zoom = try #require(envelope.integratorPhases[ParamKey.scaleZoom.rawValue])
+        #expect(abs(zoom - log2(Float(1.4763585))) < 1e-5)
+    }
+
     @Test("mandelboxSphereProjection maps to mandelbox + sphereProject op")
     func sphereProjectionUnification() throws {
         for file in try corpusFiles() {
