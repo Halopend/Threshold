@@ -27,6 +27,7 @@ import Metal
 import Synchronization
 import ThresholdCore
 import ThresholdShaderABI
+import ThresholdShaderIR
 
 /// AUDIT — `@unchecked Sendable`, same precedent as InteractiveSession:
 /// mailboxes/snapshot slot are compiler-checked Sendable; `context`, `layout`,
@@ -141,6 +142,10 @@ public final class CompositorSession: @unchecked Sendable {
         /// Head room-position at first tracked frame — the room point mapped
         /// onto the session camera (CompositorViewMath.viewUniforms doc).
         var anchorPosition: SIMD3<Float>?
+        /// The previous frame's SESSION-clock time — what inputs stamp their
+        /// signals with so binding/staleness math compares like with like
+        /// (one frame stale, well inside every freshness tolerance).
+        var sessionTime = 0.0
 
         while !stopRequested.load(ordering: .acquiring) {
             switch layer.state {
@@ -178,7 +183,7 @@ public final class CompositorSession: @unchecked Sendable {
 
             // Inputs (hands) publish BEFORE the step so bindings and the
             // gesture lane see this frame's values.
-            onFrame?(now)
+            onFrame?(sessionTime)
 
             let stats = gpu.lastCompleted()
             let colorTexture = drawable.colorTextures[0]
@@ -187,6 +192,7 @@ public final class CompositorSession: @unchecked Sendable {
                 width: colorTexture.width,
                 height: colorTexture.height,
                 gpuMilliseconds: stats.gpuMilliseconds)
+            sessionTime = sessionFrame.time
 
             let originFromDevice =
                 deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
@@ -204,10 +210,17 @@ public final class CompositorSession: @unchecked Sendable {
                     base: sessionFrame.request.uniforms)
             }
 
+            // Spatial hand path (plan §4.3): drive-flagged ops get their
+            // geometry stamped from the hand signals, through the same
+            // room→fractal map as the eyes.
+            let request = stampHandOps(
+                sessionFrame.request, now: sessionFrame.time,
+                anchorPosition: anchorPosition ?? .zero)
+
             if let commandBuffer = queue.makeCommandBuffer() {
                 commandBuffer.label = "compositor frame"
                 encode(
-                    sessionFrame.request, views: views, drawable: drawable,
+                    request, views: views, drawable: drawable,
                     layered: layered, gpu: gpu, commandBuffer: commandBuffer)
                 drawable.encodePresent(commandBuffer: commandBuffer)
                 commandBuffer.commit()
@@ -261,6 +274,47 @@ public final class CompositorSession: @unchecked Sendable {
                     commandBuffer: commandBuffer)
             }
         }
+    }
+
+    // MARK: Hand-driven ops
+
+    /// Signals older than this are treated as lost tracking (the tracker
+    /// publishes every frame while a hand is tracked).
+    private static let handSignalFreshness = 0.25
+
+    private func stampHandOps(
+        _ request: RenderRequest, now: Double, anchorPosition: SIMD3<Float>
+    ) -> RenderRequest {
+        guard request.ops.contains(where: {
+            WarpFlags(rawValue: $0.flags)
+                .intersection([.driveRightHand, .driveLeftHand]) != []
+        }) else { return request }
+
+        func point(_ id: SignalID) -> SIMD3<Float>? {
+            guard let signal = signals.read(id: id),
+                  now - signal.timestamp < Self.handSignalFreshness
+            else { return nil }
+            return SIMD3(signal.value.x, signal.value.y, signal.value.z)
+        }
+
+        let right = HandOpStamper.Hand(
+            palm: point(.handRightPalm),
+            wrist: point(.handRightPosition),
+            forearm: point(.handRightForearm))
+        let left = HandOpStamper.Hand(
+            palm: point(.handLeftPalm),
+            wrist: point(.handLeftPosition),
+            forearm: point(.handLeftForearm))
+
+        return RenderRequest(
+            uniforms: request.uniforms,
+            params: request.params,
+            ops: HandOpStamper.stamp(
+                request.ops, right: right, left: left,
+                base: request.uniforms, anchorPosition: anchorPosition),
+            palette: request.palette,
+            width: request.width,
+            height: request.height)
     }
 
     // MARK: Clock

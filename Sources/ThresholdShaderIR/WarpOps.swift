@@ -105,6 +105,11 @@ public struct WarpFlags: OptionSet, Sendable, Hashable, Codable {
     /// `THRESH_WARP_FLAG_OPTION_A` — BoxFold: Hall of Mirrors;
     /// HandAttract: pocket enabled.
     public static let optionA = WarpFlags(rawValue: 1 << 0)
+    /// `THRESH_WARP_FLAG_DRIVE_RIGHT` — geometry fields stamped from the
+    /// RIGHT hand each frame (plan §4.3 spatial path; HandOpStamper).
+    public static let driveRightHand = WarpFlags(rawValue: 1 << 1)
+    /// `THRESH_WARP_FLAG_DRIVE_LEFT` — stamped from the LEFT hand.
+    public static let driveLeftHand = WarpFlags(rawValue: 1 << 2)
 }
 
 // MARK: - Payload field catalog

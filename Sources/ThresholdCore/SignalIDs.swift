@@ -27,12 +27,21 @@ extension SignalID {
     /// Wrist position in room space, meters, in `.xyz`.
     public static let handLeftPosition = SignalID("hand.left.position")
     public static let handRightPosition = SignalID("hand.right.position")
+    /// Palm center (middle-finger metacarpal joint) in room space, `.xyz` —
+    /// the hand-attract op's center (plan §4.3 spatial path).
+    public static let handLeftPalm = SignalID("hand.left.palm")
+    public static let handRightPalm = SignalID("hand.right.palm")
+    /// Forearm point (elbow-ward joint) in room space, `.xyz` — the far end
+    /// of the forearm-carve capsule (near end = the wrist position signal).
+    public static let handLeftForearm = SignalID("hand.left.forearm")
+    public static let handRightForearm = SignalID("hand.right.forearm")
 
     /// The hand signals every session registers (published only where a hand
     /// tracker runs; registered everywhere so bindings referencing them are
     /// portable across platforms — Invariant 14).
     public static let standardHands: [SignalID] = [
         .handLeftPinch, .handRightPinch, .handLeftPosition, .handRightPosition,
+        .handLeftPalm, .handRightPalm, .handLeftForearm, .handRightForearm,
     ]
 
     // MARK: app.*

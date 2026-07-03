@@ -6,6 +6,7 @@
 import SwiftUI
 import ThresholdCore
 import ThresholdRender
+import ThresholdShaderABI
 import ThresholdShaderIR
 
 // MARK: - CatalogSectionView
@@ -73,6 +74,9 @@ public struct ControlSidebar: View {
             DEPickerSection(mirror: mirror)
             CustomDESection(mirror: mirror)
             AnimationSection(mirror: mirror)
+            #if os(visionOS)
+            HandsSection(mirror: mirror)
+            #endif
             WarpStackSection(mirror: mirror)
             PaletteSection(mirror: mirror, layout: layout)
             ForEach(Self.groupsInOrder(layout), id: \.self) { group in
@@ -570,6 +574,72 @@ struct StopRow: View {
             get: { Double(stop.position) },
             set: { mirror.setPalette(PaletteEdit.setPosition(mirror.palette, at: index, to: Float($0))) }
         )
+    }
+}
+
+// MARK: - HandsSection (visionOS)
+
+/// Toggles for the hand-DRIVEN warp ops (plan §4.3 spatial path): each
+/// toggle adds/removes a drive-flagged op in the AUTHORED stack — it is an
+/// ordinary warp op afterwards (visible in the Warp Stack section, strength
+/// slider and all); the Compositor shell stamps its geometry from the live
+/// hand each frame. Rendered only where a hand tracker runs.
+public struct HandsSection: View {
+    let mirror: ParameterMirror
+
+    public init(mirror: ParameterMirror) {
+        self.mirror = mirror
+    }
+
+    /// The right-hand attract template: palm-centered soft attract sphere.
+    /// Center (a.xyz) is stamped; radius/softness are authored and editable.
+    static func attractOp() -> WarpOpDTO {
+        WarpOpDTO(
+            kind: UInt32(ThreshWarpKindHandAttract.rawValue),
+            flags: WarpFlags.driveRightHand.rawValue,
+            strength: 0.7,
+            a: [0, 0, 0, 0.15],       // stamped center; radius 0.15
+            b: [1, 0.08, 0.5, 0.05])  // ballScale, blend, pocketSize, pocketSoft
+    }
+
+    /// The left-forearm carve template: wrist→forearm capsule, subtractive.
+    static func carveOp() -> WarpOpDTO {
+        WarpOpDTO(
+            kind: UInt32(ThreshWarpKindForearmCarve.rawValue),
+            flags: WarpFlags.driveLeftHand.rawValue,
+            strength: 0.9,
+            a: [0, 0, 0, 0.06],   // stamped capsule start; radius 0.06
+            b: [0, 0, 0, 0.04])   // stamped capsule end; blend 0.04
+    }
+
+    private func hasOp(_ template: WarpOpDTO) -> Bool {
+        mirror.warpStack.contains {
+            $0.kind == template.kind && $0.flags == template.flags
+        }
+    }
+
+    private func toggleOp(_ template: WarpOpDTO, on: Bool) {
+        if on {
+            guard !hasOp(template) else { return }
+            mirror.setWarpStack(mirror.warpStack + [template])
+        } else {
+            mirror.setWarpStack(mirror.warpStack.filter {
+                !($0.kind == template.kind && $0.flags == template.flags)
+            })
+        }
+    }
+
+    public var body: some View {
+        Section("Hands") {
+            Toggle("Right Hand Sculpts", isOn: SwiftUI.Binding(
+                get: { hasOp(Self.attractOp()) },
+                set: { toggleOp(Self.attractOp(), on: $0) }
+            ))
+            Toggle("Left Forearm Carves", isOn: SwiftUI.Binding(
+                get: { hasOp(Self.carveOp()) },
+                set: { toggleOp(Self.carveOp(), on: $0) }
+            ))
+        }
     }
 }
 

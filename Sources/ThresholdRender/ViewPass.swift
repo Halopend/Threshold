@@ -37,19 +37,14 @@ public enum CompositorViewMath {
         base: ThreshFrameUniforms,
         roomScale: Float = 1
     ) -> ThreshViewUniforms {
-        let basePos = SIMD3(base.camPosFov.x, base.camPosFov.y, base.camPosFov.z)
-        var baseRot = simd_quatf(vector: base.camQuat)
-        if !baseRot.vector.x.isFinite || simd_length(baseRot.vector) < 1e-6 {
-            baseRot = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-        } else {
-            baseRot = simd_normalize(baseRot)
-        }
-
+        let baseRot = baseRotation(base)
         let eyePos = SIMD3(
             eyeToRoom.columns.3.x, eyeToRoom.columns.3.y, eyeToRoom.columns.3.z)
         let eyeRot = simd_quatf(eyeToRoom)
 
-        let origin = basePos + baseRot.act(roomScale * (eyePos - anchorPosition))
+        let origin = fractalPoint(
+            room: eyePos, base: base, anchorPosition: anchorPosition,
+            roomScale: roomScale)
         let orient = simd_normalize(baseRot * eyeRot)
 
         return ThreshViewUniforms(
@@ -57,6 +52,26 @@ public enum CompositorViewMath {
             invProj: projection.inverse,
             originScale: SIMD4(origin, roomScale),
             orient: orient.vector)
+    }
+
+    /// Room point → fractal-world point: the SAME mapping the eyes use, so
+    /// hand geometry lands exactly where you see your hand (plan §4.3).
+    public static func fractalPoint(
+        room: SIMD3<Float>,
+        base: ThreshFrameUniforms,
+        anchorPosition: SIMD3<Float>,
+        roomScale: Float = 1
+    ) -> SIMD3<Float> {
+        let basePos = SIMD3(base.camPosFov.x, base.camPosFov.y, base.camPosFov.z)
+        return basePos + baseRotation(base).act(roomScale * (room - anchorPosition))
+    }
+
+    private static func baseRotation(_ base: ThreshFrameUniforms) -> simd_quatf {
+        let q = simd_quatf(vector: base.camQuat)
+        guard q.vector.x.isFinite, simd_length(q.vector) > 1e-6 else {
+            return simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        }
+        return simd_normalize(q)
     }
 
     /// Symmetric pinhole projection whose rays match the compute kernel's

@@ -88,17 +88,20 @@ public final class HandTracker: @unchecked Sendable {
         let anchors = provider.latestAnchors
         updateHand(
             anchors.leftHand, isRight: false, time: sessionTime,
-            pinchSignal: .handLeftPinch, positionSignal: .handLeftPosition)
+            pinchSignal: .handLeftPinch, positionSignal: .handLeftPosition,
+            palmSignal: .handLeftPalm, forearmSignal: .handLeftForearm)
         updateHand(
             anchors.rightHand, isRight: true, time: sessionTime,
-            pinchSignal: .handRightPinch, positionSignal: .handRightPosition)
+            pinchSignal: .handRightPinch, positionSignal: .handRightPosition,
+            palmSignal: .handRightPalm, forearmSignal: .handRightForearm)
     }
 
     // MARK: Per-hand
 
     private func updateHand(
         _ anchor: HandAnchor?, isRight: Bool, time: Double,
-        pinchSignal: SignalID, positionSignal: SignalID
+        pinchSignal: SignalID, positionSignal: SignalID,
+        palmSignal: SignalID, forearmSignal: SignalID
     ) {
         guard let anchor, anchor.isTracked,
               let skeleton = anchor.handSkeleton
@@ -124,6 +127,16 @@ public final class HandTracker: @unchecked Sendable {
         signals.publish(
             id: positionSignal,
             value: SIMD4(wrist, 0), confidence: 1, timestamp: time)
+        // Geometry for the hand-driven warp ops (plan §4.3): palm center for
+        // the attract sphere, forearm point for the carve capsule's far end.
+        if let palm = worldJoint(.middleFingerMetacarpal) {
+            signals.publish(
+                id: palmSignal, value: SIMD4(palm, 0), confidence: 1, timestamp: time)
+        }
+        if let forearm = worldJoint(.forearmArm) {
+            signals.publish(
+                id: forearmSignal, value: SIMD4(forearm, 0), confidence: 1, timestamp: time)
+        }
 
         guard let thumb = worldJoint(.thumbTip),
               let index = worldJoint(.indexFingerTip)

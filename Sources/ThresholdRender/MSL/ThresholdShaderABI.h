@@ -76,6 +76,12 @@ typedef enum ThreshWarpKind {
 
 // Per-instance flag bits (WarpOp.flags). Kind-specific meaning where noted.
 #define THRESH_WARP_FLAG_OPTION_A  (1u << 0)  // BoxFold: Hall of Mirrors; HandAttract: pocket enabled
+// Hand-drive flags (plan §4.3 spatial path): CPU-side markers — the shell
+// stamps the op's geometry fields from live hand joints each frame before
+// encode (HandOpStamper). The kernel never reads them. An op without a drive
+// flag is an ordinary slider-driven op (the mandated non-hand control path).
+#define THRESH_WARP_FLAG_DRIVE_RIGHT (1u << 1)  // geometry follows the RIGHT hand
+#define THRESH_WARP_FLAG_DRIVE_LEFT  (1u << 2)  // geometry follows the LEFT hand
 
 // ---------------------------------------------------------------------------
 // WarpOp — 48 bytes, 16-aligned. ADR-002.
