@@ -24,6 +24,17 @@ public enum EngineSlot: Int, CaseIterable, Sendable, Codable, Hashable {
     case iterations = 3  // THRESH_SLOT_ITERATIONS
     case aoStrength = 4  // THRESH_SLOT_AO_STRENGTH
     case shadowSoft = 5  // THRESH_SLOT_SHADOW_SOFT
+    // Color pipeline (plan §5.5) — must match THRESH_SLOT_* in the ABI header.
+    case gradRepeat = 6      // THRESH_SLOT_GRAD_REPEAT
+    case gradOffset = 7      // THRESH_SLOT_GRAD_OFFSET
+    case gradSmoothing = 8   // THRESH_SLOT_GRAD_SMOOTH
+    case colorMapMode = 9    // THRESH_SLOT_MAP_MODE
+    case saturation = 10     // THRESH_SLOT_SATURATION
+    case contrast = 11       // THRESH_SLOT_CONTRAST
+    case vibrance = 12       // THRESH_SLOT_VIBRANCE
+    case brightness = 13     // THRESH_SLOT_BRIGHTNESS
+    case gamma = 14          // THRESH_SLOT_GAMMA
+    case tonemap = 15        // THRESH_SLOT_TONEMAP
 
     /// Slots `0..<reservedCount` are engine-reserved; normal registration
     /// starts at `reservedCount`. Mirrors `THRESH_SLOT_ENGINE_COUNT`.
@@ -40,6 +51,17 @@ extension ParamKey {
     public static let engineIterations = ParamKey("engine.iterations")
     public static let engineAOStrength = ParamKey("engine.aoStrength")
     public static let engineShadowSoft = ParamKey("engine.shadowSoft")
+    // Color pipeline scalars (plan §5.5).
+    public static let colorGradientRepeat = ParamKey("color.gradient.repeat")
+    public static let colorGradientOffset = ParamKey("color.gradient.offset")
+    public static let colorGradientSmoothing = ParamKey("color.gradient.smoothing")
+    public static let colorMapMode = ParamKey("color.mapMode")
+    public static let colorSaturation = ParamKey("color.saturation")
+    public static let colorContrast = ParamKey("color.contrast")
+    public static let colorVibrance = ParamKey("color.vibrance")
+    public static let colorBrightness = ParamKey("color.brightness")
+    public static let colorGamma = ParamKey("color.gamma")
+    public static let colorTonemap = ParamKey("color.tonemap")
 }
 
 // MARK: - Errors
@@ -158,6 +180,61 @@ public final class Catalog {
                       composition: .replace, persistence: .scene,
                       group: .performance),
             atSlot: EngineSlot.shadowSoft.rawValue)
+
+        // Color pipeline (plan §5.5). Grading + palette-sampling controls;
+        // the palette STOPS are scene content in the envelope, not here.
+        // All `.replace` settings so scene authors them and the music/animation
+        // lanes add offsets on top (e.g. Color Offset pulsing to the beat).
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorGradientRepeat, label: "Gradient Repeat",
+                      range: 1...16, default: 1,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.gradRepeat.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorGradientOffset, label: "Color Offset",
+                      range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.gradOffset.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorGradientSmoothing, label: "Gradient Smoothing",
+                      range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.gradSmoothing.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorMapMode, label: "Color Mapping",
+                      kind: .enumeration(caseCount: 4), range: 0...3, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.colorMapMode.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorSaturation, label: "Saturation",
+                      range: 0...2, default: 1,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.saturation.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorContrast, label: "Contrast",
+                      range: 0...2, default: 1,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.contrast.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorVibrance, label: "Vibrance",
+                      range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.vibrance.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorBrightness, label: "Brightness",
+                      range: 0...2, default: 1,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.brightness.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorGamma, label: "Gamma",
+                      range: 0.1...4, default: 1,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.gamma.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .colorTonemap, label: "Filmic Tonemap",
+                      range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.tonemap.rawValue)
         // swiftlint:enable force_try
         return catalog
     }

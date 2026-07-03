@@ -2,6 +2,7 @@
 // plus the param-table layout helper implementing the DE-slice convention.
 
 import Foundation
+import ThresholdCore
 import ThresholdShaderABI
 
 /// One offscreen render: everything the march kernel consumes, by value.
@@ -14,16 +15,58 @@ public struct RenderRequest: Sendable {
     /// slice at `uniforms.meta.w` and iterations as the slice's LAST entry.
     public var params: [Float]
     public var ops: [ThreshWarpOp]
+    /// Gradient palette stops (linear rgb + position), packed to the ABI's
+    /// ThreshPalette at encode time. Empty → the built-in default palette.
+    public var palette: [GradientStop]
     public var width: Int
     public var height: Int
 
     public init(uniforms: ThreshFrameUniforms, params: [Float],
-                ops: [ThreshWarpOp], width: Int, height: Int) {
+                ops: [ThreshWarpOp], palette: [GradientStop] = [],
+                width: Int, height: Int) {
         self.uniforms = uniforms
         self.params = params
         self.ops = ops
+        self.palette = palette
         self.width = width
         self.height = height
+    }
+}
+
+/// ThreshPalette wire packing (plan §5.5). Swift imports the C fixed-array
+/// `stops[8]` as a tuple, so we pack the 144-byte struct image by hand and
+/// hand the bytes to `setBytes` — one packer for both encoders.
+public enum PaletteWire {
+    /// sizeof(ThreshPalette): 16-byte header + 16 bytes per stop.
+    public static let byteCount = 16 + 16 * Palette.maxStops
+
+    /// The renderer's default palette when a scene ships none: a warm-to-cool
+    /// sweep that keeps the classic look readable across the orbit-trap range.
+    public static let defaultStops: [GradientStop] = [
+        GradientStop(position: 0.00, rgb: (0.02, 0.02, 0.06)),
+        GradientStop(position: 0.30, rgb: (0.55, 0.12, 0.30)),
+        GradientStop(position: 0.60, rgb: (0.95, 0.55, 0.18)),
+        GradientStop(position: 0.85, rgb: (0.98, 0.90, 0.55)),
+        GradientStop(position: 1.00, rgb: (0.90, 0.98, 0.95)),
+    ]
+
+    /// Pack stops (or the default set, if empty) into ThreshPalette bytes.
+    public static func bytes(_ stops: [GradientStop]) -> [UInt8] {
+        let source = stops.isEmpty ? defaultStops : stops
+        let clamped = Array(source.prefix(Palette.maxStops))
+        var data = [UInt8](repeating: 0, count: byteCount)
+        let count = UInt32(clamped.count)
+        withUnsafeBytes(of: count) { raw in
+            for i in 0..<4 { data[i] = raw[i] }
+        }
+        for (i, s) in clamped.enumerated() {
+            let base = 16 + i * 16
+            let v = SIMD4<Float>(s.red, s.green, s.blue, s.position)
+            withUnsafeBytes(of: v) { raw in
+                for j in 0..<16 { data[base + j] = raw[j] }
+            }
+        }
+        return data
     }
 }
 
@@ -59,7 +102,10 @@ public struct RenderResult: Sendable {
     }
 }
 
-/// Reserved engine slot values (docs/op-semantics.md "March defaults").
+/// Reserved engine slot values (docs/op-semantics.md "March defaults" +
+/// plan §5.5 color defaults). Defaults match `Catalog.withEngineDefaults` so
+/// the offscreen harness and the live session render identically before any
+/// scene is applied.
 public struct EngineParams: Sendable {
     public var maxSteps: Float = 256
     public var maxDist: Float = 64.0
@@ -67,8 +113,42 @@ public struct EngineParams: Sendable {
     public var iterations: Float = 12
     public var aoStrength: Float = 0.5
     public var shadowSoft: Float = 8.0
+    // Color pipeline (plan §5.5).
+    public var gradientRepeat: Float = 1
+    public var gradientOffset: Float = 0
+    public var gradientSmoothing: Float = 0
+    public var colorMapMode: Float = 0
+    public var saturation: Float = 1
+    public var contrast: Float = 1
+    public var vibrance: Float = 0
+    public var brightness: Float = 1
+    public var gamma: Float = 1
+    public var tonemap: Float = 0
 
     public init() {}
+
+    /// The reserved engine region [0, THRESH_SLOT_ENGINE_COUNT) in slot order,
+    /// ready to head the GPU param table.
+    public func reservedSlots() -> [Float] {
+        var table = [Float](repeating: 0, count: Int(THRESH_SLOT_ENGINE_COUNT))
+        table[Int(THRESH_SLOT_MAX_STEPS)] = maxSteps
+        table[Int(THRESH_SLOT_MAX_DIST)] = maxDist
+        table[Int(THRESH_SLOT_STEP_SAFETY)] = stepSafety
+        table[Int(THRESH_SLOT_ITERATIONS)] = iterations
+        table[Int(THRESH_SLOT_AO_STRENGTH)] = aoStrength
+        table[Int(THRESH_SLOT_SHADOW_SOFT)] = shadowSoft
+        table[Int(THRESH_SLOT_GRAD_REPEAT)] = gradientRepeat
+        table[Int(THRESH_SLOT_GRAD_OFFSET)] = gradientOffset
+        table[Int(THRESH_SLOT_GRAD_SMOOTH)] = gradientSmoothing
+        table[Int(THRESH_SLOT_MAP_MODE)] = colorMapMode
+        table[Int(THRESH_SLOT_SATURATION)] = saturation
+        table[Int(THRESH_SLOT_CONTRAST)] = contrast
+        table[Int(THRESH_SLOT_VIBRANCE)] = vibrance
+        table[Int(THRESH_SLOT_BRIGHTNESS)] = brightness
+        table[Int(THRESH_SLOT_GAMMA)] = gamma
+        table[Int(THRESH_SLOT_TONEMAP)] = tonemap
+        return table
+    }
 }
 
 /// Builds the full resolved param table with the encoder's DE-slice
@@ -81,13 +161,7 @@ public struct EngineParams: Sendable {
 public enum ParamTableLayout {
     public static func build(engine: EngineParams = EngineParams(),
                              deParams: [Float]) -> (params: [Float], deParamOffset: Int) {
-        var table = [Float](repeating: 0, count: Int(THRESH_SLOT_ENGINE_COUNT))
-        table[Int(THRESH_SLOT_MAX_STEPS)] = engine.maxSteps
-        table[Int(THRESH_SLOT_MAX_DIST)] = engine.maxDist
-        table[Int(THRESH_SLOT_STEP_SAFETY)] = engine.stepSafety
-        table[Int(THRESH_SLOT_ITERATIONS)] = engine.iterations
-        table[Int(THRESH_SLOT_AO_STRENGTH)] = engine.aoStrength
-        table[Int(THRESH_SLOT_SHADOW_SOFT)] = engine.shadowSoft
+        var table = engine.reservedSlots()
         let offset = table.count
         table.append(contentsOf: deParams)
         table.append(engine.iterations)

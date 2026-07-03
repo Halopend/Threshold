@@ -67,7 +67,8 @@ func makeSnapshot(
     totalSteps: UInt64 = 0,
     deKey: String = "mandelbox",
     warpStack: [WarpOpDTO] = [],
-    paused: Bool = false
+    paused: Bool = false,
+    palette: Palette = Palette(stops: [])
 ) -> RenderSnapshot {
     RenderSnapshot(
         resolved: ResolvedParams(values: values, generation: generation),
@@ -77,7 +78,8 @@ func makeSnapshot(
         totalSteps: totalSteps,
         deKey: deKey,
         warpStack: warpStack,
-        paused: paused)
+        paused: paused,
+        palette: palette)
 }
 
 /// A warp DTO with recognizable payloads for list-edit assertions.

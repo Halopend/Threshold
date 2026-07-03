@@ -46,7 +46,35 @@ struct ABILayoutTests {
         #expect(EngineSlot.iterations.rawValue == Int(THRESH_SLOT_ITERATIONS))
         #expect(EngineSlot.aoStrength.rawValue == Int(THRESH_SLOT_AO_STRENGTH))
         #expect(EngineSlot.shadowSoft.rawValue == Int(THRESH_SLOT_SHADOW_SOFT))
+        // Color pipeline slots (plan §5.5).
+        #expect(EngineSlot.gradRepeat.rawValue == Int(THRESH_SLOT_GRAD_REPEAT))
+        #expect(EngineSlot.gradOffset.rawValue == Int(THRESH_SLOT_GRAD_OFFSET))
+        #expect(EngineSlot.gradSmoothing.rawValue == Int(THRESH_SLOT_GRAD_SMOOTH))
+        #expect(EngineSlot.colorMapMode.rawValue == Int(THRESH_SLOT_MAP_MODE))
+        #expect(EngineSlot.saturation.rawValue == Int(THRESH_SLOT_SATURATION))
+        #expect(EngineSlot.contrast.rawValue == Int(THRESH_SLOT_CONTRAST))
+        #expect(EngineSlot.vibrance.rawValue == Int(THRESH_SLOT_VIBRANCE))
+        #expect(EngineSlot.brightness.rawValue == Int(THRESH_SLOT_BRIGHTNESS))
+        #expect(EngineSlot.gamma.rawValue == Int(THRESH_SLOT_GAMMA))
+        #expect(EngineSlot.tonemap.rawValue == Int(THRESH_SLOT_TONEMAP))
         #expect(EngineSlot.reservedCount == Int(THRESH_SLOT_ENGINE_COUNT))
+        // All color slots live inside the reserved region (no ABI count bump).
+        #expect(EngineSlot.tonemap.rawValue < EngineSlot.reservedCount)
+    }
+
+    @Test("ColorMapMode raw values match the ThreshColorMapMode header enum")
+    func colorMapModeCrossCheck() {
+        #expect(ColorMapMode.orbitTrap.rawValue == Int(ThreshColorMapOrbitTrap.rawValue))
+        #expect(ColorMapMode.depth.rawValue == Int(ThreshColorMapDepth.rawValue))
+        #expect(ColorMapMode.normal.rawValue == Int(ThreshColorMapNormal.rawValue))
+        #expect(ColorMapMode.blend.rawValue == Int(ThreshColorMapBlend.rawValue))
+    }
+
+    @Test("ThreshPalette is 16B header + 16B per stop; Core cap matches header")
+    func paletteLayout() {
+        #expect(MemoryLayout<ThreshPalette>.size == 16 + 16 * Int(THRESH_MAX_GRADIENT_STOPS))
+        #expect(MemoryLayout<ThreshPalette>.alignment == 16)
+        #expect(Palette.maxStops == Int(THRESH_MAX_GRADIENT_STOPS))
     }
 
     @Test("WarpKind raw values match ThreshWarpKind exactly (never renumber)")

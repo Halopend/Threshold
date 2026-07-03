@@ -110,6 +110,9 @@ public struct SceneEnvelope: Sendable, Equatable {
     public var integratorPhases: [String: Float]
     public var warpStack: [WarpOpDTO]
     public var camera: CameraDTO
+    /// Scene palette (gradient stops). `nil` means "no authored palette" — the
+    /// renderer falls back to its default palette (plan §5.5).
+    public var palette: Palette?
     /// Foreign top-level keys, preserved verbatim.
     public var unknown: [String: JSONValue]
 
@@ -125,6 +128,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         integratorPhases: [String: Float] = [:],
         warpStack: [WarpOpDTO] = [],
         camera: CameraDTO = .default,
+        palette: Palette? = nil,
         unknown: [String: JSONValue] = [:]
     ) {
         self.version = version
@@ -138,6 +142,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         self.integratorPhases = integratorPhases
         self.warpStack = warpStack
         self.camera = camera
+        self.palette = palette
         self.unknown = unknown
     }
 }
@@ -159,6 +164,7 @@ extension SceneEnvelope: Codable {
     private static let knownKeys: Set<String> = [
         "version", "abiVersion", "name", "tags", "fractalTypeKey",
         "embeddedDE", "params", "integratorPhases", "warpStack", "camera",
+        "palette",
     ]
 
     public init(from decoder: any Decoder) throws {
@@ -181,6 +187,7 @@ extension SceneEnvelope: Codable {
             try c.decodeIfPresent([String: Float].self, forKey: key("integratorPhases")) ?? [:]
         warpStack = try c.decodeIfPresent([WarpOpDTO].self, forKey: key("warpStack")) ?? []
         camera = try c.decodeIfPresent(CameraDTO.self, forKey: key("camera")) ?? .default
+        palette = try c.decodeIfPresent(Palette.self, forKey: key("palette"))
 
         // Params: split numeric-shaped entries from foreign shapes, keeping
         // both (numeric values normalize to [Float]; bare numbers become
@@ -231,6 +238,7 @@ extension SceneEnvelope: Codable {
         }
         try c.encode(warpStack, forKey: key("warpStack"))
         try c.encode(camera, forKey: key("camera"))
+        try c.encodeIfPresent(palette, forKey: key("palette"))
 
         // Foreign top-level keys ride along; a collision with a known key
         // cannot arise from our own decode (they were filtered) — skip any

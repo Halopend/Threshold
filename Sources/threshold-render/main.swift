@@ -262,6 +262,16 @@ for frame in 0..<opts.frames {
     engineParams.iterations = resolved.values[Int(THRESH_SLOT_ITERATIONS)]
     engineParams.aoStrength = resolved.values[Int(THRESH_SLOT_AO_STRENGTH)]
     engineParams.shadowSoft = resolved.values[Int(THRESH_SLOT_SHADOW_SOFT)]
+    engineParams.gradientRepeat = resolved.values[Int(THRESH_SLOT_GRAD_REPEAT)]
+    engineParams.gradientOffset = resolved.values[Int(THRESH_SLOT_GRAD_OFFSET)]
+    engineParams.gradientSmoothing = resolved.values[Int(THRESH_SLOT_GRAD_SMOOTH)]
+    engineParams.colorMapMode = resolved.values[Int(THRESH_SLOT_MAP_MODE)]
+    engineParams.saturation = resolved.values[Int(THRESH_SLOT_SATURATION)]
+    engineParams.contrast = resolved.values[Int(THRESH_SLOT_CONTRAST)]
+    engineParams.vibrance = resolved.values[Int(THRESH_SLOT_VIBRANCE)]
+    engineParams.brightness = resolved.values[Int(THRESH_SLOT_BRIGHTNESS)]
+    engineParams.gamma = resolved.values[Int(THRESH_SLOT_GAMMA)]
+    engineParams.tonemap = resolved.values[Int(THRESH_SLOT_TONEMAP)]
     let (params, deParamOffset) = ParamTableLayout.build(
         engine: engineParams,
         deParams: deParamValues(descriptor, layout: layout, resolved: resolved))
@@ -286,6 +296,7 @@ for frame in 0..<opts.frames {
 
     let request = RenderRequest(
         uniforms: uniforms, params: params, ops: ops,
+        palette: envelope.palette?.stops ?? [],
         width: opts.width, height: opts.height)
     do {
         let result = try renderer.render(request)

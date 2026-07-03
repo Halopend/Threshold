@@ -40,6 +40,9 @@ final class SessionCore {
     private(set) var gpuOps: [ThreshWarpOp] = []
     private(set) var camera: CameraDTO = .default
     private(set) var paused = false
+    /// Active gradient palette (scene content). Defaults to the renderer's
+    /// built-in stops until a scene or `setPalette` command replaces it.
+    private(set) var palette = Palette(stops: PaletteWire.defaultStops)
     private var frameIndex: UInt64 = 0
 
     init(
@@ -96,6 +99,17 @@ final class SessionCore {
         engineParams.iterations = resolved.values[Int(THRESH_SLOT_ITERATIONS)]
         engineParams.aoStrength = resolved.values[Int(THRESH_SLOT_AO_STRENGTH)]
         engineParams.shadowSoft = resolved.values[Int(THRESH_SLOT_SHADOW_SOFT)]
+        // Color pipeline scalars (plan §5.5) — resolved from their fixed slots.
+        engineParams.gradientRepeat = resolved.values[Int(THRESH_SLOT_GRAD_REPEAT)]
+        engineParams.gradientOffset = resolved.values[Int(THRESH_SLOT_GRAD_OFFSET)]
+        engineParams.gradientSmoothing = resolved.values[Int(THRESH_SLOT_GRAD_SMOOTH)]
+        engineParams.colorMapMode = resolved.values[Int(THRESH_SLOT_MAP_MODE)]
+        engineParams.saturation = resolved.values[Int(THRESH_SLOT_SATURATION)]
+        engineParams.contrast = resolved.values[Int(THRESH_SLOT_CONTRAST)]
+        engineParams.vibrance = resolved.values[Int(THRESH_SLOT_VIBRANCE)]
+        engineParams.brightness = resolved.values[Int(THRESH_SLOT_BRIGHTNESS)]
+        engineParams.gamma = resolved.values[Int(THRESH_SLOT_GAMMA)]
+        engineParams.tonemap = resolved.values[Int(THRESH_SLOT_TONEMAP)]
         let deValues = descriptor.paramLayout.map { param -> Float in
             // A DE whose params were never registered (defensive: the app
             // shell registers every built-in at startup) renders at declared
@@ -128,13 +142,14 @@ final class SessionCore {
         return SessionFrame(
             request: RenderRequest(
                 uniforms: uniforms, params: params, ops: gpuOps,
-                width: width, height: height),
+                palette: palette.stops, width: width, height: height),
             resolved: resolved,
             frameIndex: frameIndex,
             time: clock.now,
             deKey: descriptor.key,
             warpStack: authoredStack,
-            paused: paused)
+            paused: paused,
+            palette: palette)
     }
 
     // MARK: - Commands
@@ -180,6 +195,9 @@ final class SessionCore {
 
         case .setBindings(let bindings):
             bindingEngine.bindings = bindings
+
+        case .setPalette(let newPalette):
+            palette = newPalette
         }
     }
 
@@ -189,6 +207,11 @@ final class SessionCore {
         SceneCodec.apply(envelope, layout: layout, engine: engine)
         setWarpStack(envelope.warpStack)
         camera = envelope.camera
+        // Palette is scene content; a scene without one keeps the current
+        // palette rather than snapping to a default (Invariant 11 spirit).
+        if let scenePalette = envelope.palette {
+            palette = scenePalette
+        }
         // Embedded DEs need the probe/compile path (ARCHITECTURE.md §4) —
         // not wired yet; the envelope contract says fractalTypeKey is ignored
         // when embeddedDE is set, so keep the current descriptor rather than

@@ -11,7 +11,7 @@
 #ifndef THRESHOLD_SHADER_ABI_H
 #define THRESHOLD_SHADER_ABI_H
 
-#define THRESHOLD_ABI_VERSION 1
+#define THRESHOLD_ABI_VERSION 2
 
 #ifdef __METAL_VERSION__
   #include <metal_stdlib>
@@ -113,7 +113,47 @@ typedef struct ThreshFrameUniforms {
 #define THRESH_SLOT_ITERATIONS    3   // DE iteration cap (as float)
 #define THRESH_SLOT_AO_STRENGTH   4
 #define THRESH_SLOT_SHADOW_SOFT   5
+// Color: mapping + palette-sampling controls + the grading chain (plan §5.5).
+// All are ordinary catalog scalars (.scene-persisted, music-bindable) that
+// resolve into these fixed slots so the kernel reads them positionally. The
+// palette STOPS themselves are scene content and travel in a separate buffer
+// (ThreshPalette), not the param table.
+#define THRESH_SLOT_GRAD_REPEAT   6   // palette repeat count (>= 1)
+#define THRESH_SLOT_GRAD_OFFSET   7   // palette phase offset (wraps), music/anim bindable
+#define THRESH_SLOT_GRAD_SMOOTH   8   // stop-edge smoothing 0..1
+#define THRESH_SLOT_MAP_MODE      9   // ThreshColorMapMode (as float)
+#define THRESH_SLOT_SATURATION    10  // 0 = grayscale, 1 = identity, >1 boosts
+#define THRESH_SLOT_CONTRAST      11  // pivoted at 0.5; 1 = identity
+#define THRESH_SLOT_VIBRANCE      12  // saturation lift weighted toward low-sat pixels
+#define THRESH_SLOT_BRIGHTNESS    13  // linear gain, 1 = identity
+#define THRESH_SLOT_GAMMA         14  // output gamma exponent, 1 = identity
+#define THRESH_SLOT_TONEMAP       15  // ACES filmic blend 0..1, 0 = plain clamp (default)
 #define THRESH_SLOT_ENGINE_COUNT  16
+
+// Color mapping mode: how the palette coordinate t in [0,1] is derived per
+// pixel (plan §5.5 stage 1). Values persist in scenes — never renumber.
+typedef enum ThreshColorMapMode {
+    ThreshColorMapOrbitTrap = 0,  // DE .y orbit-trap channel (classic default)
+    ThreshColorMapDepth     = 1,  // normalized ray depth (t / maxDist)
+    ThreshColorMapNormal    = 2,  // facing ratio from the surface normal
+    ThreshColorMapBlend     = 3,  // 0.5*(trap) + 0.5*(depth)
+} ThreshColorMapMode;
+
+// ---------------------------------------------------------------------------
+// Palette — scene content (up to 8 RGB gradient stops), uploaded as its own
+// buffer. Sampled at the mapped coordinate t with the repeat/offset/smoothing
+// scalars above. Stops are pre-sorted by position on the CPU side.
+// ---------------------------------------------------------------------------
+
+#define THRESH_MAX_GRADIENT_STOPS 8
+
+typedef struct ThreshPalette {
+    THRESH_UINT   stopCount;   // 1..THRESH_MAX_GRADIENT_STOPS; 0 → identity gray
+    THRESH_UINT   _pad0;
+    THRESH_UINT   _pad1;
+    THRESH_UINT   _pad2;
+    THRESH_FLOAT4 stops[THRESH_MAX_GRADIENT_STOPS];  // .xyz = linear rgb, .w = position 0..1
+} ThreshPalette;
 
 // ---------------------------------------------------------------------------
 // Buffer/texture binding indices for the march kernel.
@@ -123,6 +163,9 @@ typedef struct ThreshFrameUniforms {
 #define THRESH_BUFFER_PARAMS     1   // device const float*  (resolved param table)
 #define THRESH_BUFFER_WARP_OPS   2   // device const ThreshWarpOp*
 #define THRESH_BUFFER_STATS      3   // device atomic_uint*  (total march steps)
+// index 4 is the DE visible-function table (GPUContext.deTableBufferIndex,
+// not an ABI-header constant — it is bound by the Swift encoder).
+#define THRESH_BUFFER_PALETTE    5   // ThreshPalette, by-value (setBytes)
 #define THRESH_TEXTURE_OUTPUT    0
 
 // ---------------------------------------------------------------------------
@@ -150,5 +193,7 @@ struct ThreshDEContext {
 
 THRESH_STATIC_ASSERT(sizeof(ThreshWarpOp) == 48, "WarpOp must be exactly 48 bytes");
 THRESH_STATIC_ASSERT(sizeof(ThreshFrameUniforms) == 64, "FrameUniforms must be exactly 64 bytes");
+THRESH_STATIC_ASSERT(sizeof(ThreshPalette) == 16 + 16 * THRESH_MAX_GRADIENT_STOPS,
+                     "Palette must be 16-byte header + 16B per stop, 16-aligned");
 
 #endif // THRESHOLD_SHADER_ABI_H

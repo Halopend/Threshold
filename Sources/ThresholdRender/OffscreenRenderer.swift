@@ -84,6 +84,11 @@ public final class OffscreenRenderer: @unchecked Sendable {
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
         encoder.setVisibleFunctionTable(context.marchDETable,
                                         bufferIndex: GPUContext.deTableBufferIndex)
+        let paletteBytes = PaletteWire.bytes(request.palette)
+        paletteBytes.withUnsafeBytes { raw in
+            encoder.setBytes(raw.baseAddress!, length: raw.count,
+                             index: Int(THRESH_BUFFER_PALETTE))
+        }
         encoder.setTexture(texture, index: Int(THRESH_TEXTURE_OUTPUT))
 
         let threadsPerGroup = MTLSize(width: 8, height: 8, depth: 1)

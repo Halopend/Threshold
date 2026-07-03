@@ -23,11 +23,13 @@ public struct RenderSnapshot: Sendable {
     /// The AUTHORED warp stack (pre-simplification) — what editors display.
     public let warpStack: [WarpOpDTO]
     public let paused: Bool
+    /// The active gradient palette — what the gradient editor displays.
+    public let palette: Palette
 
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
         gpuMilliseconds: Double, totalSteps: UInt64, deKey: String,
-        warpStack: [WarpOpDTO], paused: Bool
+        warpStack: [WarpOpDTO], paused: Bool, palette: Palette
     ) {
         self.resolved = resolved
         self.frameIndex = frameIndex
@@ -37,6 +39,7 @@ public struct RenderSnapshot: Sendable {
         self.deKey = deKey
         self.warpStack = warpStack
         self.paused = paused
+        self.palette = palette
     }
 }
 
@@ -83,4 +86,6 @@ public enum SessionCommand: Sendable {
     case setPaused(Bool)
     /// Replace the active binding set (bindings are data — plan §4.2).
     case setBindings([Binding])
+    /// Replace the active gradient palette (scene content — plan §5.5).
+    case setPalette(Palette)
 }

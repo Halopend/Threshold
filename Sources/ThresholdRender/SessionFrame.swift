@@ -19,6 +19,8 @@ struct SessionFrame {
     /// the simplified buffer the GPU sees.
     let warpStack: [WarpOpDTO]
     let paused: Bool
+    /// The active gradient palette — what the gradient editor displays.
+    let palette: Palette
 
     /// Complete the snapshot with the PREVIOUS completed frame's GPU stats
     /// (the frame path never waits on the GPU — ARCHITECTURE.md §2).
@@ -31,6 +33,7 @@ struct SessionFrame {
             totalSteps: totalSteps,
             deKey: deKey,
             warpStack: warpStack,
-            paused: paused)
+            paused: paused,
+            palette: palette)
     }
 }
