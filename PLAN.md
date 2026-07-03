@@ -618,6 +618,15 @@ user. Never trust-and-crash.
   pure functions, unit-tested against a corpus of real saved scenes checked into the
   repo (the original's Disguise/Vampire negative-MinDistance loss is the cautionary
   tale: capture the corpus *early*).
+- **Legacy phase-out policy.** All original-app compatibility is QUARANTINED in the
+  version-0 migration layer (`LegacyMigration`, `LegacyAnimMigration`,
+  `LegacyBindingMigration`, `LegacyFormulaShim`) — reachable only when decoding a
+  version-less legacy tree; native version-1 files never execute a line of it. No NEW
+  legacy surface may be added outside that layer. The exit ramp is native save
+  (`captureScene` → catalog-walk snapshot): a legacy file opened and re-saved is a
+  fully-formed version-1 document (embedded formulas keep their shimmed source, now
+  hashed). Once the corpus and users' files are re-saved, the version-0 entries are
+  deleted in a major version — the migration table is append-AND-retire.
 
 ### 7.4 File types
 
