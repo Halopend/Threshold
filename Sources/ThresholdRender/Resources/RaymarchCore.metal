@@ -421,10 +421,67 @@ static inline float3 quatRotate(float4 q, float3 v) {
     return v + 2.0f * cross(q.xyz, cross(q.xyz, v) + q.w * v);
 }
 
-// IQ cosine palette, canonical constants.
-static inline float3 iqPalette(float t) {
-    const float3 phase = float3(0.0f, 0.33f, 0.67f);
-    return 0.5f + 0.5f * cos(6.283185307179586f * (t + phase));
+// ============================== color pipeline ==============================
+// plan §5.5: mapping (coordinate t) → palette (gradient sample) → grading
+// (post-process chain). All in LINEAR rgb; sRGB encode is the harness's job.
+
+// Sample the gradient palette at coordinate t. `repeatCount`/`offset` tile and
+// phase-shift the gradient (wrapped into [0,1)); `smoothing` blends the
+// per-segment interpolation from linear toward smoothstep. Stops arrive sorted
+// by position (.w); .xyz is linear rgb.
+static float3 samplePalette(float t, constant ThreshPalette& pal,
+                            float repeatCount, float offset, float smoothing) {
+    uint n = min(pal.stopCount, (uint)THRESH_MAX_GRADIENT_STOPS);
+    if (n == 0) { return float3(0.5f); }
+    float u = t * max(repeatCount, 1.0f) + offset;
+    u = u - floor(u);                        // wrap into [0,1)
+    if (n == 1 || u <= pal.stops[0].w) { return pal.stops[0].xyz; }
+    if (u >= pal.stops[n - 1].w) { return pal.stops[n - 1].xyz; }
+    for (uint i = 0; i + 1 < n; ++i) {
+        float p0 = pal.stops[i].w;
+        float p1 = pal.stops[i + 1].w;
+        if (u >= p0 && u <= p1) {
+            float f = (u - p0) / max(p1 - p0, 1e-6f);
+            float fs = f * f * (3.0f - 2.0f * f);
+            f = mix(f, fs, clamp(smoothing, 0.0f, 1.0f));
+            return mix(pal.stops[i].xyz, pal.stops[i + 1].xyz, f);
+        }
+    }
+    return pal.stops[n - 1].xyz;
+}
+
+// Narkowicz ACES filmic approximation (opt-in via the tonemap blend).
+static inline float3 acesFilmic(float3 x) {
+    const float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0f, 1.0f);
+}
+
+// The fixed post-process grade (plan §5.5 stage 3). Identity at the default
+// scalars (saturation/contrast/brightness/gamma = 1, vibrance/tonemap = 0),
+// so a scene that authors no grading looks exactly like the raw lit color.
+static float3 applyGrading(float3 c, device const float* params) {
+    const float saturation = params[THRESH_SLOT_SATURATION];
+    const float contrast   = params[THRESH_SLOT_CONTRAST];
+    const float vibrance   = params[THRESH_SLOT_VIBRANCE];
+    const float brightness = params[THRESH_SLOT_BRIGHTNESS];
+    const float gamma      = params[THRESH_SLOT_GAMMA];
+    const float tonemap    = params[THRESH_SLOT_TONEMAP];
+
+    c = max(c, 0.0f) * brightness;
+    const float3 lumaWeights = float3(0.2126f, 0.7152f, 0.0722f);
+    float luma = dot(c, lumaWeights);
+    c = mix(float3(luma), c, saturation);
+    // Vibrance lifts saturation more where the pixel is already dull.
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float vib = vibrance * (1.0f - (mx - mn));
+    c = mix(float3(luma), c, 1.0f + vib);
+    // Contrast pivoted at mid-gray.
+    c = (c - 0.5f) * contrast + 0.5f;
+    c = max(c, 0.0f);
+    c = mix(c, acesFilmic(c), clamp(tonemap, 0.0f, 1.0f));
+    c = pow(max(c, 0.0f), float3(1.0f / max(gamma, 1e-3f)));
+    return clamp(c, 0.0f, 1.0f);
 }
 
 // Tetrahedron-technique normal of the SAME mapScene (Invariant 7 — never a
@@ -479,6 +536,7 @@ kernel void march_offscreen(
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
     device atomic_uint* stats                [[buffer(THRESH_BUFFER_STATS)]],
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+    constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
     texture2d<float, access::write> outTex   [[texture(THRESH_TEXTURE_OUTPUT)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
@@ -534,9 +592,29 @@ kernel void march_offscreen(
         float3 n = calcNormal(pos, nEps, U, params, ops, deTable);
         float3 lightDir = normalize(float3(1.0f, 0.8f, 0.6f));
         float lambert = max(dot(n, lightDir), 0.0f);
-        float3 albedo = iqPalette(trap);
+
+        // Mapping (plan §5.5 stage 1): derive the palette coordinate t_map.
+        // Depth/normal already land in 0..1; orbit trap is wrapped by the
+        // sampler. Blend mixes trap with depth.
+        float depth = clamp(t / max(maxDist, 1e-3f), 0.0f, 1.0f);
+        float facing = clamp(0.5f + 0.5f * dot(n, -rd), 0.0f, 1.0f);
+        int mapMode = int(params[THRESH_SLOT_MAP_MODE]);
+        float tMap;
+        switch (mapMode) {
+            case 1:  tMap = depth; break;                         // depth
+            case 2:  tMap = facing; break;                        // normal
+            case 3:  tMap = 0.5f * fract(trap) + 0.5f * depth; break;  // blend
+            default: tMap = trap; break;                          // orbit trap
+        }
+
+        float3 albedo = samplePalette(
+            tMap, palette,
+            params[THRESH_SLOT_GRAD_REPEAT],
+            params[THRESH_SLOT_GRAD_OFFSET],
+            params[THRESH_SLOT_GRAD_SMOOTH]);
         float occ = cheapAO(pos, n, aoStrength, modelScale, U, params, ops, deTable);
-        color = float4(albedo * (lambert + 0.2f) * occ, 1.0f);
+        float3 lit = albedo * (lambert + 0.2f) * occ;
+        color = float4(applyGrading(lit, params), 1.0f);
     } else {
         color = float4(0.0f, 0.0f, 0.0f, 1.0f);              // miss: black
     }
