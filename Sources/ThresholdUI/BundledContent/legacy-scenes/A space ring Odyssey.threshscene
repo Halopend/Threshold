@@ -1,0 +1,269 @@
+{
+  "bloomEffect" : {
+    "enabled" : false,
+    "strength" : 0
+  },
+  "colorIterations" : 8,
+  "colorMix" : 0.5501741,
+  "colorScheme" : "nebula",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.1,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.45,
+  "colorSchemeHighlights" : 0,
+  "colorSchemeSaturation" : 1.5,
+  "colorSchemeShadows" : 0,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2026-04-14T02:37:34Z",
+  "detailScale" : 0.4478595,
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.32
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    -0.039576516,
+    -0.06265694,
+    -0.20706588,
+    0.69,
+    -1.0201464,
+    -0.95993775,
+    1.0054224,
+    0.84,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 8,
+  "fractalScale" : 2.555619,
+  "fractalType" : "kleinian",
+  "glowEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "gradientCycleEffect" : {
+    "enabled" : false,
+    "mirrorLoop" : true,
+    "speed" : 0
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "9C8AD0AD-E8D3-47B5-9691-3820BEBC1621",
+      "mappingMode" : 1,
+      "name" : "Rainbow",
+      "offset" : 0,
+      "repeatCount" : 1,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            1,
+            0,
+            0
+          ],
+          "id" : "EDA7EA86-4097-4D28-8212-B436266E3ADF",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.5,
+            0
+          ],
+          "id" : "3C6A7BDC-5A11-45DB-9ED2-E9606360B44F",
+          "position" : 0.167
+        },
+        {
+          "color" : [
+            1,
+            1,
+            0
+          ],
+          "id" : "4AA90915-99CB-4185-84C8-41156B3A715E",
+          "position" : 0.333
+        },
+        {
+          "color" : [
+            0,
+            1,
+            0
+          ],
+          "id" : "71B4BCE2-535C-4976-8679-4445D12612E0",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            0,
+            0.5,
+            1
+          ],
+          "id" : "CA4C29FB-4C92-48DF-B792-B4D488E33EAC",
+          "position" : 0.667
+        },
+        {
+          "color" : [
+            0.5,
+            0,
+            1
+          ],
+          "id" : "77BDEC6E-D871-47F0-8537-F5B123FB8DCE",
+          "position" : 0.833
+        },
+        {
+          "color" : [
+            1,
+            0,
+            0.5
+          ],
+          "id" : "58CD089A-FE8B-4D83-934C-98F6C4629BB5",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "rainbow"
+  },
+  "hueRotationEffect" : {
+    "enabled" : false,
+    "intensity" : 0,
+    "speed" : 0
+  },
+  "id" : "43F8F97E-592A-4511-A12E-4EDACFAA5BD4",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "maxRaySteps" : 56,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 0.012134725,
+      "hybridCombo" : 0.35,
+      "id" : "7D12EFF3-06F6-4880-9424-53CD74678FCB",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 3.4,
+      "rangeMin" : 2.4,
+      "responseCurve" : "sinusoidal",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.9320898,
+      "source" : "composite",
+      "target" : "fractalScale"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "01B9E38A-3583-4E18-B68B-256D6B922CD7",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.9,
+      "rangeMin" : 0.2,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "colorMix"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "EA625AFE-AD44-48A7-A6DC-C5802AE15D44",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.5,
+      "rangeMin" : 0.05,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "fog"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "B1842DC0-949F-41B5-915B-82D2DE7E1A09",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.25,
+      "rangeMin" : 0.02,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "hueSpeed"
+    },
+    {
+      "amount" : 0.9930415,
+      "hybridCombo" : 0.35,
+      "id" : "1F3ACF5D-C4C3-44B0-857B-565C87716D63",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 2,
+      "rangeMin" : 0.8,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "saturation"
+    }
+  ],
+  "name" : "A space ring Odyssey",
+  "position" : [
+    0.4828466,
+    2.536211,
+    -1.1108229
+  ],
+  "pulseEffect" : {
+    "amount" : 0,
+    "enabled" : false,
+    "speed" : 0
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.5,
+  "safetyBubbleEnabled" : false,
+  "safetyBubbleRadius" : 1.8,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 0,
+  "worldRotationW" : 0.7726994,
+  "worldRotationX" : -0.021780439,
+  "worldRotationY" : 0.62301475,
+  "worldRotationZ" : -0.11964068
+}

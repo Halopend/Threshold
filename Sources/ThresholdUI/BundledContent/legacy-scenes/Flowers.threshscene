@@ -1,0 +1,171 @@
+{
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.5
+  },
+  "colorIterations" : 4,
+  "colorMix" : 0,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : 0.98686993,
+  "colorSchemeGamma" : 0.42,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 2.3,
+  "colorSchemeShadows" : -0.035927564,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.7901458,
+  "createdAt" : "2026-04-30T01:54:17Z",
+  "detailScale" : 78.428986,
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.32
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    -0.25763276,
+    -0.33708102,
+    -1.1893985,
+    3,
+    1.9532593,
+    1.0660427,
+    -0.68722886,
+    1.5612423,
+    1.9928894,
+    2.9945393,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 8,
+  "fractalScale" : 2.6275954,
+  "fractalType" : "kleinian",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.7
+  },
+  "gradientCycleEffect" : {
+    "enabled" : false,
+    "mirrorLoop" : false,
+    "speed" : 0.15
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "EF4333FB-3855-4430-9D88-23E2424F3734",
+      "mappingMode" : 1,
+      "name" : "Nebula",
+      "offset" : 0.7058175,
+      "repeatCount" : 2.002876,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0,
+            0.1
+          ],
+          "id" : "50DFB745-2D50-469F-A5E8-F03FB4F3B97B",
+          "position" : 0
+        },
+        {
+          "color" : [
+            0.6,
+            0,
+            1
+          ],
+          "id" : "F9357304-9F5B-47D8-BC13-0310AE537306",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            1,
+            0.2,
+            0.6
+          ],
+          "id" : "11446789-FCFB-4D7A-B971-8F09F0B7F873",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            0.2,
+            0.6,
+            1
+          ],
+          "id" : "F1FED64A-3332-4471-A0AE-AFDF8B274C84",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0.8,
+            0.1,
+            0.9
+          ],
+          "id" : "CBE6FB93-6904-44C1-A1D2-0ACCF12CB75D",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "nebula"
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 1,
+    "speed" : 0.28515914
+  },
+  "id" : "A08A57A5-F996-4403-818D-0452C47DC42A",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "maxRaySteps" : 56,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 3,
+      "hybridCombo" : 0.8347996,
+      "id" : "E1A0B3A7-A404-4917-B23A-CA3062E033AC",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 1.288,
+      "rangeMin" : 0.09200001,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.8681923,
+      "source" : "composite",
+      "target" : "formulaParam3"
+    }
+  ],
+  "name" : "Flowers",
+  "position" : [
+    2.0389712,
+    -38.00143,
+    -45.78923
+  ],
+  "pulseEffect" : {
+    "amount" : 0.5,
+    "enabled" : false,
+    "speed" : 1
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.5,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 1.8,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 2,
+  "worldRotationW" : -0.15607582,
+  "worldRotationX" : 0.64905906,
+  "worldRotationY" : -0.1031405,
+  "worldRotationZ" : 0.737377
+}

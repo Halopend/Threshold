@@ -1,0 +1,33 @@
+{
+  "colorIterations" : 8,
+  "colorMix" : 0.55,
+  "colorScheme" : "nebula",
+  "colorSchemeContrast" : 1.1,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.6,
+  "colorSchemeHighlights" : 0,
+  "colorSchemeSaturation" : 2.2,
+  "colorSchemeShadows" : 0,
+  "colorSchemeVibrance" : 0,
+  "createdAt" : "2025-01-01T00:00:00Z",
+  "foldingLimit" : 1.1,
+  "fractalIterations" : 10,
+  "fractalScale" : 2.4,
+  "fractalType" : "mandelbox",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.45
+  },
+  "id" : "00000000-0003-0000-0000-000000000003",
+  "maxRaySteps" : 128,
+  "minDistance" : 0.7,
+  "name" : "Orbit Density",
+  "position" : [
+    0,
+    0,
+    -1.4
+  ],
+  "rating" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.6
+}

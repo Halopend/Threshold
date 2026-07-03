@@ -1,0 +1,153 @@
+{
+  "id": "F2F53E77-7DDA-51D7-82CD-A640A7E4B965",
+  "name": "Pseudo Knightyan",
+  "createdAt": "2026-06-28T00:00:00Z",
+  "rating": 0,
+  "fractalType": "custom",
+  "fractalIterations": 9,
+  "colorIterations": 3.0,
+  "maxRaySteps": 160,
+  "minDistance": 0.08,
+  "colorMix": 0.55,
+  "position": [
+    0.0,
+    0.0,
+    -2.0
+  ],
+  "scale": 1.0,
+  "detailScale": 1.0,
+  "fractalScale": 2.8,
+  "foldingLimit": 1.0,
+  "sphereRadius": 0.5,
+  "colorScheme": "ocean",
+  "colorSchemeSaturation": 1.5,
+  "colorSchemeContrast": 1.08,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeVibrance": 0.9,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeHighlights": 0.03,
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.22,
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.14
+  },
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "safetyBubbleBlend": 0.0,
+  "resolutionScale": 1.0,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0,
+  "formulaParamValues": [
+    0.485771,
+    0.8034414,
+    1.062872,
+    0.70968,
+    1.0,
+    0.8412322,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "embeddedFormula": {
+    "schemaVersion": 1,
+    "id": "com.puppypower.threshold.embedded.pseudoknightyan",
+    "name": "Pseudo Knightyan",
+    "category": "Kleinian",
+    "author": "Knighty (Fragmentarium), ported by Threshold",
+    "description": "Knighty's pseudo-knightyan: a clamp box-fold plus sphere inversion with a cylindrical cross-section distance estimate. The CSize vector sets the per-axis box-fold half-width, Size drives the sphere fold, DEfactor seeds the derivative accumulator (a smooth-blob knob via the +0.05 term), and TwiddleRXY pinches the cylindrical radius. Lives near the origin; orbit-trap colored on the folded position.",
+    "functionStem": "PseudoKnightyan",
+    "metalSource": "// Pseudo Knightyan (Knighty) \u2014 clamp box-fold + sphere inversion, cylindrical DE.\n// Source: Fragmentarium PseudoKnightyan.frag (DE only; raytracer extras ignored).\n// Params: [0-2]=CSize.xyz, [3]=Size, [4]=DEfactor, [5]=TwiddleRXY.\n// Iter -> iterations, ColorIterations -> colorIterations (NOT params).\n// NOTE: derivative accumulates as j *= (k + 0.05), seeded by DEfactor; final\n//       DE = max(rxy - TwiddleRXY, abs(rxy*p.z)/len(p)) / j  (no 0.7 fudge).\n\nFORCE_INLINE float DE_PseudoKnightyan(float3 pos, FormulaParams fp, float3x3 rot,\n                                      int iterations, int colorIterations,\n                                      thread OrbitData& orbit) {\n    float3 cSize    = max(abs(float3(fp.params[0], fp.params[1], fp.params[2])), float3(1e-4f));\n    float3 negCSize = -cSize;\n    float  size     = fp.params[3];\n    float  deFactor = fp.params[4];\n    float  twiddle  = fp.params[5];\n    bool hasRotation = hasRot1Precomputed(fp);\n\n    float3 p = pos;\n    float j = (deFactor != 0.0f) ? deFactor : 1.0f;\n\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = pos;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    int n = clamp(iterations, 0, 200);\n    int i = 0;\n    if (hasRotation) {\n        for (; i < n; ++i) {\n            p = rot * p;\n            // Box fold: 2*clamp(p,-CSize,CSize) - p\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            // Sphere fold: k = max(Size/dot(p,p), 1)\n            float k = max(size / max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n            if (i < trapIterations) {\n                float r2 = dot(p, p);\n                if (r2 < trap) { trap = r2; trapIter = i; trapPos = p; }\n            }\n        }\n    } else {\n        for (; i < n; ++i) {\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size / max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n            if (i < trapIterations) {\n                float r2 = dot(p, p);\n                if (r2 < trap) { trap = r2; trapIter = i; trapPos = p; }\n            }\n        }\n    }\n\n    float rxy = length(p.xy);\n    float lenP = max(length(p), 1e-6f);\n    float de = max(rxy - twiddle, abs(rxy * p.z) / lenP) / max(abs(j), 1e-6f);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p;\n    orbit.iterationsUsed = i;\n\n    return de;\n}\n\nFORCE_INLINE float DE_PseudoKnightyan_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float3 cSize    = max(abs(float3(fp.params[0], fp.params[1], fp.params[2])), float3(1e-4f));\n    float3 negCSize = -cSize;\n    float  size     = fp.params[3];\n    float  deFactor = fp.params[4];\n    float  twiddle  = fp.params[5];\n    bool hasRotation = hasRot1Precomputed(fp);\n\n    float3 p = pos;\n    float j = (deFactor != 0.0f) ? deFactor : 1.0f;\n\n    int n = clamp(iterations, 0, 200);\n    if (hasRotation) {\n        for (int i = 0; i < n; ++i) {\n            p = rot * p;\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size / max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n        }\n    } else {\n        for (int i = 0; i < n; ++i) {\n            p = fma(clamp(p, negCSize, cSize), float3(2.0f), -p);\n            float k = max(size / max(dot(p, p), 1e-6f), 1.0f);\n            p *= k;\n            j *= k + 0.05f;\n        }\n    }\n\n    float rxy = length(p.xy);\n    float lenP = max(length(p), 1e-6f);\n    return max(rxy - twiddle, abs(rxy * p.z) / lenP) / max(abs(j), 1e-6f);\n}\n",
+    "params": [
+      {
+        "index": 0,
+        "name": "CSize X",
+        "default": 0.485771,
+        "min": -2,
+        "max": 2,
+        "step": 0.001
+      },
+      {
+        "index": 1,
+        "name": "CSize Y",
+        "default": 0.8034414,
+        "min": -2,
+        "max": 2,
+        "step": 0.001
+      },
+      {
+        "index": 2,
+        "name": "CSize Z",
+        "default": 1.062872,
+        "min": -2,
+        "max": 2,
+        "step": 0.001
+      },
+      {
+        "index": 3,
+        "name": "Size",
+        "default": 0.70968,
+        "min": -2,
+        "max": 2,
+        "step": 0.001
+      },
+      {
+        "index": 4,
+        "name": "DEfactor",
+        "default": 1,
+        "min": 0,
+        "max": 10,
+        "step": 0.01
+      },
+      {
+        "index": 5,
+        "name": "TwiddleRXY",
+        "default": 0.8412322,
+        "min": -2,
+        "max": 2,
+        "step": 0.001
+      }
+    ],
+    "defaultIterations": 9,
+    "defaultColorIterations": 3,
+    "supportedEffectTags": [
+      "safetyBubble"
+    ]
+  }
+}

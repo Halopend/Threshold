@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "classic mandelbox",
+  "fractalTypeKey": "mandelbox",
+  "params": {
+    "de.mandelbox.scale": [2],
+    "de.mandelbox.minRadius": [0.25],
+    "de.mandelbox.fixedRadius": [1],
+    "de.mandelbox.foldLimit": [1],
+    "engine.iterations": [14]
+  },
+  "camera": { "position": [0, 0, 14], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

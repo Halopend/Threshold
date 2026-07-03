@@ -1,0 +1,137 @@
+{
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "colorIterations": 18.0,
+  "colorMix": 0.58,
+  "colorScheme": "rainbow",
+  "colorSchemeContrast": 1.08,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeHighlights": 0.03,
+  "colorSchemeSaturation": 1.55,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeVibrance": 0.88,
+  "createdAt": "2026-05-12T00:00:00Z",
+  "detailScale": 0.25,
+  "embeddedFormula": {
+    "author": "Daniel White & Paul Nylander",
+    "category": "Power / Quaternion",
+    "defaultColorIterations": 18,
+    "defaultIterations": 18,
+    "description": "Classic Mandelbulb packaged as an embedded Threshold formula. The distance estimator is carried inline inside the .threshscene payload, so the scene loads through the custom .threshfx runtime path without needing a separate bundled shader file.",
+    "functionStem": "EmbeddedMandelbulb",
+    "id": "com.puppypower.threshold.embedded.mandelbulb",
+    "metalSource": "FORCE_INLINE float DE_EmbeddedMandelbulb(float3 pos, FormulaParams fp, float3x3 rot,\n                                         int iterations, int colorIterations,\n                                         thread OrbitData& orbit) {\n    float power = clamp(fp.params[0], 2.0f, 32.0f);\n    float bailout = max(fp.params[1], 1.0f);\n    float dBias = max(fp.params[2], 0.01f);\n    float polarRot = fp.params[4];\n    bool applyRot = hasRot1Precomputed(fp);\n\n    float3 z = pos;\n    float3 c = pos;\n    float dr = 1.0f;\n    float r2 = dot(z, z);\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = z;\n    const float minR2Exit = 1e-12f;\n    float bailout2 = bailout * bailout;\n    int i = 0;\n\n    for (; i < iterations && r2 < bailout2 && r2 > minR2Exit; ++i) {\n        float invR = fast::rsqrt(r2 + 1e-6f);\n        float theta = fast::asin(clamp11(z.z * invR)) + polarRot;\n        float phi = fast::atan2(z.y, z.x);\n        float rn = fastPowFromR2(r2, power);\n        dr = fma(rn * power * invR, dr, 1.0f);\n        float thetaP = theta * power;\n        float phiP = phi * power;\n        float cTheta, cPhi;\n        float sTheta = sincos(thetaP, cTheta);\n        float sPhi = sincos(phiP, cPhi);\n        z = rn * float3(cTheta * cPhi, cTheta * sPhi, sTheta) + c;\n        if (applyRot) z = rot * z;\n        r2 = dot(z, z);\n        UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, colorIterations, z);\n    }\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = z;\n    orbit.iterationsUsed = i;\n\n    float r = fast::sqrt(r2);\n    float safeR = max(r, 1e-6f);\n    float de = dBias * 0.5f * safeR * fast::log2(safeR) / max(dr, kEpsLen) * kLn2;\n    if (r > bailout) de = min(de, r - bailout * 0.9f);\n    return de;\n}\n\nFORCE_INLINE float DE_EmbeddedMandelbulb_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float power = clamp(fp.params[0], 2.0f, 32.0f);\n    float bailout = max(fp.params[1], 1.0f);\n    float dBias = max(fp.params[2], 0.01f);\n    float polarRot = fp.params[4];\n    bool applyRot = hasRot1Precomputed(fp);\n\n    float3 z = pos;\n    float3 c = pos;\n    float dr = 1.0f;\n    float r2 = dot(z, z);\n    const float minR2Exit = 1e-12f;\n    float bailout2 = bailout * bailout;\n\n    for (int i = 0; i < iterations && r2 < bailout2 && r2 > minR2Exit; ++i) {\n        float invR = fast::rsqrt(r2 + 1e-6f);\n        float theta = fast::asin(clamp11(z.z * invR)) + polarRot;\n        float phi = fast::atan2(z.y, z.x);\n        float rn = fastPowFromR2(r2, power);\n        dr = fma(rn * power * invR, dr, 1.0f);\n        float thetaP = theta * power;\n        float phiP = phi * power;\n        float cTheta, cPhi;\n        float sTheta = sincos(thetaP, cTheta);\n        float sPhi = sincos(phiP, cPhi);\n        z = rn * float3(cTheta * cPhi, cTheta * sPhi, sTheta) + c;\n        if (applyRot) z = rot * z;\n        r2 = dot(z, z);\n    }\n\n    float r = fast::sqrt(r2);\n    float safeR = max(r, 1e-6f);\n    float de = dBias * 0.5f * safeR * fast::log2(safeR) / max(dr, kEpsLen) * kLn2;\n    if (r > bailout) de = min(de, r - bailout * 0.9f);\n    return de;\n}\n",
+    "name": "Embedded Mandelbulb",
+    "params": [
+      {
+        "default": 8.0,
+        "index": 0,
+        "max": 32.0,
+        "min": 2.0,
+        "name": "Power",
+        "step": 0.5
+      },
+      {
+        "default": 4.0,
+        "index": 1,
+        "max": 64.0,
+        "min": 1.0,
+        "name": "Bailout",
+        "step": 1.0
+      },
+      {
+        "default": 1.0,
+        "index": 2,
+        "max": 4.0,
+        "min": 0.01,
+        "name": "DerivBias",
+        "step": 0.1
+      },
+      {
+        "default": 0.0,
+        "index": 4,
+        "max": 3.14,
+        "min": -3.14,
+        "name": "PolarRotation",
+        "step": 0.01
+      }
+    ],
+    "schemaVersion": 1,
+    "supportedEffectTags": [
+      "polarRotation"
+    ]
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.16
+  },
+  "foldingLimit": 1.0,
+  "formulaParamValues": [
+    8.0,
+    4.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "fractalIterations": 18,
+  "fractalScale": 2.8,
+  "fractalType": "custom",
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "id": "3F4AF708-7B41-4A60-B1A5-9D965E807C9A",
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.24,
+  "maxRaySteps": 120,
+  "minDistance": 0.18,
+  "name": "Embedded Mandelbulb",
+  "position": [
+    0.0,
+    0.0,
+    -1.15
+  ],
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "rating": 0,
+  "resolutionScale": 1.0,
+  "safetyBubbleBlend": 0.0,
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "scale": 1.0,
+  "sphereRadius": 0.5,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0
+}

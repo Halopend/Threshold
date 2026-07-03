@@ -1,0 +1,177 @@
+{
+  "id": "FE0064B6-B579-5CFA-9C8F-1ADF117A541E",
+  "name": "Menger Sphere",
+  "createdAt": "2026-06-28T00:00:00Z",
+  "rating": 0,
+  "fractalType": "custom",
+  "fractalIterations": 10,
+  "colorIterations": 6.0,
+  "maxRaySteps": 140,
+  "minDistance": 0.08,
+  "colorMix": 0.55,
+  "position": [
+    0.0,
+    0.0,
+    -3.0
+  ],
+  "scale": 1.0,
+  "detailScale": 1.0,
+  "fractalScale": 2.8,
+  "foldingLimit": 1.0,
+  "sphereRadius": 0.5,
+  "colorScheme": "rainbow",
+  "colorSchemeSaturation": 1.5,
+  "colorSchemeContrast": 1.08,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeVibrance": 0.9,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeHighlights": 0.03,
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.22,
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.14
+  },
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "safetyBubbleBlend": 0.0,
+  "resolutionScale": 1.0,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0,
+  "formulaParamValues": [
+    1.0,
+    3.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "embeddedFormula": {
+    "schemaVersion": 1,
+    "id": "com.puppypower.threshold.embedded.knightymengersphere",
+    "name": "Menger Sphere",
+    "category": "Menger",
+    "author": "Knighty (Fragmentarium), ported by Threshold",
+    "description": "Knighty's Menger sponge distance estimator with an optional \"Spherify\" transform that bends the cubic Menger lattice onto a spherical bounding volume. The fold sorts |p| components, applies a z-offset reflection, scales toward an Offset center, and rotates by an in-DE axis/angle each iteration. With Sphere on, the bounding volume is a sphere; with it off, the classic Menger cube. Exposed controls: Sphere toggle, Scale (3 = perfect Menger), in-DE RotVector + RotAngle, and the 3-component Offset scaling center. Iterations maps to the main iteration count.",
+    "functionStem": "KnightyMengerSphere",
+    "metalSource": "// ===== Menger Sphere (Knighty) port =====\n// Source: Knighty Collection / Menger_Sphere.frag\n// Params:\n//   [0] Sphere   (bool: >0.5 = spherify, else cube)\n//   [1] Scale    (3.0 = perfect Menger)\n//   [2..4] RotVector (in-DE rotation axis)\n//   [5] RotAngle (degrees)\n//   [6..8] Offset (scaling center)\n// iterations = source Iterations. Source has no ColorIterations; trap = min(dot(p,p)).\n\nstruct KnightyMengerSphere_Globals {\n    float3x3 rot;\n    float sc;     // max(|Offset|)\n    float sr;     // sqrt(|Offset|^2 + 1)\n    float3 offset;\n    float scale;\n    bool sphere;\n};\n\nFORCE_INLINE KnightyMengerSphere_Globals KnightyMengerSphere_init(FormulaParams fp) {\n    KnightyMengerSphere_Globals g;\n    g.sphere = fp.params[0] > 0.5f;\n    g.scale  = fp.params[1];\n    float3 rotVec = float3(fp.params[2], fp.params[3], fp.params[4]);\n    float rotAngle = fp.params[5];\n    g.offset = float3(fp.params[6], fp.params[7], fp.params[8]);\n\n    // normalize(RotVector) with zero-length guard (source uses normalize(RotVector))\n    float rvLen = length(rotVec);\n    float3 axis = (rvLen > 1e-6f) ? (rotVec / rvLen) : float3(1.0f, 0.0f, 0.0f);\n    g.rot = rotationMatrix3(axis, rotAngle); // rotationMatrix3 takes DEGREES\n\n    float3 o = abs(g.offset);\n    g.sc = max(o.x, max(o.y, o.z));\n    g.sr = sqrt(dot(o, o) + 1.0f);\n    return g;\n}\n\nFORCE_INLINE float DE_KnightyMengerSphere(float3 pos, FormulaParams fp, float3x3 rot,\n                                          int iterations, int colorIterations,\n                                          thread OrbitData& orbit) {\n    KnightyMengerSphere_Globals g = KnightyMengerSphere_init(fp);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float trap = 1e20f; int trapIter = 0; float3 trapPos = p;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    float dd = 1.0f;\n\n    if (g.sphere) {\n        float3 ap = abs(p);\n        float Linf = max(max(ap.x, ap.y), ap.z); // infinity norm\n        float L2 = length(p);                     // euclidean norm\n        float multiplier = L2 / max(Linf, 1e-9f);\n        p *= multiplier;        // Spherify transform\n        dd = multiplier * 1.6f; // DE correction (empirical, from source)\n    }\n\n    float r2 = dot(p, p);\n    int n = clamp(iterations, 0, 40);\n    int i = 0;\n    for (; i < n && r2 < 100.0f; ++i) {\n        p = abs(p);\n        if (p.y > p.x) p.xy = p.yx;\n        if (p.z > p.y) p.yz = p.zy;\n        if (p.y > p.x) p.xy = p.yx;\n        p.z = abs(p.z - (1.0f / 3.0f) * g.offset.z) + (1.0f / 3.0f) * g.offset.z;\n        p = p * g.scale - g.offset * (g.scale - 1.0f);\n        dd *= g.scale;\n        p = g.rot * p;\n        r2 = dot(p, p);\n\n        UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, trapIterations, p);\n    }\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p;\n    orbit.iterationsUsed = i;\n\n    if (g.sphere) {\n        return (sqrt(r2) - g.sr) / max(abs(dd), 1e-6f); // bounding volume is a sphere\n    } else {\n        float3 ap = abs(p);\n        return (max(ap.x, max(ap.y, ap.z)) - g.sc) / max(abs(dd), 1e-6f); // bounding volume is a cube\n    }\n}\n\nFORCE_INLINE float DE_KnightyMengerSphere_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    KnightyMengerSphere_Globals g = KnightyMengerSphere_init(fp);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float dd = 1.0f;\n\n    if (g.sphere) {\n        float3 ap = abs(p);\n        float Linf = max(max(ap.x, ap.y), ap.z);\n        float L2 = length(p);\n        float multiplier = L2 / max(Linf, 1e-9f);\n        p *= multiplier;\n        dd = multiplier * 1.6f;\n    }\n\n    float r2 = dot(p, p);\n    int n = clamp(iterations, 0, 40);\n    for (int i = 0; i < n && r2 < 100.0f; ++i) {\n        p = abs(p);\n        if (p.y > p.x) p.xy = p.yx;\n        if (p.z > p.y) p.yz = p.zy;\n        if (p.y > p.x) p.xy = p.yx;\n        p.z = abs(p.z - (1.0f / 3.0f) * g.offset.z) + (1.0f / 3.0f) * g.offset.z;\n        p = p * g.scale - g.offset * (g.scale - 1.0f);\n        dd *= g.scale;\n        p = g.rot * p;\n        r2 = dot(p, p);\n    }\n\n    if (g.sphere) {\n        return (sqrt(r2) - g.sr) / max(abs(dd), 1e-6f);\n    } else {\n        float3 ap = abs(p);\n        return (max(ap.x, max(ap.y, ap.z)) - g.sc) / max(abs(dd), 1e-6f);\n    }\n}",
+    "params": [
+      {
+        "index": 0,
+        "name": "Sphere",
+        "default": 1,
+        "min": 0,
+        "max": 1,
+        "step": 1
+      },
+      {
+        "index": 1,
+        "name": "Scale",
+        "default": 3,
+        "min": 0,
+        "max": 4,
+        "step": 0.01
+      },
+      {
+        "index": 2,
+        "name": "Rot Vector X",
+        "default": 1,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 3,
+        "name": "Rot Vector Y",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 4,
+        "name": "Rot Vector Z",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 5,
+        "name": "Rot Angle",
+        "default": 0,
+        "min": 0,
+        "max": 360,
+        "step": 1
+      },
+      {
+        "index": 6,
+        "name": "Offset X",
+        "default": 1,
+        "min": -2,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 7,
+        "name": "Offset Y",
+        "default": 1,
+        "min": -2,
+        "max": 2,
+        "step": 0.01
+      },
+      {
+        "index": 8,
+        "name": "Offset Z",
+        "default": 1,
+        "min": -2,
+        "max": 2,
+        "step": 0.01
+      }
+    ],
+    "defaultIterations": 10,
+    "defaultColorIterations": 6,
+    "supportedEffectTags": [
+      "safetyBubble"
+    ]
+  }
+}

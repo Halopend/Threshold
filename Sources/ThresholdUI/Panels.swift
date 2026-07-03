@@ -17,14 +17,15 @@ import ThresholdShaderIR
 
 /// Top-level control panel tabs (the legacy sidebar-tab taxonomy fitted to
 /// the rebuild's structure; Music and Transition await their features).
+/// Tabs with more than one `subtabs` entry get a second selector row (the
+/// legacy top-dock → section-rail two-level pattern).
 public enum ControlTab: String, CaseIterable, Sendable {
     case scenes
     case fractal
     case warps
     case color
     case motion
-    case performance
-    case settings
+    case setup
 
     public var label: String {
         switch self {
@@ -33,8 +34,7 @@ public enum ControlTab: String, CaseIterable, Sendable {
         case .warps: return "Warps"
         case .color: return "Color"
         case .motion: return "Motion"
-        case .performance: return "Perf"
-        case .settings: return "Setup"
+        case .setup: return "Setup"
         }
     }
 
@@ -45,9 +45,47 @@ public enum ControlTab: String, CaseIterable, Sendable {
         case .warps: return "square.stack.3d.up"
         case .color: return "paintpalette.fill"
         case .motion: return "film.stack"
-        case .performance: return "speedometer"
-        case .settings: return "gearshape.fill"
+        case .setup: return "gearshape.fill"
         }
+    }
+
+    /// One entry per second-row section. Empty or single → no second row
+    /// (the tab renders its one section list directly).
+    public var subtabs: [SubTab] {
+        switch self {
+        case .color:
+            return [
+                SubTab("palette", "Palette", "paintpalette.fill"),
+                SubTab("mapping", "Mapping", "swatchpalette.fill"),
+                SubTab("grading", "Grading", "camera.filters"),
+            ]
+        case .motion:
+            return [
+                SubTab("zoom", "Zoom", "plus.magnifyingglass"),
+                SubTab("animation", "Animate", "film.stack"),
+                SubTab("camera", "Camera", "move.3d"),
+            ]
+        case .setup:
+            return [
+                SubTab("prefs", "Prefs", "slider.horizontal.3"),
+                SubTab("performance", "Performance", "speedometer"),
+            ]
+        default:
+            return []
+        }
+    }
+}
+
+/// One second-row section under a `ControlTab`.
+public struct SubTab: Hashable, Sendable {
+    public let id: String
+    public let label: String
+    public let icon: String
+
+    public init(_ id: String, _ label: String, _ icon: String) {
+        self.id = id
+        self.label = label
+        self.icon = icon
     }
 }
 
@@ -62,19 +100,28 @@ public struct ControlSidebar: View {
     /// Scene-library verbs from the shell; nil hides the Scenes tab (the
     /// SwiftPM dev shell passes nothing and keeps its lean surface).
     let sceneActions: SceneActions?
+    /// Clip-library verbs from the shell; nil drops the clip list from the
+    /// Motion ▸ Animate sub-tab (transport still shows).
+    let animationActions: AnimationActions?
 
     @AppStorage("threshold.ui.controlTab")
     private var storedTab = ControlTab.fractal.rawValue
     @AppStorage(DS.textSizeStorageKey)
     private var textSizeIndex = DS.defaultTextSizeIndex
+    // Second-row selection per tab that has one (device-local, persisted).
+    @AppStorage("threshold.ui.subtab.color") private var colorSub = "palette"
+    @AppStorage("threshold.ui.subtab.motion") private var motionSub = "zoom"
+    @AppStorage("threshold.ui.subtab.setup") private var setupSub = "prefs"
 
     public init(
         mirror: ParameterMirror, layout: CatalogLayout,
-        sceneActions: SceneActions? = nil
+        sceneActions: SceneActions? = nil,
+        animationActions: AnimationActions? = nil
     ) {
         self.mirror = mirror
         self.layout = layout
         self.sceneActions = sceneActions
+        self.animationActions = animationActions
     }
 
     private var tabs: [ControlTab] {
@@ -110,7 +157,27 @@ public struct ControlSidebar: View {
             set: { storedTab = $0.rawValue })
     }
 
+    /// The persisted second-row selection for `tab` (only tabs with subtabs
+    /// have backing storage; others return an empty binding never read).
+    private func subtabBinding(for tab: ControlTab) -> SwiftUI.Binding<String> {
+        switch tab {
+        case .color: return $colorSub
+        case .motion: return $motionSub
+        case .setup: return $setupSub
+        default: return .constant("")
+        }
+    }
+
+    /// The selected subtab id for `tab`, snapped to a valid entry (a stored id
+    /// that no longer exists falls back to the first subtab).
+    private func selectedSubtab(for tab: ControlTab) -> String {
+        let subs = tab.subtabs
+        let stored = subtabBinding(for: tab).wrappedValue
+        return subs.contains { $0.id == stored } ? stored : (subs.first?.id ?? "")
+    }
+
     public var body: some View {
+        let tab = tabBinding.wrappedValue
         VStack(spacing: 0) {
             TabStrip(
                 items: tabs.map {
@@ -121,14 +188,30 @@ public struct ControlSidebar: View {
             .padding(.horizontal, DS.Spacing.sm)
             .padding(.vertical, DS.Spacing.xs)
 
+            // Second row: appears only for tabs that declare subtabs.
+            if tab.subtabs.count > 1 {
+                Divider()
+                TabStrip(
+                    items: tab.subtabs.map {
+                        TabStrip.Item($0.id, label: $0.label, icon: $0.icon)
+                    },
+                    selection: SwiftUI.Binding(
+                        get: { selectedSubtab(for: tab) },
+                        set: { subtabBinding(for: tab).wrappedValue = $0 })
+                )
+                .padding(.horizontal, DS.Spacing.sm)
+                .padding(.vertical, DS.Spacing.xxs)
+                .background(.quaternary.opacity(0.4))
+            }
+
             Divider()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                    content(for: tabBinding.wrappedValue)
+                    content(for: tab, subtab: selectedSubtab(for: tab))
                 }
                 .padding(DS.Spacing.md)
-                // Settings ▸ Display drives the PANEL's text size only —
+                // Setup ▸ Prefs ▸ Display drives the PANEL's text size only —
                 // reflowed Dynamic Type, chrome untouched.
                 .dynamicTypeSize(DS.textSize(forIndex: textSizeIndex))
             }
@@ -136,7 +219,7 @@ public struct ControlSidebar: View {
     }
 
     @ViewBuilder
-    private func content(for tab: ControlTab) -> some View {
+    private func content(for tab: ControlTab, subtab: String) -> some View {
         switch tab {
         case .scenes:
             if let sceneActions {
@@ -158,30 +241,46 @@ public struct ControlSidebar: View {
             #endif
             WarpStackSection(mirror: mirror)
         case .color:
-            PaletteSection(mirror: mirror, layout: layout)
-            ColorMappingSection(mirror: mirror, layout: layout)
-            KeyedParamsSection(
-                title: "Grading", icon: "camera.filters", accent: .orange,
-                keys: [
-                    .colorSaturation, .colorContrast, .colorVibrance,
-                    .colorBrightness, .colorGamma, .colorTonemap,
-                ],
-                mirror: mirror, layout: layout)
+            switch subtab {
+            case "mapping":
+                ColorMappingSection(mirror: mirror, layout: layout)
+            case "grading":
+                KeyedParamsSection(
+                    title: "Grading", icon: "camera.filters", accent: .orange,
+                    keys: [
+                        .colorSaturation, .colorContrast, .colorVibrance,
+                        .colorBrightness, .colorGamma, .colorTonemap,
+                    ],
+                    mirror: mirror, layout: layout)
+            default:
+                PaletteSection(mirror: mirror, layout: layout)
+            }
         case .motion:
-            ZoomSection(mirror: mirror, layout: layout)
-            AnimationSection(mirror: mirror)
-            KeyedParamsSection(
-                title: "Camera", icon: "move.3d", accent: .cyan,
-                keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
-                mirror: mirror, layout: layout,
-                footer: "Drag the view to orbit · pinch or scroll to dolly.")
-        case .performance:
-            StatsSection(mirror: mirror)
-            PipelineSection(mirror: mirror)
-            CatalogSectionView(group: .performance, layout: layout, mirror: mirror)
-        case .settings:
-            DisplaySettingsSection()
-            InputSettingsSection()
+            switch subtab {
+            case "animation":
+                if let animationActions {
+                    AnimationLibrarySection(actions: animationActions)
+                }
+                AnimationSection(mirror: mirror)
+            case "camera":
+                KeyedParamsSection(
+                    title: "Camera", icon: "move.3d", accent: .cyan,
+                    keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
+                    mirror: mirror, layout: layout,
+                    footer: "Drag the view to orbit · pinch or scroll to dolly.")
+            default:
+                ZoomSection(mirror: mirror, layout: layout)
+            }
+        case .setup:
+            switch subtab {
+            case "performance":
+                StatsSection(mirror: mirror)
+                PipelineSection(mirror: mirror)
+                CatalogSectionView(group: .performance, layout: layout, mirror: mirror)
+            default:
+                DisplaySettingsSection()
+                InputSettingsSection()
+            }
         }
     }
 }

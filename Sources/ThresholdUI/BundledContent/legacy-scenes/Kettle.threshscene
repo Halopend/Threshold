@@ -1,0 +1,246 @@
+{
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0
+  },
+  "colorIterations" : 8,
+  "colorMix" : 0.5501741,
+  "colorScheme" : "nebula",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.0990901,
+  "colorSchemeCurve" : 0.8876022,
+  "colorSchemeGamma" : 0.45,
+  "colorSchemeHighlights" : 1,
+  "colorSchemeSaturation" : 1.5,
+  "colorSchemeShadows" : 0.02580281,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.7178152,
+  "createdAt" : "2026-04-14T01:58:36Z",
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.07925254
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    0.364446,
+    0.32462335,
+    1.0149593,
+    2.9995067,
+    -1.3204212,
+    -1.1181587,
+    1.1654342,
+    3.9998589,
+    0.48655707,
+    1.2707127,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 8,
+  "fractalScale" : 2.555619,
+  "fractalType" : "kleinian",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.3373135
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "FC627638-F553-451F-979D-EC6FD57326C7",
+      "mappingMode" : 1,
+      "name" : "Classic",
+      "offset" : 0,
+      "repeatCount" : 1,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "E544BF5D-A1D1-4DB2-AFDC-6DA0F8186BC7",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "8C28CEAC-3A3A-4118-975F-BFA1E10B9ADF",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "BF8454AF-5D15-4CCA-B08E-1A33E35C9419",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "8AC0DA12-D2D5-4D28-8A36-A5A6A389D4E5",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "6469597B-CC2E-4BC9-92F6-2F90279B334A",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : false,
+    "intensity" : 0,
+    "speed" : 0
+  },
+  "id" : "8FF3A67F-3920-4306-ADE2-7751AE43FD37",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.35,
+  "maxRaySteps" : 56,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 0.012134725,
+      "hybridCombo" : 0.35,
+      "id" : "7D12EFF3-06F6-4880-9424-53CD74678FCB",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 3.4,
+      "rangeMin" : 2.4,
+      "responseCurve" : "sinusoidal",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.9320898,
+      "source" : "composite",
+      "target" : "fractalScale"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "01B9E38A-3583-4E18-B68B-256D6B922CD7",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.9,
+      "rangeMin" : 0.2,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "colorMix"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "EA625AFE-AD44-48A7-A6DC-C5802AE15D44",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.5,
+      "rangeMin" : 0.05,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "fog"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "B1842DC0-949F-41B5-915B-82D2DE7E1A09",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.25,
+      "rangeMin" : 0.02,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "hueSpeed"
+    },
+    {
+      "amount" : 0.9930415,
+      "hybridCombo" : 0.35,
+      "id" : "1F3ACF5D-C4C3-44B0-857B-565C87716D63",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 2,
+      "rangeMin" : 0.8,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "saturation"
+    }
+  ],
+  "name" : "Kettle",
+  "position" : [
+    1.7431517,
+    2.9326606,
+    -3.1814342
+  ],
+  "pulseEffect" : {
+    "amount" : 0,
+    "enabled" : false,
+    "speed" : 0
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.5,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleRadius" : 0.9180805,
+  "safetyBubbleShape" : 0,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 0
+}

@@ -29,7 +29,7 @@ struct SceneLibraryTests {
     @Test func saveRefreshDeleteRoundTrip() throws {
         let dir = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let library = SceneLibrary(directory: dir)
+        let library = SceneLibrary(directory: dir, bundled: [])
         #expect(library.items.isEmpty)
 
         let url = library.save(makeEnvelope(), name: "First Light")
@@ -53,7 +53,7 @@ struct SceneLibraryTests {
     @Test func refreshSkipsForeignFiles() throws {
         let dir = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let library = SceneLibrary(directory: dir)
+        let library = SceneLibrary(directory: dir, bundled: [])
         _ = library.save(makeEnvelope(), name: "Keeper")
 
         try Data("not json".utf8).write(
@@ -62,6 +62,45 @@ struct SceneLibraryTests {
             to: dir.appendingPathComponent("readme.txt"))
         library.refresh()
         #expect(library.items.count == 1, "undecodable/foreign files are skipped")
+    }
+
+    @Test func groupsUserAndBundledSources() throws {
+        let userDir = makeTempDirectory()
+        let bundledDir = makeTempDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: userDir)
+            try? FileManager.default.removeItem(at: bundledDir)
+        }
+        try FileManager.default.createDirectory(
+            at: bundledDir, withIntermediateDirectories: true)
+        try SceneCodec.encode(makeEnvelope()).write(
+            to: bundledDir.appendingPathComponent("Shipped.threshscene"))
+
+        let library = SceneLibrary(
+            directory: userDir,
+            bundled: [(id: "bundled", name: "Starters", url: bundledDir)])
+        _ = library.save(makeEnvelope(), name: "Mine")
+
+        // Writable user source first, then the read-only bundled source.
+        #expect(library.sources.count == 2)
+        #expect(library.sources[0].id == "user")
+        #expect(library.sources[0].isWritable)
+        #expect(library.sources[1].id == "bundled")
+        #expect(library.sources[1].isWritable == false)
+        #expect(library.sources[1].items.count == 1)
+        #expect(library.items.count == 2)  // flat accessor spans both
+    }
+
+    @Test func emptyBundledSourceIsDropped() {
+        let userDir = makeTempDirectory()
+        let missing = makeTempDirectory()  // never created
+        defer { try? FileManager.default.removeItem(at: userDir) }
+        let library = SceneLibrary(
+            directory: userDir,
+            bundled: [(id: "bundled", name: "Starters", url: missing)])
+        // The user source stays (its save row lives there); the empty bundled
+        // source is omitted.
+        #expect(library.sources.map(\.id) == ["user"])
     }
 
     @Test func filenameSanitizing() {

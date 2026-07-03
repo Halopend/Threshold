@@ -1,0 +1,266 @@
+{
+  "aoStrength" : 0,
+  "audioReactiveConfig" : {
+    "bassSensitivity" : 1,
+    "beatSensitivity" : 1,
+    "fractalAudioAmount" : 0.25,
+    "fractalAudioDamping" : 0,
+    "fractalAudioReactiveEnabled" : false,
+    "fractalBeatPunch" : 0.3,
+    "midSensitivity" : 1,
+    "musicReactiveMappings" : [
+
+    ],
+    "trebleSensitivity" : 1,
+    "tripletMusicGains" : {
+
+    }
+  },
+  "beatFlashEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.2
+  },
+  "cellShadingEnabled" : false,
+  "cellShadingLevels" : 4,
+  "colorIterations" : 16,
+  "colorMix" : 0.55,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.08,
+  "colorSchemeCurve" : 0,
+  "colorSchemeGamma" : 0.85,
+  "colorSchemeHighlights" : 0.03,
+  "colorSchemeSaturation" : 1.5,
+  "colorSchemeShadows" : -0.02,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 0.9,
+  "createdAt" : "2026-07-01T23:13:33Z",
+  "detailScale" : 1.2440037,
+  "embeddedFormula" : {
+    "author" : "Knighty (Fragmentarium), ported by Threshold",
+    "category" : "Newton \/ Heightfield",
+    "defaultColorIterations" : 16,
+    "defaultIterations" : 16,
+    "description" : "2.5D heightfield built from the Newton-Raphson iteration of z^3 - 1 in the complex plane. Each (x,y) point converges toward one of the three cube roots of unity; the iteration's distance-to-root and accumulated derivative form a smooth height surface that the Slope control tilts into 3D. The orbit trap records the converged complex coordinate for coloring the three basins of attraction.",
+    "functionStem" : "NewtonHeightfield",
+    "id" : "com.puppypower.threshold.embedded.newtonheightfield",
+    "metalSource" : "\/\/ ===== Newton (z^3 - 1) 2.5D Heightfield =====\n\/\/ Port of Knighty's NewtonHeightfield.frag.\n\/\/ Source init(): k = 1\/sqrt(1 + Slope^2). Newton iteration on z = pos.xy for z^3-1,\n\/\/ tracking derivative dz. do{}while loop -> bounded for with delta2 break (loop always\n\/\/ runs once). Final DE = max(length(pos)-2, (pos.z - Slope*dd)*k) where dd is the\n\/\/ smooth distance-to-nearest-root divided by |dz|.\n\/\/ Param: Slope (params[0]). Iterations -> iterations (NOT a param). ColorIterations unused\n\/\/ by source coloring (orbit trap updates every iteration); we honor colorIterations for\n\/\/ the trap window like the Threshold convention.\n\nFORCE_INLINE float DE_NewtonHeightfield(float3 pos, FormulaParams fp, float3x3 rot,\n                                        int iterations, int colorIterations,\n                                        thread OrbitData& orbit) {\n    float slope = fp.params[0];\n    float k = 1.0f \/ sqrt(1.0f + slope * slope);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float2 z = p.xy;\n    float r2 = dot(z, z);\n    float2 dz = float2(1.0f, 0.0f);\n\n    float trap = 1e20f; int trapIter = 0; float3 trapPos = p;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    int n = clamp(iterations, 1, 100);\n    int i = 0;\n    for (; i < n; ++i) {\n        float2 az = z;\n        float ir2 = 1.0f \/ max(r2, 1e-12f);\n\n        float2 tmp = float2(1.0f, 0.0f) +\n            float2(-z.x * (z.x * z.x - 3.0f * z.y * z.y),\n                    z.y * (z.y * z.y - 3.0f * z.x * z.x)) * ir2 * ir2 * ir2;\n\n        dz = (2.0f \/ 3.0f) * float2(dz.x * tmp.x - dz.y * tmp.y,\n                                    dz.x * tmp.y + dz.y * tmp.x);\n\n        z = (1.0f \/ 3.0f) * float2(2.0f * z.x + (z.x * z.x - z.y * z.y) * ir2 * ir2,\n                                   2.0f * z.y * (1.0f - z.x * ir2 * ir2));\n\n        r2 = dot(z, z);\n\n        \/\/ orbitTrap = min(orbitTrap, abs(vec4(z.x, z.y, 0, r2))) -> track min r2,\n        \/\/ store converged complex coord (z.x, z.y) for basin coloring.\n        if (i < trapIterations && r2 < trap) {\n            trap = r2; trapIter = i; trapPos = float3(z.x, z.y, 0.0f);\n        }\n\n        float2 d = z - az;\n        float delta2 = dot(d, d);\n        if (delta2 <= 0.01f) { ++i; break; }\n    }\n\n    const float root3 = 1.7320508075688772f; \/\/ sqrt(3)\n    float dist = min(length(z - float2(1.0f, 0.0f)),\n                 min(length(z - float2(-0.5f, 0.5f * root3)),\n                     length(z - float2(-0.5f, -0.5f * root3))));\n    float dd = length(dz);\n    float dde = 0.5f * dist * log(max(dist, 1e-12f)) \/ max(dd, 1e-12f);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = float3(z.x, z.y, p.z);\n    orbit.iterationsUsed = i;\n\n    return max(length(p) - 2.0f, (p.z - slope * dde) * k);\n}\n\nFORCE_INLINE float DE_NewtonHeightfield_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float slope = fp.params[0];\n    float k = 1.0f \/ sqrt(1.0f + slope * slope);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float2 z = p.xy;\n    float r2 = dot(z, z);\n    float2 dz = float2(1.0f, 0.0f);\n\n    int n = clamp(iterations, 1, 100);\n    for (int i = 0; i < n; ++i) {\n        float2 az = z;\n        float ir2 = 1.0f \/ max(r2, 1e-12f);\n\n        float2 tmp = float2(1.0f, 0.0f) +\n            float2(-z.x * (z.x * z.x - 3.0f * z.y * z.y),\n                    z.y * (z.y * z.y - 3.0f * z.x * z.x)) * ir2 * ir2 * ir2;\n\n        dz = (2.0f \/ 3.0f) * float2(dz.x * tmp.x - dz.y * tmp.y,\n                                    dz.x * tmp.y + dz.y * tmp.x);\n\n        z = (1.0f \/ 3.0f) * float2(2.0f * z.x + (z.x * z.x - z.y * z.y) * ir2 * ir2,\n                                   2.0f * z.y * (1.0f - z.x * ir2 * ir2));\n\n        r2 = dot(z, z);\n\n        float2 d = z - az;\n        float delta2 = dot(d, d);\n        if (delta2 <= 0.01f) break;\n    }\n\n    const float root3 = 1.7320508075688772f;\n    float dist = min(length(z - float2(1.0f, 0.0f)),\n                 min(length(z - float2(-0.5f, 0.5f * root3)),\n                     length(z - float2(-0.5f, -0.5f * root3))));\n    float dd = length(dz);\n    float dde = 0.5f * dist * log(max(dist, 1e-12f)) \/ max(dd, 1e-12f);\n\n    return max(length(p) - 2.0f, (p.z - slope * dde) * k);\n}",
+    "name" : "Newton Heightfield",
+    "params" : [
+      {
+        "default" : 1.7432,
+        "index" : 0,
+        "max" : 10,
+        "min" : -10,
+        "name" : "Slope",
+        "step" : 0.01
+      }
+    ],
+    "schemaVersion" : 1,
+    "supportedEffectTags" : [
+      "safetyBubble"
+    ]
+  },
+  "fogEffect" : {
+    "colorBlue" : 0.02,
+    "colorGreen" : 0.015,
+    "colorRed" : 0.01,
+    "enabled" : true,
+    "hueRotateEnabled" : false,
+    "hueRotateSpeed" : 0.1,
+    "intensity" : 0.14
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    -9.999963,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 16,
+  "fractalScale" : 2.8,
+  "fractalType" : "custom",
+  "glowEffect" : {
+    "enabled" : true,
+    "intensity" : 0.12
+  },
+  "gradientCycleEffect" : {
+    "enabled" : false,
+    "mirrorLoop" : false,
+    "speed" : 0.05
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "9587BC4D-BCE7-4313-B8B6-E1B945244433",
+      "mappingMode" : 5,
+      "name" : "Rainbow",
+      "offset" : 0,
+      "repeatCount" : 1,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            1,
+            0,
+            0
+          ],
+          "id" : "CEA79156-BF4F-4336-9E53-1A785C539EE7",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.5,
+            0
+          ],
+          "id" : "FBC2B5B3-2FB2-4A2B-9D66-F44162155EEA",
+          "position" : 0.167
+        },
+        {
+          "color" : [
+            1,
+            1,
+            0
+          ],
+          "id" : "363A5C78-511B-4BD5-BEE2-6D8EBD6984FD",
+          "position" : 0.333
+        },
+        {
+          "color" : [
+            0,
+            1,
+            0
+          ],
+          "id" : "137E72FF-F942-4364-99B5-F55633275164",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            0,
+            0.5,
+            1
+          ],
+          "id" : "7068A763-1D22-4CD7-876C-D8779B28568A",
+          "position" : 0.667
+        },
+        {
+          "color" : [
+            0.5,
+            0,
+            1
+          ],
+          "id" : "6824D406-5607-451D-8161-7056CC0973F6",
+          "position" : 0.833
+        },
+        {
+          "color" : [
+            1,
+            0,
+            0.5
+          ],
+          "id" : "D631477D-16A1-4A2D-9B8A-77E821B5C8AB",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "rainbow"
+  },
+  "hueRotationEffect" : {
+    "enabled" : false,
+    "intensity" : 1,
+    "speed" : 0.05
+  },
+  "id" : "D0465047-7ABB-423C-B665-4341D2B47B73",
+  "juliaDriftEffect" : {
+    "enabled" : false,
+    "speed" : 0
+  },
+  "lightVariationRate" : 0.5,
+  "lightingMode" : "staticLight",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0.22,
+  "linearRailEffect" : {
+    "amplitude" : 0,
+    "axis" : "z",
+    "enabled" : false,
+    "multiplier" : 1,
+    "orbitAmount" : 0,
+    "orbitSpeed" : 0.18,
+    "speed" : 0
+  },
+  "maxRaySteps" : 140,
+  "minDistance" : 0.08,
+  "musicReactiveMappings" : [
+
+  ],
+  "name" : "Rock the cradle",
+  "platformEnabled" : true,
+  "platformRadius" : 0.94279927,
+  "polarRotationEffect" : {
+    "direction" : "off",
+    "speed" : 0
+  },
+  "position" : [
+    7.0388713,
+    -2.360257,
+    -12.577101
+  ],
+  "pulseEffect" : {
+    "amount" : 0,
+    "enabled" : false,
+    "speed" : 0
+  },
+  "rating" : 0,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.28262043,
+  "safetyBubbleEnabled" : true,
+  "safetyBubbleFadeEnabled" : true,
+  "safetyBubbleFadeWidth" : 0.1,
+  "safetyBubbleRadius" : 1.4174987,
+  "safetyBubbleShape" : 0.5,
+  "scale" : 1,
+  "spaceWarpOps" : [
+    {
+      "axis" : [
+        -1,
+        -0.04305464,
+        -1
+      ],
+      "id" : "19FFF3DF-902F-4981-8B51-96DB8D8FAED4",
+      "isEnabled" : true,
+      "p1" : 1.535106,
+      "p2" : 0,
+      "strength" : 1.4876325,
+      "type" : 7
+    }
+  ],
+  "sphereProjectionBlend" : 1,
+  "sphereProjectionEnabled" : false,
+  "sphereProjectionRadius" : 1,
+  "sphereRadius" : 0.5,
+  "sphericalInversionMode" : "off",
+  "sphericalInversionRadius" : 2,
+  "tileSize" : 0,
+  "tonemapStrength" : 0,
+  "worldRotationW" : 0.6795909,
+  "worldRotationX" : 0.32629472,
+  "worldRotationY" : -0.06063114,
+  "worldRotationZ" : -0.6542261
+}

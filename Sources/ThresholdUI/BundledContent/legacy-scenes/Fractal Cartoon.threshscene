@@ -1,0 +1,231 @@
+{
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.18
+  },
+  "colorIterations": 4.0,
+  "colorMix": 0.58,
+  "colorScheme": "rainbow",
+  "colorSchemeContrast": 1.1,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeGamma": 0.95,
+  "colorSchemeHighlights": 0.08,
+  "colorSchemeSaturation": 1.35,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeVibrance": 0.78,
+  "createdAt": "2026-05-04T18:20:00Z",
+  "detailScale": 1.0,
+  "embeddedFormula": {
+    "author": "Threshold Sample",
+    "category": "Custom",
+    "defaultColorIterations": 4,
+    "defaultIterations": 4,
+    "description": "Distance-estimator translation of Kali's 'Fractal Cartoon' shader. This keeps the Amazing Surface recursion, corridor repeat, and wave deformation from the original. Screen-space sun, edge-darkening, Nyan Cat overlay, and camera path are renderer-level effects in the original shader, so this embedded formula preserves the geometry and exposes the time-driven wave as manual parameters instead.",
+    "functionStem": "FractalCartoon",
+    "id": "com.puppypower.threshold.sample.fractal-cartoon",
+    "metalSource": "static FORCE_INLINE float wrap_fc(float x, float period) {\n    return x - period * floor(x / period);\n}\n\nstatic FORCE_INLINE float2 rotate2d_fc(float2 p, float radians) {\n    float c = fast::cos(radians);\n    float s = fast::sin(radians);\n    return float2(c * p.x - s * p.y, s * p.x + c * p.y);\n}\n\nstatic FORCE_INLINE float4 fractalCartoonFormula_fc(float4 p, float2 foldOffsetXZ, float yOffset, float rotationRadians, float formulaScale, float radiusClampMin, float radiusClampMax) {\n    p.xz = abs(p.xz + foldOffsetXZ) - abs(p.xz - foldOffsetXZ) - p.xz;\n    p.y -= yOffset;\n    p.xy = rotate2d_fc(p.xy, rotationRadians);\n\n    float denom = clamp(dot(p.xyz, p.xyz), radiusClampMin, radiusClampMax);\n    float scaleK = formulaScale / max(denom, 1e-5f);\n    p *= scaleK;\n    return p;\n}\n\nFORCE_INLINE float DE_FractalCartoon(float3 pos, FormulaParams fp, float3x3 rot,\n                                     int iterations, int colorIterations,\n                                     thread OrbitData& orbit) {\n    float waveAmount = fp.params[0];\n    float wavePhase = fp.params[1];\n    float corridorPeriod = max(fp.params[2], 0.25f);\n    float corridorMirrorCenter = fp.params[3];\n    float foldOffsetX = max(fp.params[4], 0.0f);\n    float foldOffsetZ = max(fp.params[5], 0.0f);\n    float yOffset = fp.params[6];\n    float rotationRadians = fp.params[7] * 0.017453292519943295f;\n    float formulaScale = max(fp.params[8], 0.05f);\n    float radiusClampMin = max(fp.params[9], 1e-4f);\n    float radiusClampMax = max(fp.params[10], radiusClampMin);\n    float shellOffset = max(fp.params[11], 0.0f);\n    float shellRadius = max(fp.params[12], 0.01f);\n    float railOffsetX = fp.params[13];\n    float railHalfWidth = max(fp.params[14], 0.01f);\n    float railRepeat = max(fp.params[15], 0.05f);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 q = pos;\n    if (hasRotation) q = rot * q;\n    q.y += fast::sin(q.z - wavePhase) * waveAmount;\n\n    float3 corridorPos = q;\n    corridorPos.z = abs(corridorMirrorCenter - wrap_fc(corridorPos.z, corridorPeriod));\n\n    float4 p = float4(corridorPos, 1.0f);\n    float trap = 1e20f;\n    int trapIter = 0;\n    float3 trapPos = q;\n\n    int loopCount = clamp(iterations, 1, 8);\n    int trapIterations = min(max(colorIterations, 0), loopCount);\n    float2 foldOffsetXZ = float2(foldOffsetX, foldOffsetZ);\n    for (int i = 0; i < loopCount; ++i) {\n        p = fractalCartoonFormula_fc(p, foldOffsetXZ, yOffset, rotationRadians, formulaScale, radiusClampMin, radiusClampMax);\n        float r2 = dot(p.xyz, p.xyz);\n        UpdateTrapMinR2(trap, trapIter, trapPos, r2, i, trapIterations, p.xyz);\n    }\n\n    float2 shellQ = max(float2(0.0f), p.yz - shellOffset);\n    float fr = (length(shellQ) - shellRadius) / max(abs(p.w), 1e-4f);\n\n    float ro = max(abs(q.x + railOffsetX) - railHalfWidth, q.y - 0.35f);\n    ro = max(ro, -max(abs(q.x + railOffsetX) - 0.10f, q.y - 0.50f));\n\n    float railZ = abs(0.25f - wrap_fc(q.z, railRepeat));\n    ro = max(ro, -max(abs(railZ) - 0.20f, q.y - 0.30f));\n    ro = max(ro, -max(abs(railZ) - 0.01f, -q.y + 0.32f));\n\n    float d = min(fr, ro);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = p.xyz;\n    orbit.iterationsUsed = loopCount;\n    return d;\n}\n\nFORCE_INLINE float DE_FractalCartoon_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float waveAmount = fp.params[0];\n    float wavePhase = fp.params[1];\n    float corridorPeriod = max(fp.params[2], 0.25f);\n    float corridorMirrorCenter = fp.params[3];\n    float foldOffsetX = max(fp.params[4], 0.0f);\n    float foldOffsetZ = max(fp.params[5], 0.0f);\n    float yOffset = fp.params[6];\n    float rotationRadians = fp.params[7] * 0.017453292519943295f;\n    float formulaScale = max(fp.params[8], 0.05f);\n    float radiusClampMin = max(fp.params[9], 1e-4f);\n    float radiusClampMax = max(fp.params[10], radiusClampMin);\n    float shellOffset = max(fp.params[11], 0.0f);\n    float shellRadius = max(fp.params[12], 0.01f);\n    float railOffsetX = fp.params[13];\n    float railHalfWidth = max(fp.params[14], 0.01f);\n    float railRepeat = max(fp.params[15], 0.05f);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 q = pos;\n    if (hasRotation) q = rot * q;\n    q.y += fast::sin(q.z - wavePhase) * waveAmount;\n\n    float3 corridorPos = q;\n    corridorPos.z = abs(corridorMirrorCenter - wrap_fc(corridorPos.z, corridorPeriod));\n\n    float4 p = float4(corridorPos, 1.0f);\n    int loopCount = clamp(iterations, 1, 8);\n    float2 foldOffsetXZ = float2(foldOffsetX, foldOffsetZ);\n    for (int i = 0; i < loopCount; ++i) {\n        p = fractalCartoonFormula_fc(p, foldOffsetXZ, yOffset, rotationRadians, formulaScale, radiusClampMin, radiusClampMax);\n    }\n\n    float2 shellQ = max(float2(0.0f), p.yz - shellOffset);\n    float fr = (length(shellQ) - shellRadius) / max(abs(p.w), 1e-4f);\n\n    float ro = max(abs(q.x + railOffsetX) - railHalfWidth, q.y - 0.35f);\n    ro = max(ro, -max(abs(q.x + railOffsetX) - 0.10f, q.y - 0.50f));\n\n    float railZ = abs(0.25f - wrap_fc(q.z, railRepeat));\n    ro = max(ro, -max(abs(railZ) - 0.20f, q.y - 0.30f));\n    ro = max(ro, -max(abs(railZ) - 0.01f, -q.y + 0.32f));\n\n    return min(fr, ro);\n}\n",
+    "name": "Fractal Cartoon",
+    "params": [
+      {
+        "default": 0.15,
+        "index": 0,
+        "max": 0.5,
+        "min": 0.0,
+        "name": "Wave Amount",
+        "step": 0.005
+      },
+      {
+        "default": 0.0,
+        "index": 1,
+        "max": 6.2832,
+        "min": -6.2832,
+        "name": "Wave Phase",
+        "step": 0.01
+      },
+      {
+        "default": 6.0,
+        "index": 2,
+        "max": 12.0,
+        "min": 0.5,
+        "name": "Corridor Period",
+        "step": 0.05
+      },
+      {
+        "default": 3.0,
+        "index": 3,
+        "max": 6.0,
+        "min": 0.0,
+        "name": "Corridor Center",
+        "step": 0.05
+      },
+      {
+        "default": 1.0,
+        "index": 4,
+        "max": 2.0,
+        "min": 0.0,
+        "name": "Fold Offset X",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 5,
+        "max": 2.0,
+        "min": 0.0,
+        "name": "Fold Offset Z",
+        "step": 0.01
+      },
+      {
+        "default": 0.25,
+        "index": 6,
+        "max": 1.5,
+        "min": -1.5,
+        "name": "Y Offset",
+        "step": 0.01
+      },
+      {
+        "default": 35.0,
+        "index": 7,
+        "max": 180.0,
+        "min": -180.0,
+        "name": "XY Rotation",
+        "step": 0.5
+      },
+      {
+        "default": 2.0,
+        "index": 8,
+        "max": 4.0,
+        "min": 0.1,
+        "name": "Formula Scale",
+        "step": 0.01
+      },
+      {
+        "default": 0.2,
+        "index": 9,
+        "max": 2.0,
+        "min": 0.001,
+        "name": "Radius Clamp Min",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 10,
+        "max": 4.0,
+        "min": 0.01,
+        "name": "Radius Clamp Max",
+        "step": 0.01
+      },
+      {
+        "default": 1.5,
+        "index": 11,
+        "max": 3.0,
+        "min": 0.0,
+        "name": "Shell Offset",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 12,
+        "max": 2.0,
+        "min": 0.05,
+        "name": "Shell Radius",
+        "step": 0.01
+      },
+      {
+        "default": 1.0,
+        "index": 13,
+        "max": 2.0,
+        "min": -2.0,
+        "name": "Rail Offset X",
+        "step": 0.01
+      },
+      {
+        "default": 0.3,
+        "index": 14,
+        "max": 1.0,
+        "min": 0.01,
+        "name": "Rail Half Width",
+        "step": 0.01
+      },
+      {
+        "default": 0.5,
+        "index": 15,
+        "max": 2.0,
+        "min": 0.05,
+        "name": "Rail Repeat",
+        "step": 0.01
+      }
+    ],
+    "schemaVersion": 1,
+    "supportedEffectTags": []
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.16
+  },
+  "foldingLimit": 1.0,
+  "formulaParamValues": [
+    0.15,
+    0.0,
+    6.0,
+    3.0,
+    1.0,
+    1.0,
+    0.25,
+    35.0,
+    2.0,
+    0.2,
+    1.0,
+    1.5,
+    1.0,
+    1.0,
+    0.3,
+    0.5
+  ],
+  "fractalIterations": 4,
+  "fractalScale": 2.0,
+  "fractalType": "custom",
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.1
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "id": "F7A845E9-53F1-4E48-BFB0-7A07650C8E45",
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.2,
+  "maxRaySteps": 150,
+  "minDistance": 0.4,
+  "name": "Fractal Cartoon",
+  "position": [
+    -1.0,
+    0.7,
+    -4.0
+  ],
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "rating": 0,
+  "resolutionScale": 1.0,
+  "safetyBubbleBlend": 0.0,
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "scale": 1.0,
+  "sphereRadius": 0.5,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0
+}

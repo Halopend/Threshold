@@ -25,10 +25,16 @@ public struct TabStrip<T: Hashable>: View {
     }
 
     let items: [Item]
+    /// Compact sub-tab styling: icon inline with the label on one line, less
+    /// vertical padding — the second-level strip under the primary tabs.
+    let compact: Bool
     @SwiftUI.Binding var selection: T
 
-    public init(items: [Item], selection: SwiftUI.Binding<T>) {
+    public init(
+        items: [Item], selection: SwiftUI.Binding<T>, compact: Bool = false
+    ) {
         self.items = items
+        self.compact = compact
         self._selection = selection
     }
 
@@ -39,16 +45,7 @@ public struct TabStrip<T: Hashable>: View {
                 Button {
                     selection = item.value
                 } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: item.icon)
-                            .font(.body)
-                        Text(item.label)
-                            .font(.caption2)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, DS.Spacing.xs)
-                    .contentShape(RoundedRectangle(cornerRadius: DS.Radius.inset))
+                    chipLabel(item)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selected ? Color.accentColor : Color.secondary)
@@ -57,6 +54,33 @@ public struct TabStrip<T: Hashable>: View {
                         .fill(selected ? Color.accentColor.opacity(0.12) : .clear))
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
+        }
+    }
+
+    @ViewBuilder
+    private func chipLabel(_ item: Item) -> some View {
+        if compact {
+            HStack(spacing: DS.Spacing.xxs) {
+                Image(systemName: item.icon)
+                    .font(.caption2)
+                Text(item.label)
+                    .font(.caption2)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, DS.Spacing.xxs)
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.inset))
+        } else {
+            VStack(spacing: 2) {
+                Image(systemName: item.icon)
+                    .font(.body)
+                Text(item.label)
+                    .font(.caption2)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, DS.Spacing.xs)
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.inset))
         }
     }
 }

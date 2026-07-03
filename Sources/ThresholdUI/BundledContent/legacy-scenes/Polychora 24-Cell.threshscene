@@ -1,0 +1,185 @@
+{
+  "id": "BCD900D3-F2D5-51CA-807A-FE800A094238",
+  "name": "Polychora 24-Cell",
+  "createdAt": "2026-06-28T00:00:00Z",
+  "rating": 0,
+  "fractalType": "custom",
+  "fractalIterations": 4,
+  "colorIterations": 4.0,
+  "maxRaySteps": 164,
+  "minDistance": 0.1,
+  "colorMix": 0.55,
+  "position": [
+    0.0,
+    0.0,
+    -6.0
+  ],
+  "scale": 1.0,
+  "detailScale": 1.0,
+  "fractalScale": 2.8,
+  "foldingLimit": 1.0,
+  "sphereRadius": 0.5,
+  "colorScheme": "rainbow",
+  "colorSchemeSaturation": 1.5,
+  "colorSchemeContrast": 1.08,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeVibrance": 0.9,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeHighlights": 0.03,
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.22,
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.14
+  },
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "safetyBubbleBlend": 0.0,
+  "resolutionScale": 1.0,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0,
+  "formulaParamValues": [
+    1.0,
+    0.5045045,
+    0.5555556,
+    0.0,
+    0.0890411,
+    0.02476,
+    0.0,
+    0.0,
+    1.0,
+    45.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "embeddedFormula": {
+    "schemaVersion": 1,
+    "id": "com.puppypower.threshold.embedded.polychora24cell",
+    "name": "Polychora 24-Cell",
+    "category": "Polychora / 4D",
+    "author": "Knighty (Fragmentarium), ported by Threshold",
+    "description": "Fold-and-cut regular 24-cell polychoron (Knighty 2012), rendered via inverse stereographic projection of 3D space onto the unit 3-sphere. The principal node p is a barycentric blend of four vertex/edge/face/cell centers (U,V,W,T); a 4D boost rotation on the (RotVector, w) plane spins/dives through the hypersphere, and a fixed 3-pass abs+reflect fold across the cell plane nd=(-.5,-.5,-.5,.5) tiles the 24 cells. Distance is the min of distance-to-vertex and distance-to-edge-segments, each converted from spherical to planar by the magic DDV/DDS formula using vertex/segment radii.",
+    "functionStem": "Polychora24Cell",
+    "metalSource": "// === Polychora 24-Cell (fold-and-cut, stereographic) \u2014 knighty 2012 ===\n// Ported from Fragmentarium (polychora-special.frag) to Threshold's embedded-\n// formula contract. Fragmentarium's init()-computed globals are recomputed per\n// DE call into Poly24_Globals (Metal has no per-thread mutable globals).\n// NOTE: uses CIRCULAR cos/sin (not cosh/sinh \u2014 this is the spherical, not the\n// hyperbolic, sibling). MSL has no radians()/degrees(): deg->rad via constant.\n\nstruct Poly24_Globals {\n    float4 p;\n    float cVR, sVR, cSR, sSR, cRA, sRA;\n    float3 rotv;\n};\n\n// 24-cell's defining reflection plane (baked: this is what makes it a 24-cell).\nconstant float4 kPoly24_nd = float4(-0.5f, -0.5f, -0.5f, 0.5f);\n\n// Mirrors Fragmentarium init(): principal node p + cos/sin of radii & boost.\nFORCE_INLINE Poly24_Globals poly24_init(FormulaParams fp) {\n    Poly24_Globals g;\n    float U = fp.params[0];\n    float V = fp.params[1];\n    float W = fp.params[2];\n    float T = fp.params[3];\n    float VRadius = max(fp.params[4], 0.0f);\n    float SRadius = max(fp.params[5], 0.0f);\n    float3 rotVec = float3(fp.params[6], fp.params[7], fp.params[8]);\n    float RotAngle = fp.params[9];\n\n    const float invSqrt2 = 0.70710678118654752f;\n    float4 pabc = float4(0.0f, 0.0f, 0.0f, 1.0f);\n    float4 pbdc = invSqrt2 * float4(1.0f, 0.0f, 0.0f, 1.0f);\n    float4 pcda = invSqrt2 * float4(0.0f, 1.0f, 0.0f, 1.0f);\n    float4 pdba = invSqrt2 * float4(0.0f, 0.0f, 1.0f, 1.0f);\n\n    float4 pp = U * pabc + V * pbdc + W * pcda + T * pdba;\n    g.p = pp / max(length(pp), 1e-6f); // normalize w/ epsilon guard (degenerate only if U=V=W=T=0)\n\n    g.cVR = cos(VRadius); g.sVR = sin(VRadius);\n    g.cSR = cos(SRadius); g.sSR = sin(SRadius);\n    float ra = RotAngle * 0.017453292519943295f; // deg -> rad (no radians() in MSL)\n    g.cRA = cos(ra); g.sRA = sin(ra);\n\n    if (dot(rotVec, rotVec) < 1e-12f) rotVec = float3(0.0f, 0.0f, 1.0f);\n    g.rotv = normalize(rotVec);\n    return g;\n}\n\n// 4D boost on the (rotv, w) plane \u2014 Fragmentarium Rotate() with\n// useCameraAsRotVector baked false. Sign matches the spherical source exactly:\n//   p1.xyz += rv*(vp*(cRA-1) - p.w*sRA);  p1.w += vp*sRA + p.w*(cRA-1).\nFORCE_INLINE float4 poly24_rotate(float4 p, Poly24_Globals g) {\n    float4 p1 = p;\n    float vp = dot(g.rotv, p.xyz);\n    p1.xyz += g.rotv * (vp * (g.cRA - 1.0f) - p.w * g.sRA);\n    p1.w   += vp * g.sRA + p.w * (g.cRA - 1.0f);\n    return p1;\n}\n\n// Fixed 3-pass abs+reflect fold across nd \u2014 tiles the 24 cells.\nFORCE_INLINE float4 poly24_fold(float4 pos) {\n    for (int i = 0; i < 3; ++i) {\n        pos.xyz = abs(pos.xyz);\n        float t = -2.0f * min(0.0f, dot(pos, kPoly24_nd));\n        pos += t * kPoly24_nd;\n    }\n    return pos;\n}\n\n// Magic spherical->planar distance formula. (cr,sr) = cos/sin of the tube\n// radius (VRadius or SRadius); (ca,sa) = cos/sin of the spherical distance.\n// Denominators guarded against the r->1 / antipodal blow-up.\nFORCE_INLINE float poly24_DD(float cr, float sr, float ca, float sa, float r) {\n    float r2 = r * r;\n    float omr2 = 1.0f - r2;\n    float opr2 = 1.0f + r2;\n    float d1 = (2.0f * r * cr - omr2 * sr) / max(omr2 * cr + 2.0f * r * sr + opr2, 1e-6f);\n    float d2 = (2.0f * r * ca - omr2 * sa) / max(omr2 * ca + 2.0f * r * sa + opr2, 1e-6f);\n    return d1 - d2;\n}\n\nFORCE_INLINE float poly24_dist2Vertex(float4 z, float r, Poly24_Globals g) {\n    float ca = dot(z, g.p);\n    float sa = 0.5f * length(g.p - z) * length(g.p + z);\n    return poly24_DD(g.cVR, g.sVR, ca, sa, r);\n}\n\nFORCE_INLINE float poly24_dist2Segment(float4 z, float4 n, float r, Poly24_Globals g) {\n    float zn = dot(z, n), zp = dot(z, g.p), np = dot(n, g.p);\n    float alpha = zp - zn * np, beta = zn - zp * np;\n    float4 pm = alpha * g.p + min(0.0f, beta) * n;\n    float4 pmin = pm / max(length(pm), 1e-6f); // normalize w/ epsilon guard\n    float ca = dot(z, pmin);\n    float sa = 0.5f * length(pmin - z) * length(pmin + z);\n    return poly24_DD(g.cSR, g.sSR, ca, sa, r);\n}\n\nFORCE_INLINE float poly24_dist2Segments(float4 z, float r, Poly24_Globals g) {\n    float da = poly24_dist2Segment(z, float4(1.0f, 0.0f, 0.0f, 0.0f), r, g);\n    float db = poly24_dist2Segment(z, float4(0.0f, 1.0f, 0.0f, 0.0f), r, g);\n    float dc = poly24_dist2Segment(z, float4(0.0f, 0.0f, 1.0f, 0.0f), r, g);\n    float dd = poly24_dist2Segment(z, kPoly24_nd, r, g);\n    return min(min(da, db), min(dc, dd));\n}\n\nFORCE_INLINE float DE_Polychora24Cell(float3 pos, FormulaParams fp, float3x3 rot,\n                                      int iterations, int colorIterations,\n                                      thread OrbitData& orbit) {\n    (void)iterations; (void)colorIterations; // symmetry is the fixed 3-pass fold\n    Poly24_Globals g = poly24_init(fp);\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 sp = hasRotation ? (rot * pos) : pos; // rotation preserves r\n\n    float r = length(sp);\n    float4 z4 = float4(2.0f * sp, 1.0f - r * r) * (1.0f / (1.0f + r * r)); // inverse stereographic\n    z4 = poly24_rotate(z4, g);\n    z4 = poly24_fold(z4);\n\n    orbit.trap = dot(z4, z4);\n    orbit.trapIteration = 0;\n    orbit.trapPosition = z4.xyz;\n    orbit.finalP = z4.xyz;\n    orbit.iterationsUsed = 3;\n\n    return min(poly24_dist2Vertex(z4, r, g), poly24_dist2Segments(z4, r, g));\n}\n\nFORCE_INLINE float DE_Polychora24Cell_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    (void)iterations;\n    Poly24_Globals g = poly24_init(fp);\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 sp = hasRotation ? (rot * pos) : pos;\n\n    float r = length(sp);\n    float4 z4 = float4(2.0f * sp, 1.0f - r * r) * (1.0f / (1.0f + r * r));\n    z4 = poly24_rotate(z4, g);\n    z4 = poly24_fold(z4);\n\n    return min(poly24_dist2Vertex(z4, r, g), poly24_dist2Segments(z4, r, g));\n}\n",
+    "params": [
+      {
+        "index": 0,
+        "name": "U",
+        "default": 1,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 1,
+        "name": "V",
+        "default": 0.5045045,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 2,
+        "name": "W",
+        "default": 0.5555556,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 3,
+        "name": "T",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 4,
+        "name": "VRadius",
+        "default": 0.0890411,
+        "min": 0,
+        "max": 0.5,
+        "step": 0.001
+      },
+      {
+        "index": 5,
+        "name": "SRadius",
+        "default": 0.02476,
+        "min": 0,
+        "max": 0.1,
+        "step": 0.001
+      },
+      {
+        "index": 6,
+        "name": "RotVectorX",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 7,
+        "name": "RotVectorY",
+        "default": 0,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 8,
+        "name": "RotVectorZ",
+        "default": 1,
+        "min": 0,
+        "max": 1,
+        "step": 0.01
+      },
+      {
+        "index": 9,
+        "name": "RotAngle",
+        "default": 45,
+        "min": 0,
+        "max": 180,
+        "step": 1
+      }
+    ],
+    "defaultIterations": 4,
+    "defaultColorIterations": 4,
+    "supportedEffectTags": [
+      "safetyBubble"
+    ]
+  }
+}

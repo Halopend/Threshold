@@ -1,0 +1,291 @@
+{
+  "bloomEffect" : {
+    "enabled" : false,
+    "strength" : 0
+  },
+  "colorIterations" : 7.4372683,
+  "colorMix" : 0.86309713,
+  "colorScheme" : "rainbow",
+  "colorSchemeAutoInterval" : 30,
+  "colorSchemeAutoTransition" : false,
+  "colorSchemeContrast" : 1.15,
+  "colorSchemeCurve" : -0.2481237,
+  "colorSchemeGamma" : 0.78,
+  "colorSchemeHighlights" : 0.97715986,
+  "colorSchemeSaturation" : 2.2,
+  "colorSchemeShadows" : -0.009699918,
+  "colorSchemeTransitionDuration" : 2,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2026-04-24T00:18:30Z",
+  "detailScale" : 1.0269946,
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.38119856
+  },
+  "foldingLimit" : 1,
+  "formulaParamValues" : [
+    8,
+    4,
+    1.807681,
+    0,
+    0.48709917,
+    0,
+    0,
+    0,
+    1,
+    -0.20452353,
+    -0.3544746,
+    0.47624564,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fractalIterations" : 4,
+  "fractalScale" : 4.7788525,
+  "fractalType" : "mandelbulbJulia",
+  "glowEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "gradientCycleEffect" : {
+    "enabled" : true,
+    "mirrorLoop" : true,
+    "speed" : 0.09711209
+  },
+  "gradientState" : {
+    "gradient" : {
+      "id" : "C2DEB6D8-5AC9-4705-B214-377A746A5F79",
+      "mappingMode" : 0,
+      "name" : "Classic",
+      "offset" : 0.23636815,
+      "repeatCount" : 5,
+      "smoothing" : 1,
+      "stops" : [
+        {
+          "color" : [
+            0.05,
+            0.02,
+            0.02
+          ],
+          "id" : "15C130B9-7614-4178-8AF3-30DA35AA2087",
+          "position" : 0
+        },
+        {
+          "color" : [
+            1,
+            0.1,
+            0.1
+          ],
+          "id" : "407BC83E-7548-404F-BD48-1A974604472B",
+          "position" : 0.25
+        },
+        {
+          "color" : [
+            0.2,
+            0.4,
+            0.9
+          ],
+          "id" : "15D8148F-A874-4643-99F6-BB6E42270BFF",
+          "position" : 0.5
+        },
+        {
+          "color" : [
+            1,
+            0.8,
+            0
+          ],
+          "id" : "5446CDB8-08AE-4F0F-90A3-38D822233D58",
+          "position" : 0.75
+        },
+        {
+          "color" : [
+            0,
+            0.2,
+            0.8
+          ],
+          "id" : "879CABA7-E223-48F5-82A9-AA755FBE9941",
+          "position" : 1
+        }
+      ]
+    },
+    "gradientPreset" : "classic"
+  },
+  "hueRotationEffect" : {
+    "enabled" : false,
+    "intensity" : 1,
+    "speed" : 0.056192927
+  },
+  "id" : "BE9D1260-88AC-4450-99E6-4FA14975C351",
+  "lightingMode" : "audioReactive",
+  "lightingPreset" : "Custom",
+  "lightingSoftness" : 0,
+  "maxRaySteps" : 32,
+  "minDistance" : 0.8,
+  "musicReactiveMappings" : [
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "7CB4F2EE-C08B-4844-9734-AD947F9D2DEE",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.9,
+      "rangeMin" : 0.2,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "colorMix"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "EB9ACA26-56ED-4832-9F15-59D2AF735F9C",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.5,
+      "rangeMin" : 0.05,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "composite",
+      "target" : "fog"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "65A6D3DF-591B-473D-BE9B-3902167304BC",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.25,
+      "rangeMin" : 0.02,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "hueSpeed"
+    },
+    {
+      "amount" : 1,
+      "hybridCombo" : 0.35,
+      "id" : "D771E34C-E13D-48F5-8063-B21613EF9E62",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 2,
+      "rangeMin" : 0.8,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "saturation"
+    },
+    {
+      "amount" : 2.0149808,
+      "hybridCombo" : 0.35,
+      "id" : "B2DF0186-A39B-4981-ACA5-85BC8BDCC347",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 0.47480002,
+      "rangeMin" : -1.1252,
+      "responseCurve" : "drift",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0.6273517,
+      "source" : "bass",
+      "target" : "formulaParam0"
+    },
+    {
+      "amount" : 2.046898,
+      "hybridCombo" : 0.35,
+      "id" : "90993A4E-121A-47D9-A284-E199EF133BBD",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 1.288,
+      "rangeMin" : 0.09200001,
+      "responseCurve" : "sinusoidal",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "treble",
+      "target" : "formulaParam3"
+    },
+    {
+      "amount" : 2.189416,
+      "hybridCombo" : 0.35,
+      "id" : "8E480218-086C-4144-BC2D-797CB14CB89F",
+      "isEnabled" : true,
+      "lfo" : {
+        "amplitude" : 0.2,
+        "enabled" : false,
+        "frequency" : 0.1,
+        "shape" : "sine"
+      },
+      "mode" : "relative",
+      "rangeMax" : 1.638,
+      "rangeMin" : 0.041999936,
+      "responseCurve" : "pulse",
+      "responseSpeed" : 0.12,
+      "smoothingWindow" : 0,
+      "source" : "mid",
+      "target" : "formulaParam7"
+    }
+  ],
+  "name" : "Broken bias",
+  "position" : [
+    0.08490459,
+    2.0693126,
+    -1.9214176
+  ],
+  "pulseEffect" : {
+    "amount" : 0,
+    "enabled" : false,
+    "speed" : 0
+  },
+  "rating" : 2,
+  "resolutionScale" : 1,
+  "safetyBubbleBlend" : 0.097609855,
+  "safetyBubbleEnabled" : false,
+  "safetyBubbleRadius" : 0.64952403,
+  "safetyBubbleShape" : 0.5,
+  "scale" : 1,
+  "sphereRadius" : 0.5,
+  "tileSize" : 2,
+  "worldRotationW" : 0.60876137,
+  "worldRotationX" : 1.3936308e-08,
+  "worldRotationY" : 0.7933534,
+  "worldRotationZ" : 1.3936308e-08
+}

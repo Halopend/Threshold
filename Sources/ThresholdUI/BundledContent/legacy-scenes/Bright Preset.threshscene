@@ -1,0 +1,55 @@
+{
+  "bloomEffect" : {
+    "enabled" : true,
+    "strength" : 0.7048401
+  },
+  "colorIterations" : 15,
+  "colorMix" : 0.61749166,
+  "colorScheme" : "classic",
+  "colorSchemeContrast" : 1.02,
+  "colorSchemeCurve" : -0.3,
+  "colorSchemeGamma" : 0.75,
+  "colorSchemeHighlights" : 0.15,
+  "colorSchemeSaturation" : 1.5,
+  "colorSchemeShadows" : -0.007,
+  "colorSchemeVibrance" : 1,
+  "createdAt" : "2025-01-01T00:00:00Z",
+  "fogEffect" : {
+    "enabled" : true,
+    "intensity" : 0.14822857
+  },
+  "foldingLimit" : 1.1646773,
+  "fractalIterations" : 7,
+  "fractalScale" : 2.8,
+  "fractalType" : "mandelbox",
+  "glowEffect" : {
+    "enabled" : false,
+    "intensity" : 0
+  },
+  "hueRotationEffect" : {
+    "enabled" : true,
+    "intensity" : 0.3,
+    "speed" : 0.059446618
+  },
+  "id" : "00000000-0003-0000-0000-000000000002",
+  "lightingMode" : "staticLight",
+  "lightingPreset" : "Subtle",
+  "maxRaySteps" : 48,
+  "minDistance" : 0.8117829,
+  "name" : "Bright Preset",
+  "position" : [
+    0.10157842,
+    1.3497616,
+    -3.3686383
+  ],
+  "pulseEffect" : {
+    "amount" : 0.1637325,
+    "enabled" : true,
+    "speed" : 0.46227682
+  },
+  "rating" : 0,
+  "safetyBubbleEnabled" : false,
+  "safetyBubbleRadius" : 1.8,
+  "scale" : 1,
+  "sphereRadius" : 0.05
+}

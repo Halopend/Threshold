@@ -37,20 +37,52 @@ public struct SceneLibraryItem: Identifiable, Sendable {
     }
 }
 
-/// The user's scene folder: list / save / delete. MainActor + synchronous:
-/// scene files are a few KB of JSON and the folder holds tens of items, not
+/// One named group of scenes on disk — the writable user folder, or a
+/// read-only bundled folder (starters, legacy corpus). The library lists
+/// several of these and the Scenes tab renders one section per source.
+public struct SceneSource: Identifiable, Sendable {
+    public let id: String
+    public let name: String
+    public let directory: URL
+    /// False for bundled sources: they load but do not accept save/delete.
+    public let isWritable: Bool
+    public var items: [SceneLibraryItem]
+
+    public init(
+        id: String, name: String, directory: URL,
+        isWritable: Bool, items: [SceneLibraryItem] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.directory = directory
+        self.isWritable = isWritable
+        self.items = items
+    }
+}
+
+/// The scene library: a writable user folder plus any read-only bundled
+/// folders, each listed as its own source. MainActor + synchronous: scene
+/// files are a few KB of JSON and each folder holds tens of items, not
 /// thousands — a background pipeline here would be complexity without a win.
 @MainActor
 @Observable
 public final class SceneLibrary {
-    public private(set) var items: [SceneLibraryItem] = []
+    /// All sources in display order: writable user folder first, then bundled.
+    public private(set) var sources: [SceneSource] = []
     /// The last library error (save/delete/list) for the shell to surface.
     public var lastError: String?
 
+    /// The writable user folder (save/delete target).
     public let directory: URL
+    /// Read-only bundled folders shown after the user's, as `(id, name, url)`.
+    private let bundledSpecs: [(id: String, name: String, url: URL)]
 
-    /// `directory` defaults to Application Support/Threshold/Scenes.
-    public init(directory: URL? = nil) {
+    /// `directory` defaults to Application Support/Threshold/Scenes; bundled
+    /// sources default to the ones shipped in the ThresholdUI resource bundle.
+    public init(
+        directory: URL? = nil,
+        bundled: [(id: String, name: String, url: URL)]? = nil
+    ) {
         if let directory {
             self.directory = directory
         } else {
@@ -61,21 +93,57 @@ public final class SceneLibrary {
                 .appendingPathComponent("Threshold", isDirectory: true)
                 .appendingPathComponent("Scenes", isDirectory: true)
         }
+        self.bundledSpecs = bundled ?? Self.defaultBundledSpecs()
         refresh()
     }
 
-    /// Re-list the folder. Undecodable files are skipped (never crash the
-    /// panel on a foreign file dropped into the folder).
+    /// Flat list across every source — the shell's convenience accessor.
+    public var items: [SceneLibraryItem] { sources.flatMap(\.items) }
+
+    /// The bundled scene folders shipped in `BundledContent/` (starters +
+    /// legacy corpus). Missing folders are simply omitted.
+    nonisolated static func defaultBundledSpecs()
+        -> [(id: String, name: String, url: URL)] {
+        guard let root = Bundle.module.url(
+            forResource: "BundledContent", withExtension: nil)
+        else { return [] }
+        return [
+            (id: "bundled", name: "Starters",
+             url: root.appendingPathComponent("scenes", isDirectory: true)),
+            (id: "legacy", name: "Legacy",
+             url: root.appendingPathComponent("legacy-scenes", isDirectory: true)),
+        ]
+    }
+
+    /// Re-list every source. Undecodable files are skipped (never crash the
+    /// panel on a foreign file dropped into a folder). Empty sources are
+    /// dropped so the UI shows only groups that have scenes.
     public func refresh() {
+        var built: [SceneSource] = [
+            SceneSource(
+                id: "user", name: "My Scenes", directory: directory,
+                isWritable: true, items: Self.list(directory))
+        ]
+        for spec in bundledSpecs {
+            let items = Self.list(spec.url)
+            if items.isEmpty { continue }
+            built.append(SceneSource(
+                id: spec.id, name: spec.name, directory: spec.url,
+                isWritable: false, items: items))
+        }
+        // Keep the user source even when empty (its save row lives there).
+        sources = built
+    }
+
+    /// Decode every `.threshscene` in `directory` into library items, sorted
+    /// newest-first. A missing/foreign folder yields an empty list.
+    nonisolated static func list(_ directory: URL) -> [SceneLibraryItem] {
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles])
-        else {
-            items = []
-            return
-        }
-        items = urls
+        else { return [] }
+        return urls
             .filter { $0.pathExtension == "threshscene" }
             .compactMap { url -> SceneLibraryItem? in
                 guard let data = try? Data(contentsOf: url),
@@ -196,18 +264,29 @@ public struct ScenesSection: View {
                     || newName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
-            if actions.library.items.isEmpty {
-                Text("No saved scenes yet — name the current view and Save it, or drop .threshscene files into the library folder.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                LazyVGrid(columns: columns, spacing: DS.Spacing.sm) {
-                    ForEach(actions.library.items) { item in
-                        SceneCard(item: item) {
-                            actions.load(item.url)
-                        } onDelete: {
-                            confirmingDelete = item
+            ForEach(actions.library.sources) { source in
+                if source.items.isEmpty {
+                    if source.isWritable {
+                        Text("No saved scenes yet — name the current view and Save it, or drop .threshscene files into the library folder.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Text("\(source.name.uppercased()) · \(source.items.count)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, DS.Spacing.xxs)
+                    LazyVGrid(columns: columns, spacing: DS.Spacing.sm) {
+                        ForEach(source.items) { item in
+                            SceneCard(
+                                item: item,
+                                canDelete: source.isWritable
+                            ) {
+                                actions.load(item.url)
+                            } onDelete: {
+                                confirmingDelete = item
+                            }
                         }
                     }
                 }
@@ -248,6 +327,7 @@ public struct ScenesSection: View {
 /// One saved-scene card: palette-gradient face + name + fractal + date.
 struct SceneCard: View {
     let item: SceneLibraryItem
+    var canDelete: Bool = true
     let onLoad: () -> Void
     let onDelete: () -> Void
 
@@ -280,8 +360,10 @@ struct SceneCard: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
+            if canDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .accessibilityLabel("\(item.name), \(item.fractalDisplayName)")

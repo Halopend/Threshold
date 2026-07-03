@@ -42,11 +42,7 @@ let package = Package(
         // SwiftUI derived from the catalog; client of the render session.
         .target(
             name: "ThresholdUI",
-            dependencies: ["ThresholdCore", "ThresholdShaderIR", "ThresholdRender"],
-            // Bundled scene/animation library shipped read-only alongside the
-            // user's writable folder. Not named "Resources" (that dir name
-            // breaks iOS/visionOS codesign — see build-quirks memory).
-            resources: [.copy("BundledContent")]
+            dependencies: ["ThresholdCore", "ThresholdShaderIR", "ThresholdRender"]
         ),
         // Input sources: audio analysis (AVAudioEngine + vDSP) publishing
         // into the SignalTable. Hand tracking/gestures land here later.

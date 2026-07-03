@@ -139,6 +139,8 @@ final class AppModel {
     @ObservationIgnored let camera: CameraInteraction
     /// The on-disk scene library behind the Scenes tab.
     @ObservationIgnored let sceneLibrary = SceneLibrary()
+    /// The on-disk clip library behind the Motion ▸ Animate sub-tab.
+    @ObservationIgnored let animationLibrary = AnimationLibrary()
     #if os(macOS)
     /// Arrow-key / WASD camera control (Settings ▸ Input toggles it).
     @ObservationIgnored let keyboardNav = KeyboardCameraNav()
@@ -420,7 +422,10 @@ struct MainView: View {
                     sceneActions: SceneActions(
                         library: model.sceneLibrary,
                         load: { model.open(url: $0) },
-                        saveCurrent: { await model.saveCurrentScene(named: $0) }))
+                        saveCurrent: { await model.saveCurrentScene(named: $0) }),
+                    animationActions: AnimationActions(
+                        library: model.animationLibrary,
+                        load: { model.open(url: $0) }))
             }
             .frame(width: 340)
             .fileImporter(
@@ -502,6 +507,7 @@ final class VisionAppModel {
     @ObservationIgnored let audio: AudioAnalyzer
     @ObservationIgnored let hands: HandTracker
     @ObservationIgnored let sceneLibrary = SceneLibrary()
+    @ObservationIgnored let animationLibrary = AnimationLibrary()
     var lastOpenError: String?
 
     init() throws {
@@ -685,7 +691,10 @@ struct VisionMainView: View {
                 sceneActions: SceneActions(
                     library: model.sceneLibrary,
                     load: { model.open(url: $0) },
-                    saveCurrent: { await model.saveCurrentScene(named: $0) }))
+                    saveCurrent: { await model.saveCurrentScene(named: $0) }),
+                animationActions: AnimationActions(
+                    library: model.animationLibrary,
+                    load: { model.open(url: $0) }))
                 // Distinct nodes for each presentation modifier (stacking
                 // several on one view silently drops some of them).
                 .fileImporter(

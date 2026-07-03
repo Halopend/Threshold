@@ -1,0 +1,113 @@
+{
+  "id": "B252FA60-8FC3-5558-A2F2-ED3D28D228A8",
+  "name": "Newton Heightfield",
+  "createdAt": "2026-06-28T00:00:00Z",
+  "rating": 0,
+  "fractalType": "custom",
+  "fractalIterations": 16,
+  "colorIterations": 16.0,
+  "maxRaySteps": 140,
+  "minDistance": 0.08,
+  "colorMix": 0.55,
+  "position": [
+    0.0,
+    0.0,
+    -8.0
+  ],
+  "scale": 1.0,
+  "detailScale": 1.0,
+  "fractalScale": 2.8,
+  "foldingLimit": 1.0,
+  "sphereRadius": 0.5,
+  "colorScheme": "rainbow",
+  "colorSchemeSaturation": 1.5,
+  "colorSchemeContrast": 1.08,
+  "colorSchemeGamma": 0.85,
+  "colorSchemeVibrance": 0.9,
+  "colorSchemeCurve": 0.0,
+  "colorSchemeShadows": -0.02,
+  "colorSchemeHighlights": 0.03,
+  "lightingMode": "static",
+  "lightingPreset": "Custom",
+  "lightingSoftness": 0.22,
+  "bloomEffect": {
+    "enabled": true,
+    "strength": 0.2
+  },
+  "fogEffect": {
+    "enabled": true,
+    "intensity": 0.14
+  },
+  "glowEffect": {
+    "enabled": true,
+    "intensity": 0.12
+  },
+  "gradientCycleEffect": {
+    "enabled": false,
+    "mirrorLoop": false,
+    "speed": 0.05
+  },
+  "hueRotationEffect": {
+    "enabled": false,
+    "intensity": 1.0,
+    "speed": 0.05
+  },
+  "pulseEffect": {
+    "amount": 0.0,
+    "enabled": false,
+    "speed": 0.0
+  },
+  "safetyBubbleEnabled": false,
+  "safetyBubbleRadius": 0.0,
+  "safetyBubbleShape": 0.5,
+  "safetyBubbleBlend": 0.0,
+  "resolutionScale": 1.0,
+  "tileSize": 0,
+  "worldRotationW": 1.0,
+  "worldRotationX": 0.0,
+  "worldRotationY": 0.0,
+  "worldRotationZ": 0.0,
+  "formulaParamValues": [
+    1.7432,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "embeddedFormula": {
+    "schemaVersion": 1,
+    "id": "com.puppypower.threshold.embedded.newtonheightfield",
+    "name": "Newton Heightfield",
+    "category": "Newton / Heightfield",
+    "author": "Knighty (Fragmentarium), ported by Threshold",
+    "description": "2.5D heightfield built from the Newton-Raphson iteration of z^3 - 1 in the complex plane. Each (x,y) point converges toward one of the three cube roots of unity; the iteration's distance-to-root and accumulated derivative form a smooth height surface that the Slope control tilts into 3D. The orbit trap records the converged complex coordinate for coloring the three basins of attraction.",
+    "functionStem": "NewtonHeightfield",
+    "metalSource": "// ===== Newton (z^3 - 1) 2.5D Heightfield =====\n// Port of Knighty's NewtonHeightfield.frag.\n// Source init(): k = 1/sqrt(1 + Slope^2). Newton iteration on z = pos.xy for z^3-1,\n// tracking derivative dz. do{}while loop -> bounded for with delta2 break (loop always\n// runs once). Final DE = max(length(pos)-2, (pos.z - Slope*dd)*k) where dd is the\n// smooth distance-to-nearest-root divided by |dz|.\n// Param: Slope (params[0]). Iterations -> iterations (NOT a param). ColorIterations unused\n// by source coloring (orbit trap updates every iteration); we honor colorIterations for\n// the trap window like the Threshold convention.\n\nFORCE_INLINE float DE_NewtonHeightfield(float3 pos, FormulaParams fp, float3x3 rot,\n                                        int iterations, int colorIterations,\n                                        thread OrbitData& orbit) {\n    float slope = fp.params[0];\n    float k = 1.0f / sqrt(1.0f + slope * slope);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float2 z = p.xy;\n    float r2 = dot(z, z);\n    float2 dz = float2(1.0f, 0.0f);\n\n    float trap = 1e20f; int trapIter = 0; float3 trapPos = p;\n    int trapIterations = min(max(colorIterations, 0), iterations);\n\n    int n = clamp(iterations, 1, 100);\n    int i = 0;\n    for (; i < n; ++i) {\n        float2 az = z;\n        float ir2 = 1.0f / max(r2, 1e-12f);\n\n        float2 tmp = float2(1.0f, 0.0f) +\n            float2(-z.x * (z.x * z.x - 3.0f * z.y * z.y),\n                    z.y * (z.y * z.y - 3.0f * z.x * z.x)) * ir2 * ir2 * ir2;\n\n        dz = (2.0f / 3.0f) * float2(dz.x * tmp.x - dz.y * tmp.y,\n                                    dz.x * tmp.y + dz.y * tmp.x);\n\n        z = (1.0f / 3.0f) * float2(2.0f * z.x + (z.x * z.x - z.y * z.y) * ir2 * ir2,\n                                   2.0f * z.y * (1.0f - z.x * ir2 * ir2));\n\n        r2 = dot(z, z);\n\n        // orbitTrap = min(orbitTrap, abs(vec4(z.x, z.y, 0, r2))) -> track min r2,\n        // store converged complex coord (z.x, z.y) for basin coloring.\n        if (i < trapIterations && r2 < trap) {\n            trap = r2; trapIter = i; trapPos = float3(z.x, z.y, 0.0f);\n        }\n\n        float2 d = z - az;\n        float delta2 = dot(d, d);\n        if (delta2 <= 0.01f) { ++i; break; }\n    }\n\n    const float root3 = 1.7320508075688772f; // sqrt(3)\n    float dist = min(length(z - float2(1.0f, 0.0f)),\n                 min(length(z - float2(-0.5f, 0.5f * root3)),\n                     length(z - float2(-0.5f, -0.5f * root3))));\n    float dd = length(dz);\n    float dde = 0.5f * dist * log(max(dist, 1e-12f)) / max(dd, 1e-12f);\n\n    orbit.trap = trap;\n    orbit.trapIteration = trapIter;\n    orbit.trapPosition = trapPos;\n    orbit.finalP = float3(z.x, z.y, p.z);\n    orbit.iterationsUsed = i;\n\n    return max(length(p) - 2.0f, (p.z - slope * dde) * k);\n}\n\nFORCE_INLINE float DE_NewtonHeightfield_Dist(float3 pos, FormulaParams fp, float3x3 rot, int iterations) {\n    float slope = fp.params[0];\n    float k = 1.0f / sqrt(1.0f + slope * slope);\n\n    bool hasRotation = hasRot1Precomputed(fp);\n    float3 p = hasRotation ? rot * pos : pos;\n\n    float2 z = p.xy;\n    float r2 = dot(z, z);\n    float2 dz = float2(1.0f, 0.0f);\n\n    int n = clamp(iterations, 1, 100);\n    for (int i = 0; i < n; ++i) {\n        float2 az = z;\n        float ir2 = 1.0f / max(r2, 1e-12f);\n\n        float2 tmp = float2(1.0f, 0.0f) +\n            float2(-z.x * (z.x * z.x - 3.0f * z.y * z.y),\n                    z.y * (z.y * z.y - 3.0f * z.x * z.x)) * ir2 * ir2 * ir2;\n\n        dz = (2.0f / 3.0f) * float2(dz.x * tmp.x - dz.y * tmp.y,\n                                    dz.x * tmp.y + dz.y * tmp.x);\n\n        z = (1.0f / 3.0f) * float2(2.0f * z.x + (z.x * z.x - z.y * z.y) * ir2 * ir2,\n                                   2.0f * z.y * (1.0f - z.x * ir2 * ir2));\n\n        r2 = dot(z, z);\n\n        float2 d = z - az;\n        float delta2 = dot(d, d);\n        if (delta2 <= 0.01f) break;\n    }\n\n    const float root3 = 1.7320508075688772f;\n    float dist = min(length(z - float2(1.0f, 0.0f)),\n                 min(length(z - float2(-0.5f, 0.5f * root3)),\n                     length(z - float2(-0.5f, -0.5f * root3))));\n    float dd = length(dz);\n    float dde = 0.5f * dist * log(max(dist, 1e-12f)) / max(dd, 1e-12f);\n\n    return max(length(p) - 2.0f, (p.z - slope * dde) * k);\n}",
+    "params": [
+      {
+        "index": 0,
+        "name": "Slope",
+        "default": 1.7432,
+        "min": -10,
+        "max": 10,
+        "step": 0.01
+      }
+    ],
+    "defaultIterations": 16,
+    "defaultColorIterations": 16,
+    "supportedEffectTags": [
+      "safetyBubble"
+    ]
+  }
+}
