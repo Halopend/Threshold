@@ -732,8 +732,42 @@ public struct StatsSection: View {
                 .onChange(of: autoQuality) { _, on in
                     mirror.setQualityGovernor(on ? .platformDefault : nil)
                 }
+            // Render Quality: the USER'S CEILING (ADR-003). With Auto Quality
+            // on, the governor adapts below it to hold fps; off, this is the
+            // exact render scale. Mac: caps the MetalFX input scale; Vision
+            // Pro: caps the compositor renderQuality.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Render Quality")
+                    Slider(value: renderQuality, in: 0.1...1.0)
+                    Text(String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100))
+                        .monospacedDigit().foregroundStyle(.secondary)
+                        .frame(minWidth: 44, alignment: .trailing)
+                }
+                HStack {
+                    Text(autoQuality
+                         ? "ceiling — Auto Quality adapts below it to hold fps"
+                         : "exact render scale (Auto Quality off)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "now %.0f%%", mirror.diagnostics.renderScale * 100))
+                        .font(.caption2).monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .moduleCard(.green)
+    }
+
+    /// Render-quality ceiling binding (Float ↔ Double, setRenderTuning contract).
+    private var renderQuality: SwiftUI.Binding<Double> {
+        SwiftUI.Binding(
+            get: { Double(mirror.renderTuning.manualRenderScale) },
+            set: { newValue in
+                var next = mirror.renderTuning
+                next.manualRenderScale = Float(newValue)
+                mirror.setRenderTuning(next)
+            })
     }
 }
 
@@ -772,30 +806,8 @@ public struct PipelineSection: View {
                 LabeledContent("Baked", value: mirror.diagnostics.bakedConstants)
                     .font(.caption)
             }
-            // Live effective quality — what the encoder actually rendered at
-            // this frame (the governor's adaptive value under the user's
-            // ceiling). Always shown so "what quality am I getting?" never
-            // requires inference.
-            LabeledContent(
-                "Effective quality",
-                value: String(format: "%.0f%%", mirror.diagnostics.renderScale * 100))
-                .font(.caption)
-            // Render Quality: the USER'S CEILING (ADR-003). With Auto Quality
-            // on, the governor adapts below it to hold fps; off, this is the
-            // exact render scale. On Mac it feeds MetalFX temporal upscaling;
-            // on Vision Pro it caps the compositor renderQuality.
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("Render Quality")
-                    Slider(value: renderScale, in: 0.1...1.0)
-                    Text(String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100))
-                        .monospacedDigit().foregroundStyle(.secondary)
-                        .frame(minWidth: 44, alignment: .trailing)
-                }
-                Text("ceiling — Auto Quality adapts below it to hold fps")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-
+            // (Render Quality lives in the Session card next to Auto
+            // Quality — this card is the shader-pipeline readout + bakes.)
             Toggle("Specialized Pipeline", isOn: tuning(\.specializationEnabled))
             Group {
                 Toggle("Bake Iterations (unroll)", isOn: tuning(\.bakeIterations))
@@ -851,16 +863,6 @@ public struct PipelineSection: View {
             })
     }
 
-    /// The manual render-scale slider binding (Float ↔ Double).
-    private var renderScale: SwiftUI.Binding<Double> {
-        SwiftUI.Binding(
-            get: { Double(mirror.renderTuning.manualRenderScale) },
-            set: { newValue in
-                var next = mirror.renderTuning
-                next.manualRenderScale = Float(newValue)
-                mirror.setRenderTuning(next)
-            })
-    }
 }
 
 // MARK: - WarpStackEdit (pure, testable)

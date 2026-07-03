@@ -561,3 +561,23 @@ NOT measured: Vision Pro FPS for either backend (device-only). The compute
 backend also has no resolution lever yet (renderQuality is foveation-gated;
 an internal-scale intermediate would be its equivalent — add if the device
 A/B makes compute worth keeping).
+
+## Backend decision + Render Quality placement — 2026-07-03 (perf block 14)
+
+**DECISION: fragment + foveation is the visionOS backend.** Losing foveation
+is not worth compute's theoretical wins on this hardware. The compute backend
+stays in the tree as a device-A/B instrument only (Settings caption says so
+explicitly); fragment remains the default and the recommendation.
+
+**Device datapoint (user-reported, Vision Pro):** the raster path's
+[[depth(any)]] writes are confirmed working in-headset — a passthrough hand
+entering the fractal is occluded when it crosses the marched surface. That
+validates the projection-consistent depth formula (view.proj through the hit
+t) end-to-end on device, including under the cone prepass.
+
+**Render Quality moved to the Session card** (next to Auto Quality, where a
+user looks for quality) instead of the bottom of the Shader Pipeline card:
+slider (the ADR-003 ceiling) + a live "now N%" effective-quality readout, with
+the caption switching between ceiling/exact-scale wording based on the Auto
+Quality state. Pipeline card stays the shader-internals surface (bakes, cone
+controls, pipeline readout).

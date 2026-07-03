@@ -37,9 +37,10 @@ public struct RenderBackendSection: View {
                 }
             }
             .pickerStyle(.segmented)
-            Text("Applies the next time the immersive space opens. Compute is "
-                 + "an experimental A/B: it disables foveated rendering and "
-                 + "adds copy passes — compare GPU ms per scene.")
+            Text("Fragment (foveated) is the shipping choice — compute loses "
+                 + "foveated rendering and adds copy passes. Compute exists "
+                 + "only for on-device A/B measurement. Applies the next time "
+                 + "the immersive space opens.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
