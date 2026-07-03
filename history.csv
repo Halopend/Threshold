@@ -1,0 +1,40 @@
+time,rev,note,scene,maxSteps,frames,resolution,medianMs,meanMs,p95Ms,minMs,maxMs,fps,goal
+2026-07-03T20:42:53Z,6924c55+dirty,"60-frame rebaseline after perf block 7 (rounds 1-10)",bench-mandelbox,120,60,1024,8.09,8.02,8.11,7.85,8.12,123.5,-
+2026-07-03T20:42:53Z,6924c55+dirty,"60-frame rebaseline after perf block 7 (rounds 1-10)",bench-mandelbox,120,60,1800,23.78,23.79,24.06,23.23,24.10,42.0,-
+2026-07-03T20:42:53Z,6924c55+dirty,"60-frame rebaseline after perf block 7 (rounds 1-10)",bench-mandelbox,120,60,2048,30.37,30.48,31.67,29.77,32.20,32.9,PASS(≥30)
+2026-07-03T20:43:43Z,6924c55+dirty,"round 11: stats atomic baked off in bench variants",bench-mandelbox,120,60,1024,7.15,7.02,7.24,6.78,7.27,139.8,-
+2026-07-03T20:43:43Z,6924c55+dirty,"round 11: stats atomic baked off in bench variants",bench-mandelbox,120,60,1800,20.90,20.89,21.34,19.93,21.36,47.9,-
+2026-07-03T20:43:43Z,6924c55+dirty,"round 11: stats atomic baked off in bench variants",bench-mandelbox,120,60,2048,26.79,26.68,26.95,25.92,27.06,37.3,PASS(≥30)
+2026-07-03T20:44:19Z,6924c55+dirty,"round 12: 3-tap forward-diff normals (was 4-tap tetrahedron)",bench-mandelbox,120,60,1024,6.90,6.89,7.19,6.77,7.20,145.0,-
+2026-07-03T20:44:19Z,6924c55+dirty,"round 12: 3-tap forward-diff normals (was 4-tap tetrahedron)",bench-mandelbox,120,60,1800,20.27,20.26,20.42,19.90,20.67,49.3,-
+2026-07-03T20:44:19Z,6924c55+dirty,"round 12: 3-tap forward-diff normals (was 4-tap tetrahedron)",bench-mandelbox,120,60,2048,26.23,26.65,28.12,25.85,28.37,38.1,PASS(≥30)
+2026-07-03T20:44:42Z,6924c55+dirty,"round 12b: normal center = march hitRadius (3 taps total, no re-read)",bench-mandelbox,120,60,1024,6.67,6.78,7.34,6.65,7.56,150.0,-
+2026-07-03T20:44:42Z,6924c55+dirty,"round 12b: normal center = march hitRadius (3 taps total, no re-read)",bench-mandelbox,120,60,1800,19.52,19.58,19.69,19.50,20.32,51.2,-
+2026-07-03T20:44:42Z,6924c55+dirty,"round 12b: normal center = march hitRadius (3 taps total, no re-read)",bench-mandelbox,120,60,2048,25.02,25.06,25.26,25.00,25.34,40.0,PASS(≥30)
+2026-07-03T20:45:27Z,6924c55+dirty,"round 13: AO 3->2 taps",bench-mandelbox,120,60,1024,6.80,6.86,7.93,6.49,8.03,147.1,-
+2026-07-03T20:45:27Z,6924c55+dirty,"round 13: AO 3->2 taps",bench-mandelbox,120,60,1800,21.88,21.74,23.55,19.22,23.96,45.7,-
+2026-07-03T20:45:27Z,6924c55+dirty,"round 13: AO 3->2 taps",bench-mandelbox,120,60,2048,29.33,28.13,30.73,24.43,31.08,34.1,PASS(≥30)
+2026-07-03T20:46:06Z,6924c55+dirty,"round 13 re-run (variance check)",bench-mandelbox,120,60,1024,6.56,6.72,7.43,6.49,8.49,152.4,-
+2026-07-03T20:46:06Z,6924c55+dirty,"round 13 re-run (variance check)",bench-mandelbox,120,60,1800,19.41,19.58,20.39,19.06,20.59,51.5,-
+2026-07-03T20:46:06Z,6924c55+dirty,"round 13 re-run (variance check)",bench-mandelbox,120,60,2048,24.95,25.05,26.36,24.44,26.79,40.1,PASS(≥30)
+2026-07-03T20:46:33Z,6924c55+dirty,"round 14: grading identity fast paths (skip ACES/pow at defaults)",bench-mandelbox,120,60,1024,7.17,6.99,7.43,6.48,7.51,139.5,-
+2026-07-03T20:46:33Z,6924c55+dirty,"round 14: grading identity fast paths (skip ACES/pow at defaults)",bench-mandelbox,120,60,1800,20.16,20.48,21.72,19.58,21.87,49.6,-
+2026-07-03T20:46:33Z,6924c55+dirty,"round 14: grading identity fast paths (skip ACES/pow at defaults)",bench-mandelbox,120,60,2048,24.94,24.99,25.23,24.43,25.99,40.1,PASS(≥30)
+2026-07-03T21:00:39Z,8d1e757+dirty,"round 15: threadgroup tile cone-march prepass (hierarchical start depth)",bench-mandelbox,120,60,1024,7.31,7.31,7.32,7.30,7.33,136.8,-
+2026-07-03T21:00:39Z,8d1e757+dirty,"round 15: threadgroup tile cone-march prepass (hierarchical start depth)",bench-mandelbox,120,60,1800,20.68,20.70,20.78,20.66,20.92,48.4,-
+2026-07-03T21:00:39Z,8d1e757+dirty,"round 15: threadgroup tile cone-march prepass (hierarchical start depth)",bench-mandelbox,120,60,2048,26.39,26.45,26.49,26.36,28.03,37.9,PASS(≥30)
+2026-07-03T21:03:43Z,8d1e757+dirty,"round 15b: cone prepass as separate coarse dispatch (no barrier/idle threads)",bench-mandelbox,120,60,1024,3.86,4.63,6.76,3.84,7.32,258.8,-
+2026-07-03T21:03:43Z,8d1e757+dirty,"round 15b: cone prepass as separate coarse dispatch (no barrier/idle threads)",bench-mandelbox,120,60,1800,10.23,10.23,10.24,10.21,10.31,97.8,-
+2026-07-03T21:03:43Z,8d1e757+dirty,"round 15b: cone prepass as separate coarse dispatch (no barrier/idle threads)",bench-mandelbox,120,60,2048,12.88,12.90,12.91,12.86,13.69,77.6,PASS(≥30)
+2026-07-03T21:07:25Z,8d1e757+dirty,"round 16: CPU caching (texture/stats reuse, bench readback skip, env hoists)",bench-mandelbox,120,60,1024,4.02,4.04,4.28,3.84,4.29,248.8,-
+2026-07-03T21:07:25Z,8d1e757+dirty,"round 16: CPU caching (texture/stats reuse, bench readback skip, env hoists)",bench-mandelbox,120,60,1800,10.57,10.52,10.78,10.22,11.03,94.6,-
+2026-07-03T21:07:25Z,8d1e757+dirty,"round 16: CPU caching (texture/stats reuse, bench readback skip, env hoists)",bench-mandelbox,120,60,2048,13.23,13.24,13.54,12.88,13.80,75.6,PASS(≥30)
+2026-07-03T21:08:02Z,8d1e757+dirty,"round 17: specialized mathMode .fast + bit-pattern NaN guard",bench-mandelbox,120,60,1024,3.85,3.85,3.86,3.84,3.86,259.8,-
+2026-07-03T21:08:02Z,8d1e757+dirty,"round 17: specialized mathMode .fast + bit-pattern NaN guard",bench-mandelbox,120,60,1800,10.23,10.25,10.33,10.21,10.82,97.8,-
+2026-07-03T21:08:02Z,8d1e757+dirty,"round 17: specialized mathMode .fast + bit-pattern NaN guard",bench-mandelbox,120,60,2048,12.91,13.08,13.57,12.86,13.62,77.5,PASS(≥30)
+2026-07-03T21:14:35Z,8d1e757+dirty,"round 15c: verify-panel fixes (3x prepass margin, poisoned-start restart, far-plane guard)",bench-mandelbox,120,60,1024,4.33,4.22,4.39,4.01,4.49,230.8,-
+2026-07-03T21:14:35Z,8d1e757+dirty,"round 15c: verify-panel fixes (3x prepass margin, poisoned-start restart, far-plane guard)",bench-mandelbox,120,60,1800,11.07,11.13,11.48,10.87,11.64,90.3,-
+2026-07-03T21:14:35Z,8d1e757+dirty,"round 15c: verify-panel fixes (3x prepass margin, poisoned-start restart, far-plane guard)",bench-mandelbox,120,60,2048,14.04,14.03,14.41,13.75,14.61,71.2,PASS(≥30)
+2026-07-03T21:26:31Z,3fb2dd7,"Live cone-march prepass (Mac/iOS session encoder) + perf-tracked commit flow",bench-mandelbox,120,60,1024,4.01,4.03,4.03,4.00,4.87,249.2,-
+2026-07-03T21:26:31Z,3fb2dd7,"Live cone-march prepass (Mac/iOS session encoder) + perf-tracked commit flow",bench-mandelbox,120,60,1800,10.86,10.90,11.00,10.84,11.68,92.1,-
+2026-07-03T21:26:31Z,3fb2dd7,"Live cone-march prepass (Mac/iOS session encoder) + perf-tracked commit flow",bench-mandelbox,120,60,2048,13.66,13.69,13.87,13.63,14.24,73.2,PASS(≥30)
