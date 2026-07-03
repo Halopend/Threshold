@@ -281,9 +281,31 @@ if let embedded = envelope.embeddedDE {
 let specialized: SpecializedMarch?
 if opts.specialize, program == nil {
     do {
+        // Bake the function-constant knobs each env flag enables, from the
+        // resolved values (function constants 1–5; the image is identical —
+        // SpecializationTests). A/B harness: THRESHOLD_SPEC_ITERATIONS /
+        // _MAXSTEPS / _HASOPS / _MAPMODE / _AO = 1. Read once here: a static
+        // scene resolves constant values; an animated value keeps this initial
+        // one and would surface as a --compare mismatch, not a silent drift.
+        let r = engine.resolve().values
+        let flags = ProcessInfo.processInfo.environment
+        func on(_ key: String) -> Bool { flags[key] == "1" }
+        let spec = MarchSpec(
+            iterations: GPUContext.bakeIterations
+                ? Int(r[Int(THRESH_SLOT_ITERATIONS)]) : nil,
+            maxSteps: on("THRESHOLD_SPEC_MAXSTEPS")
+                ? Int(r[Int(THRESH_SLOT_MAX_STEPS)]) : nil,
+            hasWarpOps: on("THRESHOLD_SPEC_HASOPS") ? !ops.isEmpty : nil,
+            colorMapMode: on("THRESHOLD_SPEC_MAPMODE")
+                ? Int(r[Int(THRESH_SLOT_MAP_MODE)]) : nil,
+            aoEnabled: on("THRESHOLD_SPEC_AO")
+                ? (r[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil)
         specialized = try context.makeSpecializedMarch(
-            deFunctionName: descriptor.mslFunctionName)
-        if !opts.quiet { print("specialized pipeline: \(descriptor.mslFunctionName)") }
+            deFunctionName: descriptor.mslFunctionName, spec: spec)
+        if !opts.quiet {
+            print("specialized pipeline: \(descriptor.mslFunctionName)"
+                + (spec.isEmpty ? "" : " baked[\(spec.summary)]"))
+        }
     } catch {
         die("--specialize failed: \(error)")
     }

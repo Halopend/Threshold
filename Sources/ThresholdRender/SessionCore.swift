@@ -61,6 +61,10 @@ final class SessionCore {
     /// system-lane writer. nil = disabled.
     private var governorConfig: QualityGovernorConfig?
     private var governor = QualityGovernor()
+    /// Live render-pipeline tuning (specialization on/off, iteration bake),
+    /// seeded from the env and overridden by `setRenderTuning`. Carried on the
+    /// frame's RenderRequest for the encoder to read.
+    private var tuning = RenderTuning.envDefault
     /// The AUTHORED warp stack — what snapshots/editors show.
     private(set) var authoredStack: [WarpOpDTO] = []
     /// The simplified buffer the GPU sees (plan §5.2). Rebuilt only on
@@ -235,7 +239,7 @@ final class SessionCore {
             request: RenderRequest(
                 uniforms: uniforms, params: params, ops: gpuOps,
                 palette: palette.stops, width: width, height: height,
-                renderScale: renderScale),
+                renderScale: renderScale, tuning: tuning),
             resolved: resolved,
             frameIndex: frameIndex,
             time: clock.now,
@@ -316,6 +320,9 @@ final class SessionCore {
             if config == nil {
                 governor.reset()
             }
+
+        case .setRenderTuning(let newTuning):
+            tuning = newTuning
 
         case .captureScene(let slot):
             // Authored content only: scene lane + structure. Transient lanes

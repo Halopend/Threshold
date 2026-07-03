@@ -8,6 +8,13 @@
 // `#define THRESH_SPEC_DE de_<name>` calls the built-in DIRECTLY and the
 // compiler inlines it through mapScene/march.
 //
+// On top of that direct call, the variant bakes compile-time function
+// constants (currently the DE iteration count, function_constant(1)) so the
+// fold loop UNROLLS. The expensive part is the front-end MSL compile of the
+// specialized SOURCE (~100–400 ms); that library is cached PER DE and reused
+// across baked-constant variants, so a new iteration count is only a cheap
+// back-end pipeline specialization, not a source recompile.
+//
 // Contract:
 // - The generic pipeline is the ALWAYS-CORRECT fallback; a specialization is
 //   a pure performance overlay producing the identical image
@@ -33,15 +40,71 @@ public struct SpecializedMarch: @unchecked Sendable {
     public let deTable: MTLVisibleFunctionTable
 }
 
+// MARK: - MarchSpec
+
+/// The compile-time constants baked into a specialized march variant
+/// (function_constant indices 1–5; see RaymarchCore.metal's registry). Each
+/// `nil` field leaves that constant at its -1 sentinel — "use the runtime
+/// value" — so the variant stays BIT-IDENTICAL to generic; a set field bakes
+/// the value so the compiler can specialize (unroll the fold loop, DCE the
+/// warp interpreter, drop the color-mode switch, skip AO). The cache keys
+/// variants by this whole struct, so each distinct combination is one cheap
+/// pipeline specialization off the shared per-DE library.
+public struct MarchSpec: Sendable, Hashable {
+    /// DE fold-loop bound (function_constant 1).
+    public var iterations: Int?
+    /// March step cap (function_constant 2).
+    public var maxSteps: Int?
+    /// Warp stack present (function_constant 3): false → DCE the interpreter.
+    public var hasWarpOps: Bool?
+    /// Color mapping mode (function_constant 4).
+    public var colorMapMode: Int?
+    /// AO enabled (function_constant 5): false → skip the 5-tap AO.
+    public var aoEnabled: Bool?
+
+    public init(iterations: Int? = nil, maxSteps: Int? = nil,
+                hasWarpOps: Bool? = nil, colorMapMode: Int? = nil,
+                aoEnabled: Bool? = nil) {
+        self.iterations = iterations
+        self.maxSteps = maxSteps
+        self.hasWarpOps = hasWarpOps
+        self.colorMapMode = colorMapMode
+        self.aoEnabled = aoEnabled
+    }
+
+    /// Nothing baked — the variant is just the direct-call inline.
+    public var isEmpty: Bool {
+        iterations == nil && maxSteps == nil && hasWarpOps == nil
+            && colorMapMode == nil && aoEnabled == nil
+    }
+
+    /// Stable cache-key fragment.
+    var keyFragment: String {
+        func i(_ v: Int?) -> String { v.map(String.init) ?? "-" }
+        func b(_ v: Bool?) -> String { v.map { $0 ? "1" : "0" } ?? "-" }
+        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))"
+    }
+
+    /// Human-readable summary of what's baked (for the diagnostics readout).
+    public var summary: String {
+        var parts: [String] = []
+        if let iterations { parts.append("iters=\(iterations)") }
+        if let maxSteps { parts.append("steps=\(maxSteps)") }
+        if let hasWarpOps { parts.append(hasWarpOps ? "ops" : "no-ops") }
+        if let colorMapMode { parts.append("map=\(colorMapMode)") }
+        if let aoEnabled { parts.append(aoEnabled ? "ao" : "no-ao") }
+        return parts.joined(separator: ", ")
+    }
+}
+
 extension GPUContext {
-    /// Compile the march variant that calls `deFunctionName` directly.
-    /// `auxOutputs` additionally bakes THRESH_AUX true (the temporal-upscale
-    /// input variant — the live path pairs specialization with upscaling).
-    /// EXPENSIVE (a full library compile, ~100–400 ms) — call off the render
-    /// thread; the OS Metal compiler cache makes warm relaunches fast.
-    public func makeSpecializedMarch(
-        deFunctionName: String, auxOutputs: Bool = false
-    ) throws -> SpecializedMarch {
+    /// Compile the specialized march SOURCE library for a built-in DE — the
+    /// expensive front-end compile (~100–400 ms). Reused across every
+    /// baked-constant variant of the same DE, so call it ONCE per DE and keep
+    /// the result. The specialized source `#define`s THRESH_SPEC_DE so the DE
+    /// is called directly and inlined (and, unlike the generic library,
+    /// declares the iteration function constant).
+    func compileSpecializedLibrary(deFunctionName: String) throws -> MTLLibrary {
         guard DERegistry.builtin.contains(where: { $0.mslFunctionName == deFunctionName })
         else { throw RenderError.missingFunction("not a built-in DE: \(deFunctionName)") }
 
@@ -57,31 +120,64 @@ extension GPUContext {
         // measurement-seam override — a specialized variant must never differ
         // from the generic pipeline it replaces).
         options.mathMode = GPUContext.mathModeOverride ?? .safe
-        let library: MTLLibrary
         do {
-            library = try device.makeLibrary(source: source, options: options)
+            return try device.makeLibrary(source: source, options: options)
         } catch {
             throw RenderError.shaderCompileFailed(
                 "specialized(\(deFunctionName)): \(String(describing: error))")
         }
+    }
 
+    /// Build a march variant pipeline from an ALREADY-COMPILED specialized
+    /// library, baking the aux + iteration function constants. Cheaper than a
+    /// source recompile — it reuses `library`, running only the back-end
+    /// pipeline specialization (which is where the loop unrolling happens).
+    ///
+    /// An empty `spec` bakes every constant to the -1 sentinel (the shader
+    /// reads its runtime values — identical image, no specialization); set
+    /// fields bake their value so the compiler unrolls / DCEs / drops branches.
+    /// The constants are ALWAYS provided so they are never referenced-but-
+    /// undefined on the specialized library that declares them.
+    func makeSpecializedMarch(
+        from library: MTLLibrary, deFunctionName: String,
+        spec: MarchSpec = MarchSpec(), auxOutputs: Bool = false
+    ) throws -> SpecializedMarch {
         let pipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "march_offscreen",
-            deFunctions: builtinDEFunctions, auxOutputs: auxOutputs)
+            deFunctions: builtinDEFunctions, auxOutputs: auxOutputs, spec: spec)
         let table = try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized(\(deFunctionName)) DE table")
         return SpecializedMarch(pipeline: pipeline, deTable: table)
+    }
+
+    /// One-shot compile + build (the CLI batch tool and tests): compiles the
+    /// specialized source library and builds a single variant pipeline.
+    /// EXPENSIVE (a full library compile) — call off the render thread; the
+    /// live session goes through SpecializationCache, which reuses the library.
+    public func makeSpecializedMarch(
+        deFunctionName: String, spec: MarchSpec = MarchSpec(), auxOutputs: Bool = false
+    ) throws -> SpecializedMarch {
+        let library = try compileSpecializedLibrary(deFunctionName: deFunctionName)
+        return try makeSpecializedMarch(
+            from: library, deFunctionName: deFunctionName,
+            spec: spec, auxOutputs: auxOutputs)
     }
 }
 
 /// Non-blocking cache: the render thread calls `lookup` each frame; a miss
 /// kicks off ONE background compile and keeps returning nil until it lands.
 /// Compiler-checked Sendable (a Mutex over Sendable state).
+///
+/// Two-level cache: the specialized SOURCE library is compiled once per DE
+/// (`libraries`), then variant pipelines keyed by (DE, iterations, aux) are
+/// built from it (`ready`). So changing only the iteration count re-runs the
+/// cheap back-end specialization, never the front-end source compile.
 public final class SpecializationCache: Sendable {
     private struct State {
-        var ready: [String: SpecializedMarch] = [:]
-        var inFlight: Set<String> = []
+        var libraries: [String: MTLLibrary] = [:]  // per DE function name
+        var ready: [String: SpecializedMarch] = [:]  // per (DE, iters, aux)
+        var inFlight: Set<String> = []               // variant keys
     }
 
     private let context: GPUContext
@@ -91,35 +187,62 @@ public final class SpecializationCache: Sendable {
         self.context = context
     }
 
-    /// The specialized pipeline for a built-in DE function name, if compiled.
-    /// A miss schedules the compile (once) and returns nil — render generic.
-    /// `auxOutputs` selects the temporal-upscale input variant (cached
-    /// separately — the live path needs both while the scale crosses 1).
-    public func lookup(deFunctionName: String, auxOutputs: Bool = false) -> SpecializedMarch? {
-        let key = auxOutputs ? "\(deFunctionName)#aux" : deFunctionName
+    private static func variantKey(
+        _ de: String, _ spec: MarchSpec, _ aux: Bool
+    ) -> String {
+        "\(de)#\(spec.keyFragment)#\(aux ? "aux" : "base")"
+    }
+
+    /// The specialized pipeline for a built-in DE, if compiled. A miss
+    /// schedules the compile (once per variant) and returns nil — render
+    /// generic. `spec` bakes the function-constant knobs (iterations, max
+    /// steps, has-ops, color-map mode, AO) so the compiler specializes; an
+    /// empty spec is the plain direct-call inline. `auxOutputs` selects the
+    /// temporal-upscale input variant (cached separately — the live path needs
+    /// both while the scale crosses 1).
+    public func lookup(
+        deFunctionName: String, spec: MarchSpec = MarchSpec(), auxOutputs: Bool = false
+    ) -> SpecializedMarch? {
+        let key = Self.variantKey(deFunctionName, spec, auxOutputs)
+        if let hit = state.withLock({ $0.ready[key] }) { return hit }
+
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
             return s.inFlight.insert(key).inserted
         }
-        if let hit = state.withLock({ $0.ready[key] }) { return hit }
 
         if shouldCompile {
             let context = context
             Task.detached(priority: .utility) { [self] in
-                let compiled = try? context.makeSpecializedMarch(
-                    deFunctionName: deFunctionName, auxOutputs: auxOutputs)
+                // Resolve the specialized SOURCE library (compile once per DE;
+                // a rare concurrent double-compile across two variant lookups
+                // is merely wasteful — the OS Metal cache dedups — and never
+                // incorrect, so no separate in-flight tracking).
+                let library: MTLLibrary? = resolveLibrary(deFunctionName)
+                let compiled = library.flatMap {
+                    try? context.makeSpecializedMarch(
+                        from: $0, deFunctionName: deFunctionName,
+                        spec: spec, auxOutputs: auxOutputs)
+                }
                 state.withLock { s in
                     s.inFlight.remove(key)
                     // A failed compile leaves no entry: the generic pipeline
-                    // simply keeps rendering (and we do not retry-storm — the
-                    // name goes back to compile-once on the next lookup miss
-                    // only because inFlight was cleared; failures are
-                    // permanent per session for a bad name, transient OOM
-                    // retries are acceptable).
+                    // keeps rendering. inFlight was cleared, so the next lookup
+                    // miss retries (fine for transient OOM; a structurally bad
+                    // name simply never lands).
                     if let compiled { s.ready[key] = compiled }
                 }
             }
         }
         return nil
+    }
+
+    /// Get-or-compile the per-DE specialized source library.
+    private func resolveLibrary(_ deFunctionName: String) -> MTLLibrary? {
+        if let lib = state.withLock({ $0.libraries[deFunctionName] }) { return lib }
+        guard let lib = try? context.compileSpecializedLibrary(
+            deFunctionName: deFunctionName) else { return nil }
+        state.withLock { $0.libraries[deFunctionName] = lib }
+        return lib
     }
 }

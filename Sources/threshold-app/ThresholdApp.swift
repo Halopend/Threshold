@@ -152,9 +152,14 @@ struct ThresholdApp: App {
             }
             let dt = end.time - (start?.time ?? 0)
             let fps = dt > 0 ? Double(end.frameIndex - startFrame) / dt : 0
+            let d = end.diagnostics
             print("SMOKE OK: frames=\(end.frameIndex) fps=\(String(format: "%.1f", fps)) "
                 + "gpuMs=\(String(format: "%.2f", end.gpuMilliseconds)) steps=\(end.totalSteps) "
-                + "de=\(end.deKey) params=\(end.resolved.values.count)")
+                + "de=\(end.deKey) params=\(end.resolved.values.count) "
+                + "pipeline=\(d.pipeline.rawValue)"
+                + (d.specializationPending ? " (compiling)" : "")
+                + (d.bakedConstants.isEmpty ? "" : " baked[\(d.bakedConstants)]")
+                + " renderScale=\(String(format: "%.2f", d.renderScale))")
             exit(0)
         }
     }

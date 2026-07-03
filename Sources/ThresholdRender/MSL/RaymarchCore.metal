@@ -319,11 +319,101 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
     return d;
 }
 
+// ==================== specialization function constants =====================
+//
+// Compile-time knobs the CPU bakes into a specialized pipeline variant
+// (GPUContext.makeSpecializedMarch) via MTLFunctionConstantValues. A function
+// constant is a true compile-time constant for the specialized function, so
+// the optimizer can act on it: a baked iteration bound lets the DE fold loop
+// UNROLL and hoist per-iteration invariants — which a device-memory trip count
+// (re-read every march step, every pixel) structurally prevents. The GENERIC
+// library never defines THRESH_SPEC_DE, so this constant is declared ONLY in
+// the specialized library and the base DE visible-function table carries no
+// function constant at all. GPUContext ALWAYS provides index 1 on a
+// specialized kernel (the real count, or -1 = "use the runtime value"), so the
+// constant is never referenced-but-undefined. Either way the specialized image
+// is bit-identical to the generic one (SpecializationTests).
+//
+// Function-constant index registry (private contract with
+// GPUContext.makeLinkedPipeline — keep in sync). Each is an int with -1 =
+// "use the runtime value" (the sentinel), so the constant is ALWAYS provided
+// where declared and the specialized image equals the generic one:
+//   0 = thresh_aux_defined   (temporal-upscale aux path, declared below)
+//   1 = thresh_de_iterations (DE fold-loop bound)
+//   2 = thresh_max_steps     (march step cap)
+//   3 = thresh_has_ops       (warp stack present: 1/0 → DCE the interpreter)
+//   4 = thresh_map_mode       (color mapping mode → drop the per-pixel switch)
+//   5 = thresh_ao_enabled     (AO on: 1/0 → drop the 5-tap AO when off)
+#ifdef THRESH_SPEC_DE
+constant int thresh_de_iterations [[function_constant(1)]];
+constant int thresh_max_steps     [[function_constant(2)]];
+constant int thresh_has_ops       [[function_constant(3)]];
+constant int thresh_map_mode      [[function_constant(4)]];
+constant int thresh_ao_enabled    [[function_constant(5)]];
+#endif
+
+// The DE fold-loop bound: the baked compile-time count in a specialized
+// variant (the loop unrolls), else the runtime slice value — the iterations
+// appended as the last DE param (DERegistry encoder convention). Both resolve
+// to the SAME number, so specialized output equals generic output.
+static inline int threshDEIterations(thread const ThreshDEContext& ctx) {
+#ifdef THRESH_SPEC_DE
+    return (thresh_de_iterations >= 0) ? thresh_de_iterations
+                                       : int(ctx.params[ctx.paramCount - 1]);
+#else
+    return int(ctx.params[ctx.paramCount - 1]);
+#endif
+}
+
+// March step cap: baked compile-time when specialized, else the runtime
+// engine slot. Same value either way.
+static inline int threshMaxSteps(int runtimeMaxSteps) {
+#ifdef THRESH_SPEC_DE
+    return (thresh_max_steps >= 0) ? thresh_max_steps : runtimeMaxSteps;
+#else
+    return runtimeMaxSteps;
+#endif
+}
+
+// Warp-stack presence: when a specialized variant bakes FALSE (empty stack),
+// the compiler DCEs the whole point/distance-op interpreter (the 22-case
+// switch + op-buffer reads) out of the march. An empty stack already no-ops
+// those loops, so gating them off is bit-identical. Generic falls back to the
+// runtime op count.
+static inline bool threshHasOps(uint runtimeOpCount) {
+#ifdef THRESH_SPEC_DE
+    return (thresh_has_ops >= 0) ? (thresh_has_ops != 0) : (runtimeOpCount > 0u);
+#else
+    return runtimeOpCount > 0u;
+#endif
+}
+
+// Color mapping mode: baked → the per-hit-pixel switch collapses to one case.
+static inline int threshMapMode(int runtimeMapMode) {
+#ifdef THRESH_SPEC_DE
+    return (thresh_map_mode >= 0) ? thresh_map_mode : runtimeMapMode;
+#else
+    return runtimeMapMode;
+#endif
+}
+
+// AO enablement: cheapAO at aoStrength == 0 returns exactly 1.0 (no darkening),
+// so a specialized variant that bakes FALSE skips the 5 mapScene AO taps for a
+// bit-identical result. Generic falls back to (aoStrength > 0).
+static inline bool threshAOEnabled(float aoStrength) {
+#ifdef THRESH_SPEC_DE
+    return (thresh_ao_enabled >= 0) ? (thresh_ao_enabled != 0) : (aoStrength > 0.0f);
+#else
+    return aoStrength > 0.0f;
+#endif
+}
+
 // ============================== built-in DEs ================================
 //
 // Standard formulations. Param slice convention (encoder contract): the DE
 // slice = declared params + [iterations] appended as the LAST entry; the DE
-// reads iterations = int(ctx.params[ctx.paramCount - 1]).
+// reads its fold-loop bound via threshDEIterations(ctx) — the baked
+// function-constant count when specialized, else int(ctx.params[paramCount-1]).
 //
 // Orbit trap (.y): min |z| over the visited orbit INCLUDING the initial
 // z = p, i.e. min over every |z| value at loop-top / after each update.
@@ -335,7 +425,7 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
     const float minR  = ctx.params[1];
     const float fixR  = ctx.params[2];
     const float limit = ctx.params[3];
-    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+    const int iterations = threshDEIterations(ctx);
     const float mR2 = minR * minR;
     const float fR2 = fixR * fixR;
 
@@ -363,7 +453,7 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
 [[visible]] float2 de_mandelbulb(float3 p, thread const ThreshDEContext& ctx)
 {
     const float power = ctx.params[0];
-    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+    const int iterations = threshDEIterations(ctx);
 
     float3 z = p;
     float dr = 1.0f;
@@ -394,7 +484,7 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
     const float sphereFold = ctx.params[3];
     const float3 maxs = float3(ctx.params[4], ctx.params[5], ctx.params[6]);
     const float crossR = ctx.params[7];
-    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+    const int iterations = threshDEIterations(ctx);
 
     float3 z = p;
     float scale = 1.0f;
@@ -421,7 +511,7 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
 {
     const float scale = ctx.params[0];
     const float3 offset = float3(ctx.params[1], ctx.params[2], ctx.params[3]);
-    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+    const int iterations = threshDEIterations(ctx);
 
     float3 z = p;
     float dr = 1.0f;
@@ -450,7 +540,7 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
 {
     const float4 c = float4(ctx.params[0], ctx.params[1], ctx.params[2], ctx.params[3]);
     const float threshold = ctx.params[4];
-    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+    const int iterations = threshDEIterations(ctx);
 
     float4 q = float4(p, 0.0f);
     float4 dq = float4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -482,7 +572,7 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
 {
     const float power = ctx.params[0];
     const float3 c = float3(ctx.params[1], ctx.params[2], ctx.params[3]);
-    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+    const int iterations = threshDEIterations(ctx);
 
     float3 z = p;
     float dr = 1.0f;
@@ -523,8 +613,18 @@ static float2 mapScene(float3 worldP,
                        visible_function_table<ThreshDE> deTable)
 {
     const float modelScale = U.scaleCtx.z;
+    // Warp-stack gate: a specialized variant with an empty stack bakes this
+    // FALSE and the compiler DCEs applyPointOps/applyDistanceOps entirely.
+    // With an empty stack those loops are already no-ops, so the image is
+    // unchanged (the generic path evaluates the same runtime condition).
+    const bool hasOps = threshHasOps(U.meta.x);
     float dScale = modelScale;
-    float3 q = applyPointOps(worldP * modelScale, ops, U.meta.x, dScale);
+    float3 q;
+    if (hasOps) {
+        q = applyPointOps(worldP * modelScale, ops, U.meta.x, dScale);
+    } else {
+        q = worldP * modelScale;
+    }
 
     ThreshDEContext ctx;
     ctx.params = params + U.meta.w;          // DE param slice at deParamOffset
@@ -544,7 +644,9 @@ static float2 mapScene(float3 worldP,
     float2 de = deTable[U.meta.y](q, ctx);
 #endif
     float d = de.x / dScale;
-    d = applyDistanceOps(worldP, d, ops, U.meta.x);
+    if (hasOps) {
+        d = applyDistanceOps(worldP, d, ops, U.meta.x);
+    }
     return float2(d, de.y);
 }
 
@@ -685,7 +787,7 @@ static inline ThreshMarchResult marchShade(
     constant ThreshPalette& palette)
 {
     // Engine params from the reserved slots of the FULL param table.
-    const int maxSteps     = int(params[THRESH_SLOT_MAX_STEPS]);
+    const int maxSteps     = threshMaxSteps(int(params[THRESH_SLOT_MAX_STEPS]));
     const float maxDist    = params[THRESH_SLOT_MAX_DIST];
     const float stepSafety = params[THRESH_SLOT_STEP_SAFETY];
     const float aoStrength = params[THRESH_SLOT_AO_STRENGTH];
@@ -728,7 +830,7 @@ static inline ThreshMarchResult marchShade(
         // sampler. Blend mixes trap with depth.
         float depth = clamp(t / max(maxDist, 1e-3f), 0.0f, 1.0f);
         float facing = clamp(0.5f + 0.5f * dot(n, -rd), 0.0f, 1.0f);
-        int mapMode = int(params[THRESH_SLOT_MAP_MODE]);
+        int mapMode = threshMapMode(int(params[THRESH_SLOT_MAP_MODE]));
         float tMap;
         switch (mapMode) {
             case 1:  tMap = depth; break;                         // depth
@@ -742,7 +844,12 @@ static inline ThreshMarchResult marchShade(
             params[THRESH_SLOT_GRAD_REPEAT],
             params[THRESH_SLOT_GRAD_OFFSET],
             params[THRESH_SLOT_GRAD_SMOOTH]);
-        float occ = cheapAO(pos, n, aoStrength, featureScale, U, params, ops, deTable);
+        // AO gate: skip the 5 mapScene taps when disabled (a specialized bake
+        // of FALSE, or aoStrength == 0 — cheapAO returns exactly 1.0 there, so
+        // this is bit-identical).
+        float occ = threshAOEnabled(aoStrength)
+            ? cheapAO(pos, n, aoStrength, featureScale, U, params, ops, deTable)
+            : 1.0f;
         float3 lit = albedo * (lambert + 0.2f) * occ;
         color = float4(applyGrading(lit, params), 1.0f);
     } else {

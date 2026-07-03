@@ -25,10 +25,15 @@ public struct RenderRequest: Sendable {
     /// drawable. 1 = march directly into the target (offscreen paths always
     /// pass 1 — goldens never depend on the upscale).
     public var renderScale: Float
+    /// Live render-pipeline tuning (specialization on/off, iteration bake) —
+    /// read by the interactive encoder to choose a pipeline. Offscreen/golden
+    /// paths ignore it (they pass an explicit `specialized:` variant or none).
+    public var tuning: RenderTuning
 
     public init(uniforms: ThreshFrameUniforms, params: [Float],
                 ops: [ThreshWarpOp], palette: [GradientStop] = [],
-                width: Int, height: Int, renderScale: Float = 1) {
+                width: Int, height: Int, renderScale: Float = 1,
+                tuning: RenderTuning = RenderTuning()) {
         self.uniforms = uniforms
         self.params = params
         self.ops = ops
@@ -36,6 +41,7 @@ public struct RenderRequest: Sendable {
         self.width = width
         self.height = height
         self.renderScale = renderScale
+        self.tuning = tuning
     }
 }
 

@@ -5,6 +5,102 @@
 import Synchronization
 import ThresholdCore
 
+// MARK: - RenderTuning
+
+/// Runtime-tunable render-pipeline knobs — the "advanced settings" the live
+/// encoder consults each frame to choose a pipeline. Defaults reproduce the
+/// pre-UI (env-only) behavior, so a build with no UI overrides renders exactly
+/// as before. Sent in via `SessionCommand.setRenderTuning`.
+public struct RenderTuning: Sendable, Equatable {
+    /// Use the specialized (direct-call, inlined DE) pipeline variant once it
+    /// has compiled. Off → always the generic table-dispatch pipeline (the
+    /// A/B baseline). Lets the user SEE the specialization's effect on gpuMs.
+    public var specializationEnabled: Bool
+    /// Bake the resolved DE iteration count (function_constant 1) so the fold
+    /// loop unrolls.
+    public var bakeIterations: Bool
+    /// Bake the march step cap (function_constant 2).
+    public var bakeMaxSteps: Bool
+    /// Bake warp-stack presence (function_constant 3): an empty stack DCEs the
+    /// whole op interpreter out of the march.
+    public var gateWarpOps: Bool
+    /// Bake the color mapping mode (function_constant 4): drops the per-hit-
+    /// pixel mapping switch.
+    public var bakeColorMapMode: Bool
+    /// Bake AO enablement (function_constant 5): skips the 5-tap AO when off.
+    public var gateAO: Bool
+
+    public init(
+        specializationEnabled: Bool = true, bakeIterations: Bool = false,
+        bakeMaxSteps: Bool = false, gateWarpOps: Bool = false,
+        bakeColorMapMode: Bool = false, gateAO: Bool = false
+    ) {
+        self.specializationEnabled = specializationEnabled
+        self.bakeIterations = bakeIterations
+        self.bakeMaxSteps = bakeMaxSteps
+        self.gateWarpOps = gateWarpOps
+        self.bakeColorMapMode = bakeColorMapMode
+        self.gateAO = gateAO
+    }
+
+    /// Seeded from the process env (`THRESHOLD_SPEC_ITERATIONS`) so the app
+    /// starts in the same state an env-only build had; the UI overrides live.
+    /// The new bakes default off (measure-first) — flip them in the panel.
+    public static var envDefault: RenderTuning {
+        RenderTuning(specializationEnabled: true,
+                     bakeIterations: GPUContext.bakeIterations)
+    }
+}
+
+// MARK: - RenderDiagnostics
+
+/// What the live encoder actually did this frame — surfaced so the UI can SHOW
+/// whether specialization is compiling / active (the "is it even compiling?"
+/// readout). Read-only telemetry; carried on `RenderSnapshot`.
+public struct RenderDiagnostics: Sendable, Equatable {
+    public enum Pipeline: String, Sendable, Equatable {
+        case generic         // table-dispatch, full-res
+        case genericAux      // table-dispatch + temporal-upscale inputs
+        case specialized     // direct-call inlined DE variant
+        case specializedAux  // direct-call + temporal-upscale inputs
+        case external        // an external DE program's own pipeline
+
+        public var label: String {
+            switch self {
+            case .generic:        return "Generic"
+            case .genericAux:     return "Generic + Upscale"
+            case .specialized:    return "Specialized"
+            case .specializedAux: return "Specialized + Upscale"
+            case .external:       return "External DE"
+            }
+        }
+        public var isSpecialized: Bool { self == .specialized || self == .specializedAux }
+    }
+
+    public var pipeline: Pipeline
+    /// Specialization was requested (enabled, built-in DE) but its variant is
+    /// still compiling off-thread — this frame fell back to generic.
+    public var specializationPending: Bool
+    /// Which function constants are baked into the active specialized variant
+    /// (e.g. "iters=12, no-ops"); empty = none / not specialized.
+    public var bakedConstants: String
+    /// Internal render scale (governor × MetalFX); 1 = full-res.
+    public var renderScale: Float
+    /// MetalFX temporal upscaling engaged this frame.
+    public var upscaling: Bool
+
+    public init(
+        pipeline: Pipeline = .generic, specializationPending: Bool = false,
+        bakedConstants: String = "", renderScale: Float = 1, upscaling: Bool = false
+    ) {
+        self.pipeline = pipeline
+        self.specializationPending = specializationPending
+        self.bakedConstants = bakedConstants
+        self.renderScale = renderScale
+        self.upscaling = upscaling
+    }
+}
+
 // MARK: - RenderSnapshot
 
 /// What the render thread publishes after each frame. Immutable, Sendable —
@@ -34,6 +130,9 @@ public struct RenderSnapshot: Sendable {
     /// Zoom-rebase counter (plan §6.3) — total zoom depth in octaves is
     /// `Float(scaleOctave)` + the resolved `scale.zoom` value.
     public let scaleOctave: Int32
+    /// What the live encoder did this frame (pipeline kind, compile status,
+    /// render scale). Default on offscreen/test paths that don't specialize.
+    public let diagnostics: RenderDiagnostics
 
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
@@ -41,7 +140,8 @@ public struct RenderSnapshot: Sendable {
         warpStack: [WarpOpDTO], paused: Bool, palette: Palette,
         animation: AnimationPlaybackState = .idle,
         dynamicEntries: [CatalogEntry] = [],
-        scaleOctave: Int32 = 0
+        scaleOctave: Int32 = 0,
+        diagnostics: RenderDiagnostics = RenderDiagnostics()
     ) {
         self.resolved = resolved
         self.frameIndex = frameIndex
@@ -55,6 +155,7 @@ public struct RenderSnapshot: Sendable {
         self.animation = animation
         self.dynamicEntries = dynamicEntries
         self.scaleOctave = scaleOctave
+        self.diagnostics = diagnostics
     }
 }
 
@@ -145,6 +246,9 @@ public enum SessionCommand: Sendable {
     /// (ADR-003): a registered system-lane writer emitting a 0…1 factor on
     /// the quality-class params. Disabling clears its lane writes.
     case setQualityGovernor(QualityGovernorConfig?)
+    /// Replace the live render-pipeline tuning (specialization on/off,
+    /// iteration bake). Read by the encoder via the frame's RenderRequest.
+    case setRenderTuning(RenderTuning)
 }
 
 /// Transport verbs for the animation player, as session-command data.

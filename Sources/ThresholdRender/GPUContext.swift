@@ -100,6 +100,23 @@ public final class GPUContext: @unchecked Sendable {
         }
     }
 
+    /// Perf toggle (env `THRESHOLD_SPEC_ITERATIONS`): bake the resolved DE
+    /// iteration count as function_constant(1) on the specialized march variant
+    /// so the fold loop unrolls and per-iteration invariants hoist.
+    ///
+    /// Default OFF, evidence-based: on Apple-Silicon Mac GPUs the isolated
+    /// increment over the direct-call specialization measured at ZERO (the
+    /// DEs' data-dependent escape `break`s and small trip counts (~8–16) leave
+    /// little for the unroller, and these GPUs are not register-starved for the
+    /// built-ins). The seam is kept because (a) it is byte-identical and
+    /// costless when off, (b) it may still pay on the register-constrained
+    /// visionOS/Vision-Pro GPU — measure THERE before promoting — and (c) it is
+    /// the mechanism the over-relaxation per-DE omega caps and `maxSteps` bake
+    /// reuse. Set to "1" to enable and A/B (image is identical either way).
+    public static var bakeIterations: Bool {
+        ProcessInfo.processInfo.environment["THRESHOLD_SPEC_ITERATIONS"] == "1"
+    }
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
@@ -188,7 +205,8 @@ public final class GPUContext: @unchecked Sendable {
     /// defaults false; the aux arguments are eliminated).
     static func makeLinkedPipeline(
         device: MTLDevice, library: MTLLibrary, kernelName: String,
-        deFunctions: [MTLFunction], auxOutputs: Bool = false
+        deFunctions: [MTLFunction], auxOutputs: Bool = false,
+        spec: MarchSpec? = nil
     ) throws -> MTLComputePipelineState {
         let kernel: MTLFunction
         if kernelName == "march_offscreen" {
@@ -198,12 +216,28 @@ public final class GPUContext: @unchecked Sendable {
             let constants = MTLFunctionConstantValues()
             var aux = auxOutputs
             constants.setConstantValue(&aux, type: .bool, index: 0)
+            // Bake the specialization constants (indices 1–5) when building a
+            // SPECIALIZED library (the one compiled with THRESH_SPEC_DE, which
+            // is the only one that declares them). Each is int with -1 = "use
+            // the runtime value"; ALWAYS set so they are never referenced-but-
+            // undefined. Generic/aux/eval pipelines pass spec = nil.
+            if let spec {
+                func setInt(_ value: Int, _ index: Int) {
+                    var v = Int32(value)
+                    constants.setConstantValue(&v, type: .int, index: index)
+                }
+                setInt(spec.iterations ?? -1, 1)
+                setInt(spec.maxSteps ?? -1, 2)
+                setInt(spec.hasWarpOps.map { $0 ? 1 : 0 } ?? -1, 3)
+                setInt(spec.colorMapMode ?? -1, 4)
+                setInt(spec.aoEnabled.map { $0 ? 1 : 0 } ?? -1, 5)
+            }
             do {
                 kernel = try library.makeFunction(
                     name: kernelName, constantValues: constants)
             } catch {
                 throw RenderError.missingFunction(
-                    "\(kernelName) (aux=\(auxOutputs)): \(String(describing: error))")
+                    "\(kernelName) (aux=\(auxOutputs), spec=\(spec?.keyFragment ?? "-")): \(String(describing: error))")
             }
         } else if let plain = library.makeFunction(name: kernelName) {
             kernel = plain

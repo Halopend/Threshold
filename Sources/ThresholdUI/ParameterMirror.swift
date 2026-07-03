@@ -67,6 +67,13 @@ public final class ParameterMirror {
     public private(set) var animation: AnimationPlaybackState = .idle
     /// Zoom-rebase counter from the latest snapshot (plan §6.3).
     public private(set) var scaleOctave: Int32 = 0
+    /// Live encoder pipeline diagnostics (which pipeline, compile status,
+    /// render scale) — drives the Shader Pipeline readout.
+    public private(set) var diagnostics = RenderDiagnostics()
+    /// Live render-pipeline tuning the UI toggles publish. Optimistic echo;
+    /// the render thread is authoritative but does not currently report it back
+    /// (the diagnostics reflect what actually happened).
+    public private(set) var renderTuning = RenderTuning.envDefault
     /// Local echo of in-flight slider drags (slot → target resolved value),
     /// so a drag reads back its own target instead of a stale snapshot.
     public private(set) var pendingEdits: [Int: Float] = [:]
@@ -191,6 +198,10 @@ public final class ParameterMirror {
             scaleOctave = snapshot.scaleOctave
             changed = true
         }
+        if snapshot.diagnostics != diagnostics {
+            diagnostics = snapshot.diagnostics
+            changed = true
+        }
 
         if changed { refreshGeneration &+= 1 }
     }
@@ -289,6 +300,15 @@ public final class ParameterMirror {
     /// Enable/disable the fps-holding quality governor (ADR-003).
     public func setQualityGovernor(_ config: QualityGovernorConfig?) {
         commands.publish(.setQualityGovernor(config))
+    }
+
+    /// Replace the live render-pipeline tuning (specialization on/off,
+    /// iteration bake). Optimistic local echo; the effect shows up in the
+    /// diagnostics + gpuMs within a frame or two (a specialized variant may
+    /// need a background compile before it engages).
+    public func setRenderTuning(_ tuning: RenderTuning) {
+        renderTuning = tuning
+        commands.publish(.setRenderTuning(tuning))
     }
 
     // MARK: Diffing

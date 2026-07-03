@@ -33,8 +33,12 @@ struct SessionFrame {
     let externalProgram: ExternalDEProgram?
 
     /// Complete the snapshot with the PREVIOUS completed frame's GPU stats
-    /// (the frame path never waits on the GPU — ARCHITECTURE.md §2).
-    func snapshot(gpuMilliseconds: Double, totalSteps: UInt64) -> RenderSnapshot {
+    /// (the frame path never waits on the GPU — ARCHITECTURE.md §2) plus the
+    /// encoder's pipeline diagnostics for this frame.
+    func snapshot(
+        gpuMilliseconds: Double, totalSteps: UInt64,
+        diagnostics: RenderDiagnostics = RenderDiagnostics()
+    ) -> RenderSnapshot {
         RenderSnapshot(
             resolved: resolved,
             frameIndex: frameIndex,
@@ -47,6 +51,7 @@ struct SessionFrame {
             palette: palette,
             animation: animation,
             dynamicEntries: dynamicEntries,
-            scaleOctave: scaleOctave)
+            scaleOctave: scaleOctave,
+            diagnostics: diagnostics)
     }
 }

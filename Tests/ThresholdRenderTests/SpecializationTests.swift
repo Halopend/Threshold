@@ -45,6 +45,58 @@ struct SpecializationTests {
                     Comment(rawValue: "\(descriptor.key): specialization must be invisible"))
             #expect(generic.rgba8.contains { $0 > 8 },
                     Comment(rawValue: "\(descriptor.key): a blank image proves nothing"))
+
+            // The FULLY-baked variant (all 5 function constants set to the
+            // resolved values, with a warp op present and AO on) must ALSO be
+            // bit-identical: every baked value IS the runtime value, so
+            // unrolling / DCE / dropped branches may not change a pixel.
+            let full = MarchSpec(
+                iterations: Int(params[Int(THRESH_SLOT_ITERATIONS)]),
+                maxSteps: Int(params[Int(THRESH_SLOT_MAX_STEPS)]),
+                hasWarpOps: uniforms.meta.x > 0,
+                colorMapMode: Int(params[Int(THRESH_SLOT_MAP_MODE)]),
+                aoEnabled: params[Int(THRESH_SLOT_AO_STRENGTH)] > 0)
+            let baked = try ctx.makeSpecializedMarch(
+                deFunctionName: descriptor.mslFunctionName, spec: full)
+            let bakedResult = try renderer.render(request, specialized: baked)
+            #expect(bakedResult.rgba8 == generic.rgba8,
+                    Comment(rawValue: "\(descriptor.key): fully-baked specialization must be invisible"))
+        }
+    }
+
+    /// The GATING constants (hasWarpOps=false → DCE the interpreter,
+    /// aoEnabled=false → skip the AO taps) are the ones that could actually
+    /// change the image if the "off" path diverged. Render with no warp ops
+    /// and AO strength 0, then bake both gates OFF — must be bit-identical.
+    @Test(.enabled(if: GPU.available))
+    func gatedOffConstantsMatchGeneric() throws {
+        let ctx = try GPU.ctx()
+        let renderer = try OffscreenRenderer(context: ctx)
+
+        for descriptor in DERegistry.builtin {
+            var engine = EngineParams()
+            engine.aoStrength = 0  // AO off — the gate must skip AND match
+            let (params, deParamOffset) = ParamTableLayout.build(
+                engine: engine, deParams: descriptor.paramLayout.map(\.default))
+            let uniforms = CameraMath.makeUniforms(
+                cameraPos: SIMD3(0.3, 0.4, 3.1), target: .zero,
+                fovYRadians: Float.pi / 3,
+                epsilonBase: 1e-3, modelScale: 1,
+                opCount: 0, deIndex: Int(descriptor.index),  // NO warp ops
+                paramCount: params.count, deParamOffset: deParamOffset)
+            let request = RenderRequest(
+                uniforms: uniforms, params: params, ops: [],
+                palette: PaletteWire.defaultStops, width: 96, height: 96)
+
+            let generic = try renderer.render(request)
+            let gated = MarchSpec(hasWarpOps: false, aoEnabled: false)
+            let variant = try ctx.makeSpecializedMarch(
+                deFunctionName: descriptor.mslFunctionName, spec: gated)
+            let result = try renderer.render(request, specialized: variant)
+            #expect(result.rgba8 == generic.rgba8,
+                    Comment(rawValue: "\(descriptor.key): gated-off (no-ops, no-AO) must be invisible"))
+            #expect(generic.rgba8.contains { $0 > 8 },
+                    Comment(rawValue: "\(descriptor.key): a blank image proves nothing"))
         }
     }
 

@@ -71,6 +71,7 @@ public struct ControlSidebar: View {
     public var body: some View {
         Form {
             StatsSection(mirror: mirror)
+            PipelineSection(mirror: mirror)
             DEPickerSection(mirror: mirror)
             CustomDESection(mirror: mirror)
             AnimationSection(mirror: mirror)
@@ -242,6 +243,71 @@ public struct StatsSection: View {
                     mirror.setQualityGovernor(on ? .platformDefault : nil)
                 }
         }
+    }
+}
+
+// MARK: - PipelineSection
+
+/// The shader-compilation readout + advanced render tuning. Shows which
+/// pipeline the encoder actually used this frame (the "is it even compiling?"
+/// answer) and lets the user flip specialization / iteration-baking live —
+/// the effect lands in the GPU-ms readout of `StatsSection` right above it.
+public struct PipelineSection: View {
+    let mirror: ParameterMirror
+
+    public init(mirror: ParameterMirror) {
+        self.mirror = mirror
+    }
+
+    private var status: (text: String, color: Color) {
+        let d = mirror.diagnostics
+        if d.specializationPending { return ("Compiling…", .orange) }
+        if d.pipeline.isSpecialized { return (d.pipeline.label, .green) }
+        if d.pipeline == .external { return (d.pipeline.label, .blue) }
+        return (d.pipeline.label, .secondary)
+    }
+
+    public var body: some View {
+        Section("Shader Pipeline") {
+            LabeledContent("Active") {
+                HStack(spacing: 6) {
+                    Circle().fill(status.color).frame(width: 8, height: 8)
+                    Text(status.text)
+                }
+            }
+            if !mirror.diagnostics.bakedConstants.isEmpty {
+                LabeledContent("Baked", value: mirror.diagnostics.bakedConstants)
+                    .font(.caption)
+            }
+            if mirror.diagnostics.renderScale < 0.999 {
+                LabeledContent(
+                    "Render scale",
+                    value: String(format: "%.0f%%", mirror.diagnostics.renderScale * 100))
+            }
+            Toggle("Specialized Pipeline", isOn: tuning(\.specializationEnabled))
+            Group {
+                Toggle("Bake Iterations (unroll)", isOn: tuning(\.bakeIterations))
+                Toggle("Bake Max Steps", isOn: tuning(\.bakeMaxSteps))
+                Toggle("Gate Warp Ops (DCE)", isOn: tuning(\.gateWarpOps))
+                Toggle("Bake Color Map Mode", isOn: tuning(\.bakeColorMapMode))
+                Toggle("Gate AO", isOn: tuning(\.gateAO))
+            }
+            .disabled(!mirror.renderTuning.specializationEnabled)
+        }
+    }
+
+    /// Binding onto one field of the mirror's RenderTuning; a write rebuilds
+    /// the whole value and publishes it (setRenderTuning contract).
+    private func tuning(
+        _ keyPath: WritableKeyPath<RenderTuning, Bool>
+    ) -> SwiftUI.Binding<Bool> {
+        SwiftUI.Binding(
+            get: { mirror.renderTuning[keyPath: keyPath] },
+            set: { newValue in
+                var next = mirror.renderTuning
+                next[keyPath: keyPath] = newValue
+                mirror.setRenderTuning(next)
+            })
     }
 }
 

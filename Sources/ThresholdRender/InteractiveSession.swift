@@ -266,14 +266,16 @@ public final class InteractiveSession: @unchecked Sendable {
         let encodeState = sp.beginInterval("encode")
         // An octave rebase rescales world coordinates between frames, which
         // invalidates the temporal upscaler's reprojection — reset history.
-        gpu.encode(frame.request, program: frame.externalProgram, to: drawable,
-                   resetHistory: gpu.noteOctave(frame.scaleOctave))
+        let diagnostics = gpu.encode(
+            frame.request, program: frame.externalProgram, to: drawable,
+            resetHistory: gpu.noteOctave(frame.scaleOctave))
         sp.endInterval("encode", encodeState)
         let encodeMs = Mono.ms(encodeStart, Mono.now())
 
         snapshots.publish(frame.snapshot(
             gpuMilliseconds: stats.gpuMilliseconds,
-            totalSteps: stats.totalSteps))
+            totalSteps: stats.totalSteps,
+            diagnostics: diagnostics))
 
         sp.endInterval("frame", frameState)
         profiler.record(
@@ -339,6 +341,9 @@ final class SessionGPUEncoder {
     private var prevUniforms: ThreshFrameUniforms?
     /// Previous frame's zoom-rebase octave (see noteOctave).
     private var lastOctave: Int32?
+    /// The pipeline choice made last encode — returned on dropped frames so the
+    /// diagnostics readout doesn't flicker to a default (render-thread only).
+    private var lastDiagnostics = RenderDiagnostics()
 
     /// Swift mirror of RaymarchCore.metal's ThreshAuxUniforms (private
     /// live-path contract, buffer 7 / textures 1–2 — not ABI).
@@ -378,6 +383,26 @@ final class SessionGPUEncoder {
         statsSlot.load()
     }
 
+    /// Translate the live tuning + resolved params into the specialization
+    /// constants to bake. Each is nil unless the matching toggle is on, and
+    /// every value IS what the shader would read at runtime — so a baked
+    /// variant renders the identical image (only faster). Callers guarantee
+    /// `params.count >= THRESH_SLOT_ENGINE_COUNT`.
+    private static func marchSpec(
+        from tuning: RenderTuning, params: [Float], opCount: UInt32
+    ) -> MarchSpec {
+        MarchSpec(
+            iterations: tuning.bakeIterations
+                ? Int(params[Int(THRESH_SLOT_ITERATIONS)]) : nil,
+            maxSteps: tuning.bakeMaxSteps
+                ? Int(params[Int(THRESH_SLOT_MAX_STEPS)]) : nil,
+            hasWarpOps: tuning.gateWarpOps ? (opCount > 0) : nil,
+            colorMapMode: tuning.bakeColorMapMode
+                ? Int(params[Int(THRESH_SLOT_MAP_MODE)]) : nil,
+            aoEnabled: tuning.gateAO
+                ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil)
+    }
+
     /// Record this frame's zoom-rebase octave; returns true when it changed
     /// (world coordinates rescaled → temporal history must reset).
     func noteOctave(_ octave: Int32) -> Bool {
@@ -404,15 +429,16 @@ final class SessionGPUEncoder {
     /// live loop must never crash or block. `resetHistory` discards the
     /// temporal upscaler's accumulated frames (octave rebase, camera cut —
     /// anything that invalidates last frame's world coordinates).
+    @discardableResult
     func encode(_ request: RenderRequest, program: ExternalDEProgram? = nil,
-                to drawable: CAMetalDrawable, resetHistory: Bool = false) {
+                to drawable: CAMetalDrawable, resetHistory: Bool = false) -> RenderDiagnostics {
         let texture = drawable.texture
         guard texture.width > 0, texture.height > 0,
               request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
               Int(request.uniforms.meta.z) <= request.params.count,
               request.uniforms.meta.w < request.uniforms.meta.z,
               Int(request.uniforms.meta.y) < (program?.deFunctionCount ?? context.deFunctionCount)
-        else { return }
+        else { return lastDiagnostics }
 
         var uniforms = request.uniforms
         uniforms.meta.x = UInt32(request.ops.count)  // can never disagree
@@ -420,7 +446,7 @@ final class SessionGPUEncoder {
         guard let paramsBuffer = try? context.makeFloatBuffer(
                   request.params, label: "session param table"),
               let opsBuffer = try? context.makeOpsBuffer(request.ops)
-        else { return }
+        else { return lastDiagnostics }
 
         // Pace the loop to the GPU: block until a frame slot frees. Every
         // path after this point either commits (the completed handler
@@ -429,7 +455,7 @@ final class SessionGPUEncoder {
         var committed = false
         defer { if !committed { inflight.signal() } }
 
-        guard let commandBuffer = queue.makeCommandBuffer() else { return }
+        guard let commandBuffer = queue.makeCommandBuffer() else { return lastDiagnostics }
         commandBuffer.label = "session frame"
 
         let statsBuffer = statsRing[ringCursor]
@@ -437,7 +463,7 @@ final class SessionGPUEncoder {
 
         // Zero the step counter on the ring slot's reuse (blit fill: ordered
         // on the queue, no CPU/GPU race).
-        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return lastDiagnostics }
         blit.label = "session stats zero"
         blit.fill(buffer: statsBuffer, range: 0..<MemoryLayout<UInt32>.stride, value: 0)
         blit.endEncoding()
@@ -462,18 +488,47 @@ final class SessionGPUEncoder {
 
         // Built-in DE with no external program active: render through the
         // specialized (direct-call, inlined) variant once it has compiled —
-        // the aux (temporal-input) twin when upscaling.
+        // the aux (temporal-input) twin when upscaling. Tuning (from the UI /
+        // env) can disable specialization for an A/B, or toggle the iteration
+        // bake. Every choice is recorded in `diagnostics` for the UI readout.
         var specialized: SpecializedMarch?
-        if program == nil {
+        // Effective scale: the governor's requested `scale` only takes effect
+        // when MetalFX actually engaged (fx != nil). If temporal upscaling is
+        // unsupported on this device, we render full-res regardless — report
+        // that honestly (a 100% readout despite a governor request IS the
+        // signal that the resolution lever is a no-op here).
+        var diagnostics = RenderDiagnostics(
+            renderScale: auxOutputs ? scale : 1, upscaling: auxOutputs)
+        if program != nil {
+            diagnostics.pipeline = .external
+        } else {
             let deIndex = Int(uniforms.meta.y)
-            if DERegistry.builtin.indices.contains(deIndex) {
+            if request.tuning.specializationEnabled,
+               DERegistry.builtin.indices.contains(deIndex) {
+                // Bake the function-constant knobs the tuning enables. Every
+                // baked value IS the value the shader would read at runtime, so
+                // the image is unchanged (SpecializationTests).
+                let spec = Self.marchSpec(
+                    from: request.tuning, params: request.params,
+                    opCount: uniforms.meta.x)
                 specialized = specializations.lookup(
                     deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
-                    auxOutputs: auxOutputs)
+                    spec: spec, auxOutputs: auxOutputs)
+                if specialized != nil {
+                    diagnostics.pipeline = auxOutputs ? .specializedAux : .specialized
+                    diagnostics.bakedConstants = spec.summary
+                } else {
+                    // Requested but the variant is still compiling off-thread.
+                    diagnostics.specializationPending = true
+                    diagnostics.pipeline = auxOutputs ? .genericAux : .generic
+                }
+            } else {
+                diagnostics.pipeline = auxOutputs ? .genericAux : .generic
             }
         }
+        lastDiagnostics = diagnostics
 
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return lastDiagnostics }
         encoder.label = "session march"
         encoder.setComputePipelineState(
             program?.marchPipeline ?? specialized?.pipeline
@@ -531,7 +586,7 @@ final class SessionGPUEncoder {
                 jitterPixels: jitter,
                 forceReset: resetHistory)
             // Same size and format — a plain copy into the drawable.
-            guard let copy = commandBuffer.makeBlitCommandEncoder() else { return }
+            guard let copy = commandBuffer.makeBlitCommandEncoder() else { return lastDiagnostics }
             copy.label = "session fx copy"
             copy.copy(from: fx.output, to: texture)
             copy.endEncoding()
@@ -557,6 +612,7 @@ final class SessionGPUEncoder {
         }
         commandBuffer.commit()
         committed = true
+        return lastDiagnostics
     }
 }
 
