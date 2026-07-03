@@ -309,3 +309,28 @@ bit-identical to generic in principle (SpecializationTests now pin .safe to
 test the mechanism); AO is 3-tap; normals/AO evaluate the DE at 0.6×/0.5×
 iterations; epsilonBase 1.5e-3 slightly softens finest detail. Goldens run
 the generic .safe pipeline and still pass (390/390).
+
+## Suite hardening + rounds 11–14 — 2026-07-03 (perf block 8)
+
+Suite upgrades (user ask: longer runs, CSV memory, consistency):
+
+- 60 measured frames/resolution (was 20), `--frames N` to go longer.
+- **`bench-results/history.csv`** — one row per (run, resolution) with a
+  REQUIRED `-m "note"` describing what was tested. JSONL kept alongside.
+- Consistency: the offscreen harness has NO quality governor / MetalFX /
+  renderScale — auto-quality structurally cannot touch these numbers (the
+  live app's HUD numbers are a different, governed path).
+- Observed run-to-run variance at 2048²: one run mid-block read 29.3 ms vs
+  24.9 on immediate re-run (thermal/system load). Trust re-runs; the CSV
+  history makes outliers visible.
+
+| Round | Change | 2048² median |
+|---|---|---|
+| (block 7 end) | | 30.4 ms / 32.9 fps |
+| 11 | stats step-count atomic behind function_constant 7; bench bakes OFF | 26.8 ms / 37.3 fps |
+| 12 | normals: 4-tap tetrahedron → 3-tap forward diff, center = march hitRadius | 25.0 ms / 40.0 fps |
+| 13 | AO 3→2 taps | flat (kept) |
+| 14 | grading identity fast paths (skip ACES at tonemap 0, pow at gamma 1) | flat (kept, exact at defaults) |
+
+Block total (7+8): 2048² mandelbox 42.3 → 25.0 ms (23.6 → 40.1 fps).
+390/390 tests green.
