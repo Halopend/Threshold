@@ -166,16 +166,22 @@ struct CompositorParityTests {
         // matrix unproject) — sub-ulp ray differences flip hit/miss at
         // silhouettes, so a strict max-diff cannot hold. The contract is:
         // almost every pixel matches within rounding, and the outliers are
-        // confined to a tiny silhouette fraction.
+        // confined to a tiny silhouette fraction. RGB only: miss ALPHA is
+        // shell presentation semantics (raster = transparent passthrough,
+        // compute = opaque window background) — asserted separately below.
         var outliers = 0
         var totalDiff = 0
-        for i in raster.indices {
-            let diff = abs(Int(raster[i]) - Int(compute.rgba8[i]))
-            totalDiff += diff
-            if diff > 3 { outliers += 1 }
+        var comparedChannels = 0
+        for i in stride(from: 0, to: raster.count, by: 4) {
+            for c in i..<(i + 3) {
+                let diff = abs(Int(raster[c]) - Int(compute.rgba8[c]))
+                totalDiff += diff
+                comparedChannels += 1
+                if diff > 3 { outliers += 1 }
+            }
         }
-        let outlierFraction = Double(outliers) / Double(raster.count)
-        let meanDiff = Double(totalDiff) / Double(raster.count)
+        let outlierFraction = Double(outliers) / Double(comparedChannels)
+        let meanDiff = Double(totalDiff) / Double(comparedChannels)
         #expect(outlierFraction < 0.005,
                 Comment(rawValue: "raster≡compute outside silhouettes (outliers \(outlierFraction))"))
         #expect(meanDiff < 0.5,
@@ -183,5 +189,19 @@ struct CompositorParityTests {
 
         // And it drew SOMETHING (a hit somewhere — not an all-black miss).
         #expect(raster.contains { $0 > 8 }, "parity of two empty images proves nothing")
+
+        // Miss-alpha semantics: the raster path composites over passthrough
+        // (mixed immersion), so wherever compute missed (opaque black),
+        // raster must be transparent.
+        var missAlphaViolations = 0
+        for i in stride(from: 3, to: raster.count, by: 4) {
+            let computeHit = compute.rgba8[i - 3] > 0 || compute.rgba8[i - 2] > 0
+                || compute.rgba8[i - 1] > 0
+            if !computeHit && compute.rgba8[i] == 255 && raster[i] != 0 {
+                missAlphaViolations += 1
+            }
+        }
+        #expect(Double(missAlphaViolations) < Double(raster.count / 4) * 0.005,
+                Comment(rawValue: "miss pixels must be transparent on the raster path (\(missAlphaViolations) violations)"))
     }
 }

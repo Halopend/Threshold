@@ -851,7 +851,12 @@ fragment ThreshFragmentOut thresh_march_fragment(
     const float4 clip = view.proj * float4(dirLocal * (m.t / roomScale), 1.0f);
 
     ThreshFragmentOut out;
-    out.color = m.color;
+    // Shell presentation semantics: the compositor composites this layer
+    // over PASSTHROUGH (mixed immersion), so a miss is transparent — the
+    // fractal floats in the user's room. The compute shells keep opaque
+    // black (a window has nothing behind it). Shading is identical
+    // (CompositorParityTests compares RGB); only the miss alpha differs.
+    out.color = m.hit ? m.color : float4(0.0f);
     out.depth = clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f);
     return out;
 }

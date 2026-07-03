@@ -627,14 +627,16 @@ struct ThresholdApp: App {
 
         // The immersive render shell: the CompositorLayer closure hands the
         // live LayerRenderer to the session, which spawns its render thread
-        // (CompositorSession). Full immersion for the spike; the progressive
-        // portal style is a follow-up pass slot (plan §6.4).
+        // (CompositorSession). MIXED immersion: miss pixels are transparent
+        // (the march composites over passthrough), and — critically — the
+        // control window stays visible and reachable while immersed. The
+        // progressive portal style is a follow-up pass slot (plan §6.4).
         ImmersiveSpace(id: Self.immersiveSpaceID) {
             CompositorLayer(configuration: ThresholdLayerConfiguration()) { layerRenderer in
                 model?.attach(layerRenderer)
             }
         }
-        .immersionStyle(selection: .constant(.full), in: .full)
+        .immersionStyle(selection: .constant(.mixed), in: .mixed)
         #endif
     }
 }
