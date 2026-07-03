@@ -20,6 +20,7 @@ import QuartzCore
 import Synchronization
 import ThresholdCore
 import ThresholdShaderABI
+import ThresholdShaderIR
 
 // MARK: - InteractiveSession
 
@@ -314,6 +315,9 @@ final class SessionGPUEncoder {
     private let statsRing: [MTLBuffer]
     private var ringCursor = 0
     private let statsSlot = FrameStatsSlot()
+    /// Direct-call DE pipeline variants (Specialization.swift). `lookup` is
+    /// non-blocking: frames render generic until a variant compiles.
+    private let specializations: SpecializationCache
 
     init(context: GPUContext) throws {
         guard let queue = context.device.makeCommandQueue() else {
@@ -333,6 +337,7 @@ final class SessionGPUEncoder {
         self.context = context
         self.queue = queue
         self.statsRing = ring
+        self.specializations = SpecializationCache(context: context)
     }
 
     /// Stats of the most recently COMPLETED frame (zeros until one finishes).
@@ -373,9 +378,21 @@ final class SessionGPUEncoder {
         blit.fill(buffer: statsBuffer, range: 0..<MemoryLayout<UInt32>.stride, value: 0)
         blit.endEncoding()
 
+        // Built-in DE with no external program active: render through the
+        // specialized (direct-call, inlined) variant once it has compiled.
+        var specialized: SpecializedMarch?
+        if program == nil {
+            let deIndex = Int(uniforms.meta.y)
+            if DERegistry.builtin.indices.contains(deIndex) {
+                specialized = specializations.lookup(
+                    deFunctionName: DERegistry.builtin[deIndex].mslFunctionName)
+            }
+        }
+
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.label = "session march"
-        encoder.setComputePipelineState(program?.marchPipeline ?? context.marchPipeline)
+        encoder.setComputePipelineState(
+            program?.marchPipeline ?? specialized?.pipeline ?? context.marchPipeline)
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setBytes(
                 raw.baseAddress!, length: raw.count, index: Int(THRESH_BUFFER_UNIFORMS))
@@ -384,7 +401,7 @@ final class SessionGPUEncoder {
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
         encoder.setVisibleFunctionTable(
-            program?.marchDETable ?? context.marchDETable,
+            program?.marchDETable ?? specialized?.deTable ?? context.marchDETable,
             bufferIndex: GPUContext.deTableBufferIndex)
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in

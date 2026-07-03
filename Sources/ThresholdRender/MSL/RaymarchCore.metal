@@ -532,7 +532,17 @@ static float2 mapScene(float3 worldP,
     ctx.time = U.scaleCtx.x;
     ctx.lodScale = U.scaleCtx.w;
 
+    // Specialization seam (GPUContext.makeSpecializedMarch): a pipeline
+    // variant compiled with THRESH_SPEC_DE defined calls that DE DIRECTLY —
+    // same translation unit, so the compiler inlines it across the march
+    // loop, which the generic table dispatch structurally cannot. The
+    // generic path below stays the always-correct fallback and the ONLY
+    // path externals + debug kernels use.
+#ifdef THRESH_SPEC_DE
+    float2 de = THRESH_SPEC_DE(q, ctx);
+#else
     float2 de = deTable[U.meta.y](q, ctx);
+#endif
     float d = de.x / dScale;
     d = applyDistanceOps(worldP, d, ops, U.meta.x);
     return float2(d, de.y);

@@ -28,6 +28,7 @@ struct Options {
     var step = 1.0 / 60.0
     var deKey = "mandelbulb"
     var quiet = false
+    var specialize = false
 
     static func parse(_ args: [String]) -> Options {
         var opts = Options()
@@ -50,6 +51,7 @@ struct Options {
             case "--step": opts.step = doubleValue(next(arg), for: arg)
             case "--de": opts.deKey = next(arg)
             case "--quiet": opts.quiet = true
+            case "--specialize": opts.specialize = true
             case "--help":
                 print(usage)
                 exit(0)
@@ -77,6 +79,8 @@ usage: threshold-render [scene.threshscene] [options]
   --step <seconds>              fixed clock step (default 1/60)
   --de <key>                    built-in DE when no scene is given (default mandelbulb)
   --quiet                       suppress progress output
+  --specialize                  render built-ins through the direct-call DE
+                                pipeline variant (perf A/B; identical image)
 """
 
 func die(_ message: String) -> Never {
@@ -271,6 +275,25 @@ if let embedded = envelope.embeddedDE {
     descriptor = builtinDescriptor!  // guaranteed by the guard above
 }
 
+// --specialize: compile the direct-call variant up front (the CLI is a
+// batch tool — synchronous compile is fine here; the live session compiles
+// asynchronously through SpecializationCache).
+let specialized: SpecializedMarch?
+if opts.specialize, program == nil {
+    do {
+        specialized = try context.makeSpecializedMarch(
+            deFunctionName: descriptor.mslFunctionName)
+        if !opts.quiet { print("specialized pipeline: \(descriptor.mslFunctionName)") }
+    } catch {
+        die("--specialize failed: \(error)")
+    }
+} else {
+    specialized = nil
+    if opts.specialize && !opts.quiet {
+        print("warning: --specialize ignored (external DE active)")
+    }
+}
+
 /// External DE params are not catalog-registered (the catalog froze before
 /// the scene was read) — they resolve from the scene file directly under
 /// `de.external.<name>`, falling back to declared defaults.
@@ -340,7 +363,8 @@ for frame in 0..<opts.frames {
         palette: envelope.palette?.stops ?? [],
         width: opts.width, height: opts.height)
     do {
-        let result = try renderer.render(request, program: program)
+        let result = try renderer.render(
+            request, program: program, specialized: specialized)
         perFrame.append(FrameStats(
             frame: frame, time: clock.now,
             totalSteps: result.stats.totalSteps,
