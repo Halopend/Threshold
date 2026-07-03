@@ -28,6 +28,7 @@
 import Foundation
 import Metal
 import Synchronization
+import ThresholdShaderABI
 import ThresholdShaderIR
 
 /// A specialized march pipeline + its (pipeline-matched) DE table. The table
@@ -42,6 +43,23 @@ public struct SpecializedMarch: @unchecked Sendable {
     /// `coneMarch: true`. The encoder dispatches it (one thread per 8×8
     /// tile) before the march and binds its output at texture 3.
     public let conePrepass: MTLComputePipelineState?
+}
+
+/// A specialized RASTER (stereo fragment) march pipeline + its fragment-stage
+/// DE table, plus the optional per-view cone prepass (a compute pipeline + its
+/// own compute-stage DE table). The visionOS Compositor counterpart of
+/// SpecializedMarch — same perf overlay, render-pipeline shaped.
+public struct SpecializedRaster: @unchecked Sendable {
+    // AUDIT — @unchecked: immutable Metal objects, documented thread-safe.
+    public let pipeline: MTLRenderPipelineState
+    public let deTable: MTLVisibleFunctionTable
+    /// Present iff the variant baked `coneMarch: true`: the coarse per-view
+    /// tile prepass dispatched before the render pass (writes a depth array
+    /// the fragment reads at texture 3).
+    public let conePrepass: MTLComputePipelineState?
+    /// Compute-stage DE table matched to `conePrepass` (bound but unused — the
+    /// specialized prepass inlines the DE; Metal still requires the argument).
+    public let conePrepassDETable: MTLVisibleFunctionTable?
 }
 
 // MARK: - MarchSpec
@@ -94,6 +112,28 @@ public struct MarchSpec: Sendable, Hashable {
         self.hasDistanceOps = hasDistanceOps
         self.statsEnabled = statsEnabled
         self.coneMarch = coneMarch
+    }
+
+    /// Translate live tuning + the resolved param table into the constants to
+    /// bake. Each is nil unless the matching toggle is on, and every value IS
+    /// what the shader would read at runtime — so the bakes render the identical
+    /// image; only `coneMarch` (a start-depth prepass) shifts float start
+    /// points. Shared by the Mac compute encoder and the visionOS raster
+    /// encoder. Callers guarantee `params.count >= THRESH_SLOT_ENGINE_COUNT`.
+    public static func from(
+        tuning: RenderTuning, params: [Float], opCount: UInt32
+    ) -> MarchSpec {
+        MarchSpec(
+            iterations: tuning.bakeIterations
+                ? Int(params[Int(THRESH_SLOT_ITERATIONS)]) : nil,
+            maxSteps: tuning.bakeMaxSteps
+                ? Int(params[Int(THRESH_SLOT_MAX_STEPS)]) : nil,
+            hasWarpOps: tuning.gateWarpOps ? (opCount > 0) : nil,
+            colorMapMode: tuning.bakeColorMapMode
+                ? Int(params[Int(THRESH_SLOT_MAP_MODE)]) : nil,
+            aoEnabled: tuning.gateAO
+                ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil,
+            coneMarch: tuning.conePrepass ? true : nil)
     }
 
     /// Nothing baked — the variant is just the direct-call inline.
@@ -206,6 +246,89 @@ extension GPUContext {
         return try makeSpecializedMarch(
             from: library, deFunctionName: deFunctionName,
             spec: spec, auxOutputs: auxOutputs)
+    }
+
+    /// Build the specialized STEREO RASTER pipeline (thresh_march_fragment,
+    /// direct-call inlined DE) for the given target formats, plus the per-view
+    /// cone prepass when `spec.coneMarch` is set. `maxViewCount > 1` enables
+    /// vertex amplification (2 on device, 1 for the Mac parity test).
+    func makeSpecializedRaster(
+        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec,
+        colorFormat: MTLPixelFormat, depthFormat: MTLPixelFormat, maxViewCount: Int
+    ) throws -> SpecializedRaster {
+        let constants = Self.specConstantValues(auxOutputs: false, spec: spec)
+        // The vertex shader references no function constants.
+        guard let vertex = library.makeFunction(name: "thresh_fullscreen_vertex")
+        else { throw RenderError.missingFunction("thresh_fullscreen_vertex") }
+        let fragment: MTLFunction
+        do {
+            fragment = try library.makeFunction(
+                name: "thresh_march_fragment", constantValues: constants)
+        } catch {
+            throw RenderError.missingFunction(
+                "thresh_march_fragment (spec=\(spec.keyFragment)): \(String(describing: error))")
+        }
+
+        let desc = MTLRenderPipelineDescriptor()
+        desc.label = "thresh_march_raster specialized[\(spec.summary)]"
+        desc.vertexFunction = vertex
+        desc.fragmentFunction = fragment
+        desc.colorAttachments[0].pixelFormat = colorFormat
+        desc.depthAttachmentPixelFormat = depthFormat
+        desc.inputPrimitiveTopology = .triangle
+        if maxViewCount > 1 { desc.maxVertexAmplificationCount = maxViewCount }
+        let linked = MTLLinkedFunctions()
+        linked.functions = builtinDEFunctions
+        desc.fragmentLinkedFunctions = linked
+
+        let pipeline: MTLRenderPipelineState
+        do {
+            pipeline = try device.makeRenderPipelineState(descriptor: desc)
+        } catch {
+            throw RenderError.pipelineCreationFailed(
+                "specialized raster(\(deFunctionName)): \(String(describing: error))")
+        }
+
+        let table = try Self.makeFragmentDETable(
+            pipeline, functions: builtinDEFunctions,
+            label: "specialized raster(\(deFunctionName)) DE table")
+
+        var prepass: MTLComputePipelineState? = nil
+        var prepassTable: MTLVisibleFunctionTable? = nil
+        if spec.coneMarch == true {
+            let p = try Self.makeLinkedPipeline(
+                device: device, library: library,
+                kernelName: "march_cone_prepass_view",
+                deFunctions: builtinDEFunctions, spec: spec)
+            prepass = p
+            prepassTable = try Self.makeDETable(
+                p, functions: builtinDEFunctions,
+                label: "specialized raster(\(deFunctionName)) prepass DE table")
+        }
+        return SpecializedRaster(
+            pipeline: pipeline, deTable: table,
+            conePrepass: prepass, conePrepassDETable: prepassTable)
+    }
+
+    /// Fragment-stage visible function table (tables are stage-specific — the
+    /// compute-stage `makeDETable` can't serve a render pipeline).
+    static func makeFragmentDETable(
+        _ pipeline: MTLRenderPipelineState, functions: [MTLFunction], label: String
+    ) throws -> MTLVisibleFunctionTable {
+        let desc = MTLVisibleFunctionTableDescriptor()
+        desc.functionCount = functions.count
+        guard let table = pipeline.makeVisibleFunctionTable(
+            descriptor: desc, stage: .fragment)
+        else { throw RenderError.functionTableCreationFailed(label) }
+        for (index, f) in functions.enumerated() {
+            guard let handle = pipeline.functionHandle(function: f, stage: .fragment)
+            else {
+                throw RenderError.functionTableCreationFailed(
+                    "\(label): no handle for \(f.name)")
+            }
+            table.setFunction(handle, index: index)
+        }
+        return table
     }
 }
 

@@ -14,7 +14,9 @@
 import Foundation
 import Metal
 import simd
+import Synchronization
 import ThresholdShaderABI
+import ThresholdShaderIR
 
 // MARK: - CompositorViewMath
 
@@ -123,6 +125,21 @@ final class ViewPassEncoder {
     private let statsRing: [MTLBuffer]
     private var ringCursor = 0
     private let statsSlot = FrameStatsSlot()
+    /// Specialized (direct-call, inlined DE) raster variants — the visionOS
+    /// counterpart of SessionGPUEncoder's SpecializationCache. Non-blocking:
+    /// frames render generic until a variant compiles off-thread. nil when the
+    /// target formats can't host specialization (never today; kept explicit).
+    private let specializations: RasterSpecializationCache
+    /// Per-view cone-prepass depth textures (texture2d_array, one slice per
+    /// amplified view), one per in-flight frame slot — frame N+1's prepass must
+    /// not overwrite the array frame N's fragment is still reading. Rebuilt on
+    /// size/slice change. Shares the statsRing cursor. Reuse across frames is
+    /// safe by GPU hazard ordering (tracked .private texture, same queue), so a
+    /// slot collision only costs pipelining, never a torn read. LAYERED (device
+    /// default under foveation) encodes once/frame → 3 frames of headroom;
+    /// DEDICATED (no-foveation fallback) encodes twice/frame → ~1.5 frames, the
+    /// same marginal contract the statsRing already carries.
+    private var coneRing: [MTLTexture?]
 
     /// Builds the raster pipeline for the target formats. `maxViewCount` is
     /// the vertex amplification ceiling (2 on device, 1 for tests/simulator).
@@ -133,11 +150,28 @@ final class ViewPassEncoder {
         maxViewCount: Int
     ) throws {
         self.context = context
+        self.specializations = RasterSpecializationCache(
+            context: context, colorFormat: colorFormat,
+            depthFormat: depthFormat, maxViewCount: maxViewCount)
+        self.coneRing = [nil, nil, nil]
         let device = context.device
 
-        guard let vertex = context.library.makeFunction(name: "thresh_fullscreen_vertex"),
-              let fragment = context.library.makeFunction(name: "thresh_march_fragment")
-        else { throw RenderError.missingFunction("thresh_fullscreen_vertex/fragment") }
+        guard let vertex = context.library.makeFunction(name: "thresh_fullscreen_vertex")
+        else { throw RenderError.missingFunction("thresh_fullscreen_vertex") }
+        // The fragment now has a THRESH_CONE-gated cone-texture argument, so —
+        // like the compute march kernel — it must be created through the
+        // constant-values path even for the generic variant. Empty values
+        // leave THRESH_CONE (and THRESH_AUX) undefined → false, so the cone
+        // argument is eliminated and this pipeline binds no cone texture.
+        let fragment: MTLFunction
+        do {
+            fragment = try context.library.makeFunction(
+                name: "thresh_march_fragment",
+                constantValues: MTLFunctionConstantValues())
+        } catch {
+            throw RenderError.missingFunction(
+                "thresh_march_fragment: \(String(describing: error))")
+        }
 
         let desc = MTLRenderPipelineDescriptor()
         desc.label = "thresh_march_raster"
@@ -209,6 +243,9 @@ final class ViewPassEncoder {
     /// Returns false (encoding skipped) on a malformed request or an external
     /// DE index — the raster path links built-ins only for now (spike scope;
     /// external DEs render on the compute shells).
+    /// `overrideSpecialized` injects a specific specialized variant instead of
+    /// consulting the async cache — the deterministic test seam (production
+    /// callers leave it nil and let the cache land the variant off-thread).
     @discardableResult
     func encode(
         _ request: RenderRequest,
@@ -216,7 +253,8 @@ final class ViewPassEncoder {
         viewsByteOffset: Int = 0,
         renderPass: MTLRenderPassDescriptor,
         commandBuffer: MTLCommandBuffer,
-        amplificationCount: Int = 1
+        amplificationCount: Int = 1,
+        overrideSpecialized: SpecializedRaster? = nil
     ) -> Bool {
         guard !views.isEmpty,
               request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
@@ -233,18 +271,100 @@ final class ViewPassEncoder {
               let opsBuffer = try? context.makeOpsBuffer(request.ops)
         else { return false }
 
-        let statsBuffer = statsRing[ringCursor]
+        // Pipeline choice: the specialized (direct-call inlined DE) raster
+        // variant once it has compiled and tuning enables it — else generic
+        // (the always-correct fallback that renders while the variant builds
+        // off-thread). Built-ins only; external DEs render on the compute
+        // shells (guarded above by deFunctionCount / spike scope).
+        var chosenPipeline = pipeline
+        var chosenTable = deTable
+        var specialized: SpecializedRaster? = overrideSpecialized
+        let deIndex = Int(uniforms.meta.y)
+        if overrideSpecialized == nil,
+           request.tuning.specializationEnabled,
+           DERegistry.builtin.indices.contains(deIndex) {
+            let spec = MarchSpec.from(
+                tuning: request.tuning, params: request.params,
+                opCount: uniforms.meta.x)
+            specialized = specializations.lookup(
+                deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
+                spec: spec)
+        }
+        if let s = specialized {
+            chosenPipeline = s.pipeline
+            chosenTable = s.deTable
+        }
+
+        let ringSlot = ringCursor
+        let statsBuffer = statsRing[ringSlot]
         ringCursor = (ringCursor + 1) % statsRing.count
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
         blit.label = "raster stats zero"
         blit.fill(buffer: statsBuffer, range: 0..<MemoryLayout<UInt32>.stride, value: 0)
         blit.endEncoding()
 
+        // Hierarchical cone prepass (perf block 11): one coarse compute
+        // dispatch per view finds each tile's safe start depth into an array
+        // texture the fragment reads. Runs BEFORE the render pass; Metal's
+        // automatic hazard tracking orders the compute-write → fragment-read.
+        var coneTexture: MTLTexture? = nil
+        if let s = specialized, let prepass = s.conePrepass,
+           let prepassTable = s.conePrepassDETable,
+           let target = renderPass.colorAttachments[0].texture {
+            let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
+            let cw = (target.width + tile - 1) / tile
+            let ch = (target.height + tile - 1) / tile
+            let slices = max(1, amplificationCount)
+            var coneTex = coneRing[ringSlot]
+            if coneTex == nil || coneTex!.width != cw || coneTex!.height != ch
+                || coneTex!.arrayLength != slices {
+                let desc = MTLTextureDescriptor()
+                desc.textureType = .type2DArray
+                desc.pixelFormat = .r32Float
+                desc.width = cw
+                desc.height = ch
+                desc.arrayLength = slices
+                desc.usage = [.shaderWrite, .shaderRead]
+                desc.storageMode = .private
+                coneTex = context.device.makeTexture(descriptor: desc)
+                coneRing[ringSlot] = coneTex
+            }
+            if let coneTex, let pre = commandBuffer.makeComputeCommandEncoder() {
+                pre.label = "raster cone prepass"
+                pre.setComputePipelineState(prepass)
+                withUnsafeBytes(of: uniforms) { raw in
+                    pre.setBytes(raw.baseAddress!, length: raw.count,
+                                 index: Int(THRESH_BUFFER_UNIFORMS))
+                }
+                pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
+                pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
+                pre.setVisibleFunctionTable(
+                    prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
+                views.withUnsafeBytes { raw in
+                    let base = raw.baseAddress!.advanced(by: viewsByteOffset)
+                    pre.setBytes(base, length: raw.count - viewsByteOffset,
+                                 index: Int(THRESH_BUFFER_VIEWS))
+                }
+                pre.setTexture(coneTex, index: 3)
+                pre.dispatchThreadgroups(
+                    MTLSize(width: (cw + 7) / 8, height: (ch + 7) / 8, depth: slices),
+                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+                pre.endEncoding()
+                coneTexture = coneTex
+            }
+        }
+        // A cone-baked pipeline REQUIRES the fragment cone texture; if the
+        // prepass couldn't run, fall back to generic this frame.
+        if specialized?.conePrepass != nil, coneTexture == nil {
+            chosenPipeline = pipeline
+            chosenTable = deTable
+        }
+
         guard let encoder = commandBuffer.makeRenderCommandEncoder(
             descriptor: renderPass)
         else { return false }
         encoder.label = "raster march"
-        encoder.setRenderPipelineState(pipeline)
+        encoder.setRenderPipelineState(chosenPipeline)
         encoder.setDepthStencilState(depthState)
         if amplificationCount > 1 {
             var mappings = (0..<amplificationCount).map { _ in
@@ -264,7 +384,7 @@ final class ViewPassEncoder {
         encoder.setFragmentBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setFragmentBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
         encoder.setFragmentVisibleFunctionTable(
-            deTable, bufferIndex: GPUContext.deTableBufferIndex)
+            chosenTable, bufferIndex: GPUContext.deTableBufferIndex)
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in
             encoder.setFragmentBytes(
@@ -275,6 +395,9 @@ final class ViewPassEncoder {
             encoder.setFragmentBytes(
                 base, length: raw.count - viewsByteOffset,
                 index: Int(THRESH_BUFFER_VIEWS))
+        }
+        if let coneTexture {
+            encoder.setFragmentTexture(coneTexture, index: 3)
         }
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -291,5 +414,81 @@ final class ViewPassEncoder {
             slot.store(gpuMilliseconds: ms, totalSteps: steps)
         }
         return true
+    }
+}
+
+// MARK: - RasterSpecializationCache
+
+/// Non-blocking cache of specialized STEREO RASTER variants — the visionOS
+/// counterpart of SpecializationCache. `lookup` never blocks: a miss schedules
+/// ONE off-thread compile (source library once per DE, reused across baked
+/// variants) and returns nil until it lands (the generic pipeline renders
+/// meanwhile). Compiler-checked Sendable (a Mutex over Sendable state).
+final class RasterSpecializationCache: Sendable {
+    private struct State {
+        var libraries: [String: MTLLibrary] = [:]        // per DE function name
+        var ready: [String: SpecializedRaster] = [:]     // per (DE, spec)
+        var inFlight: Set<String> = []
+    }
+
+    private let context: GPUContext
+    private let colorFormat: MTLPixelFormat
+    private let depthFormat: MTLPixelFormat
+    private let maxViewCount: Int
+    private let state = Mutex<State>(State())
+
+    init(
+        context: GPUContext, colorFormat: MTLPixelFormat,
+        depthFormat: MTLPixelFormat, maxViewCount: Int
+    ) {
+        self.context = context
+        self.colorFormat = colorFormat
+        self.depthFormat = depthFormat
+        self.maxViewCount = maxViewCount
+    }
+
+    /// The specialized raster pipeline for a built-in DE, if compiled; nil on a
+    /// miss (schedules the compile). Formats/maxViewCount are fixed per cache,
+    /// so the key is just (DE, spec).
+    func lookup(deFunctionName: String, spec: MarchSpec) -> SpecializedRaster? {
+        let key = "\(deFunctionName)#\(spec.keyFragment)"
+        if let hit = state.withLock({ $0.ready[key] }) { return hit }
+
+        let shouldCompile: Bool = state.withLock { s in
+            if s.ready[key] != nil { return false }
+            return s.inFlight.insert(key).inserted
+        }
+        if shouldCompile {
+            let context = context
+            let colorFormat = colorFormat
+            let depthFormat = depthFormat
+            let maxViewCount = maxViewCount
+            Task.detached(priority: .utility) { [self] in
+                let library: MTLLibrary? = resolveLibrary(deFunctionName)
+                let compiled = library.flatMap {
+                    try? context.makeSpecializedRaster(
+                        from: $0, deFunctionName: deFunctionName, spec: spec,
+                        colorFormat: colorFormat, depthFormat: depthFormat,
+                        maxViewCount: maxViewCount)
+                }
+                state.withLock { s in
+                    s.inFlight.remove(key)
+                    if let compiled { s.ready[key] = compiled }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Get-or-compile the per-DE specialized source library (shared shape with
+    /// the OS Metal cache dedups a rare concurrent double-compile).
+    private func resolveLibrary(_ deFunctionName: String) -> MTLLibrary? {
+        if let cached = state.withLock({ $0.libraries[deFunctionName] }) {
+            return cached
+        }
+        guard let library = try? context.compileSpecializedLibrary(
+            deFunctionName: deFunctionName) else { return nil }
+        state.withLock { $0.libraries[deFunctionName] = library }
+        return library
     }
 }

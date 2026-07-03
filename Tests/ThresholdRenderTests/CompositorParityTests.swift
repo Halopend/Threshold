@@ -73,8 +73,11 @@ struct CompositorParityTests {
 
     /// Render `request` through the raster path (single view, pinhole
     /// projection matching the request's camera) into offscreen textures.
+    /// `specialized` injects a specific variant (cone/specialization path);
+    /// nil renders the generic pipeline.
     private func rasterRender(
-        _ request: RenderRequest, context: GPUContext
+        _ request: RenderRequest, context: GPUContext,
+        specialized: SpecializedRaster? = nil
     ) throws -> [UInt8] {
         let device = context.device
         let encoder = try ViewPassEncoder(
@@ -115,7 +118,8 @@ struct CompositorParityTests {
         let queue = try #require(device.makeCommandQueue())
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoded = encoder.encode(
-            request, views: [view], renderPass: pass, commandBuffer: commandBuffer)
+            request, views: [view], renderPass: pass, commandBuffer: commandBuffer,
+            overrideSpecialized: specialized)
         #expect(encoded, "raster encode must accept the parity request")
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -203,5 +207,70 @@ struct CompositorParityTests {
         }
         #expect(Double(missAlphaViolations) < Double(raster.count / 4) * 0.005,
                 Comment(rawValue: "miss pixels must be transparent on the raster path (\(missAlphaViolations) violations)"))
+    }
+
+    /// The per-view cone prepass on the RASTER path: a specialized cone
+    /// variant carries the prepass pipeline + tables, ViewPassEncoder
+    /// dispatches it into the depth array, the fragment reads its tile's start
+    /// depth, and the result stays close to the non-cone raster render (the
+    /// prepass shifts float start points; the wiring is what's under test —
+    /// gross artifacts / poisoned tiles / wrong tile mapping show as large
+    /// means or NaN-sentinel pixels).
+    @Test(.enabled(if: GPU.available))
+    func rasterConePrepassMatchesGenericRaster() throws {
+        let ctx = try GPU.ctx()
+
+        var engine = EngineParams()
+        engine.aoStrength = 0.6
+        let de = DERegistry.descriptor(forKey: "mandelbox")!
+        let (params, deParamOffset) = ParamTableLayout.build(
+            engine: engine, deParams: de.paramLayout.map(\.default))
+        let uniforms = CameraMath.makeUniforms(
+            cameraPos: SIMD3(0.4, 0.3, 3.2), target: .zero,
+            fovYRadians: Float.pi / 3,
+            epsilonBase: 1.5e-3, modelScale: 1,
+            opCount: 0, deIndex: Int(de.index),
+            paramCount: params.count, deParamOffset: deParamOffset)
+        let request = RenderRequest(
+            uniforms: uniforms, params: params, ops: [],
+            palette: PaletteWire.defaultStops, width: 96, height: 96)
+
+        // Compile the specialized cone raster variant synchronously (the
+        // production cache does this off-thread).
+        let library = try ctx.compileSpecializedLibrary(
+            deFunctionName: de.mslFunctionName)
+        let raster = try ctx.makeSpecializedRaster(
+            from: library, deFunctionName: de.mslFunctionName,
+            spec: MarchSpec(coneMarch: true),
+            colorFormat: .rgba8Unorm, depthFormat: .depth32Float, maxViewCount: 1)
+        #expect(raster.conePrepass != nil, "cone variant must carry the prepass")
+        #expect(raster.conePrepassDETable != nil, "prepass needs a compute DE table")
+
+        let generic = try rasterRender(request, context: ctx)
+        let cone = try rasterRender(request, context: ctx, specialized: raster)
+
+        #expect(generic.contains { $0 > 8 }, "blank proves nothing")
+        // No NaN sentinel (alpha 0 with magenta RGB) — a poisoned tile.
+        var sentinels = 0
+        for i in stride(from: 0, to: cone.count, by: 4)
+        where cone[i] == 255 && cone[i + 1] == 0 && cone[i + 2] == 255 && cone[i + 3] == 0 {
+            sentinels += 1
+        }
+        #expect(sentinels == 0, "NaN-sentinel pixels under raster cone prepass")
+
+        var total = 0
+        var big = 0
+        for i in stride(from: 0, to: cone.count, by: 4) {
+            for c in i..<(i + 3) {
+                let d = abs(Int(generic[c]) - Int(cone[c]))
+                total += d
+                if d > 48 { big += 1 }
+            }
+        }
+        let mean = Double(total) / Double(cone.count / 4 * 3)
+        #expect(mean < 6.0,
+                Comment(rawValue: "raster cone drifted (meanΔ \(mean)) — wiring/tile-map bug"))
+        #expect(Double(big) / Double(cone.count / 4 * 3) < 0.05,
+                Comment(rawValue: "raster cone large-delta regions (\(big))"))
     }
 }

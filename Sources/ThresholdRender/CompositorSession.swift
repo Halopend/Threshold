@@ -418,7 +418,11 @@ public final class CompositorSession: @unchecked Sendable {
                 base: request.uniforms, anchorPosition: anchorPosition),
             palette: request.palette,
             width: request.width,
-            height: request.height)
+            height: request.height,
+            // Preserve the render-pipeline tuning (specialization + cone
+            // prepass) and scale — the raster encoder consults request.tuning.
+            renderScale: request.renderScale,
+            tuning: request.tuning)
     }
 
     // MARK: Clock

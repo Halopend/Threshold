@@ -1188,6 +1188,17 @@ struct ThreshViewVertexOut {
     ushort ampIndex  [[flat]];
 };
 
+// View-local ray direction for a logical NDC point — the ONE derivation the
+// fragment AND the per-view cone prepass share (unproject two points through
+// this view's invProj; camera looks down -Z). Projection-convention-agnostic.
+static inline float3 threshViewDirLocal(float4x4 invProj, float2 ndc) {
+    const float4 h0 = invProj * float4(ndc, 0.25f, 1.0f);
+    const float4 h1 = invProj * float4(ndc, 0.75f, 1.0f);
+    float3 dirLocal = normalize(h1.xyz / h1.w - h0.xyz / h0.w);
+    if (dirLocal.z > 0.0f) { dirLocal = -dirLocal; }
+    return dirLocal;
+}
+
 vertex ThreshViewVertexOut thresh_fullscreen_vertex(
     uint vid   [[vertex_id]],
     ushort amp [[amplification_id]])
@@ -1216,24 +1227,39 @@ fragment ThreshFragmentOut thresh_march_fragment(
     device atomic_uint* stats                  [[buffer(THRESH_BUFFER_STATS)]],
     visible_function_table<ThreshDE> deTable   [[buffer(THRESH_BUFFER_DE_TABLE)]],
     constant ThreshPalette& palette            [[buffer(THRESH_BUFFER_PALETTE)]],
-    device const ThreshViewUniforms* views     [[buffer(THRESH_BUFFER_VIEWS)]])
+    device const ThreshViewUniforms* views     [[buffer(THRESH_BUFFER_VIEWS)]],
+    // Per-view cone-prepass depths (perf block 11), THRESH_CONE-gated so the
+    // generic raster pipeline never binds it. One array slice per amplified
+    // view; indexed by the fragment's LOGICAL tile (in.ndc → tile), which is
+    // foveation-agnostic — the interpolated ndc is in logical coordinates.
+    texture2d_array<float, access::read> coneTex [[texture(THRESH_TEXTURE_CONE),
+                                                   function_constant(THRESH_CONE)]])
 {
     const ThreshViewUniforms view = views[in.ampIndex];
 
-    // Two points on this pixel's ray, any projection convention.
-    const float4 h0 = view.invProj * float4(in.ndc, 0.25f, 1.0f);
-    const float4 h1 = view.invProj * float4(in.ndc, 0.75f, 1.0f);
-    float3 dirLocal = normalize(h1.xyz / h1.w - h0.xyz / h0.w);
-    // The camera looks down -Z in view space — pick that hemisphere (the
-    // unproject order flips under reverse-Z conventions).
-    if (dirLocal.z > 0.0f) { dirLocal = -dirLocal; }
-
+    float3 dirLocal = threshViewDirLocal(view.invProj, in.ndc);
     const float roomScale = max(view.originScale.w, 1e-6f);
     const float3 ro = view.originScale.xyz;
     const float3 rd = quatRotate(view.orient, dirLocal);
 
-    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette);
-    atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+    // Hierarchical start: this fragment's logical tile was cone-marched by
+    // march_cone_prepass_view. tuv maps ndc→[0,1] the SAME way the prepass
+    // lays out its texels (centerNdc = (texel+0.5)/dims·2−1).
+    float startT = 0.0f;
+    if (THRESH_CONE) {
+        const float2 tuv = clamp(in.ndc * 0.5f + 0.5f, 0.0f, 1.0f);
+        const uint cw = coneTex.get_width();
+        const uint ch = coneTex.get_height();
+        const uint2 tile = uint2(min(uint(tuv.x * float(cw)), cw - 1u),
+                                 min(uint(tuv.y * float(ch)), ch - 1u));
+        startT = coneTex.read(tile, uint(in.ampIndex)).x;
+    }
+
+    ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
+                                     startT);
+    if (threshStatsEnabled()) {
+        atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
+    }
 
     // Depth consistent with THIS view's projection: the hit point (or the
     // far threshold on a miss) back in view-local meters.
@@ -1248,6 +1274,72 @@ fragment ThreshFragmentOut thresh_march_fragment(
     out.color = m.hit ? m.color : float4(0.0f);
     out.depth = clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f);
     return out;
+}
+
+// -------------------- per-view hierarchical cone prepass --------------------
+//
+// The raster counterpart of march_cone_prepass: one thread per (tile, view).
+// Each thread cone-marches its LOGICAL tile's central ray — generated through
+// the view's invProj/orient exactly as the fragment does — and writes the
+// tile-safe start depth to that view's array slice. The fragment reads its
+// tile from in.ndc. Everything is in logical NDC space, so foveation (variable
+// rasterization rate) needs no rate-map decode: a "tile" is a fixed NDC rect.
+//
+// grid: (coneW, coneH, viewCount). views[gid.z] is this thread's view. In the
+// dedicated (non-amplified) layout the encoder binds the views buffer at the
+// per-view offset, so gid.z stays 0 and views[0] is that eye.
+kernel void march_cone_prepass_view(
+    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+    device const ThreshViewUniforms* views   [[buffer(THRESH_BUFFER_VIEWS)]],
+    texture2d_array<float, access::write> coneTex [[texture(THRESH_TEXTURE_CONE)]],
+    uint3 gid                                [[thread_position_in_grid]])
+{
+    const uint cw = coneTex.get_width();
+    const uint ch = coneTex.get_height();
+    if (gid.x >= cw || gid.y >= ch) { return; }
+
+    const ThreshViewUniforms view = views[gid.z];
+    const float3 ro = view.originScale.xyz;
+    const float2 inv = float2(1.0f / float(cw), 1.0f / float(ch));
+
+    // Central ray of this texel's NDC rectangle.
+    const float2 centerNdc = (float2(gid.xy) + 0.5f) * inv * 2.0f - 1.0f;
+    const float3 rdC = quatRotate(view.orient,
+                                  threshViewDirLocal(view.invProj, centerNdc));
+
+    // Angular footprint: max deviation over the four texel corners, pushed a
+    // quarter-texel OUTWARD for coverage margin, + 10% (matches the compute
+    // prepass's corner-bound construction).
+    float coneK = 0.0f;
+    for (int cy = 0; cy <= 1; ++cy) {
+        for (int cx = 0; cx <= 1; ++cx) {
+            const float2 outward = (float2(cx, cy) * 2.0f - 1.0f) * 0.25f;
+            const float2 cNdc =
+                (float2(gid.xy) + float2(cx, cy) + outward) * inv * 2.0f - 1.0f;
+            const float3 rdX = quatRotate(view.orient,
+                                          threshViewDirLocal(view.invProj, cNdc));
+            coneK = max(coneK, length(rdX - rdC));
+        }
+    }
+    coneK *= 1.1f;
+
+    const float maxDist = params[THRESH_SLOT_MAX_DIST];
+    const float epsBase = U.scaleCtx.y;
+    float t = 0.0f;
+    for (int i = 0; i < 48; ++i) {
+        float d = mapScene(ro + rdC * t, U, params, ops, deTable).x;
+        if ((as_type<uint>(d) & 0x7F800000u) == 0x7F800000u) {
+            t = 0.0f; break;                             // non-finite: no skip
+        }
+        const float slack = d - coneK * t;
+        if (slack <= 3.0f * epsBase * t) { break; }      // 3× margin (block 9)
+        t += slack * 0.9f / (1.0f + coneK);
+        if (t > maxDist) { t = maxDist; break; }
+    }
+    coneTex.write(float4(t, 0.0f, 0.0f, 0.0f), gid.xy, gid.z);
 }
 
 // ============================== debug kernels ===============================

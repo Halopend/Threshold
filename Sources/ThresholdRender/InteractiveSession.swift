@@ -419,17 +419,7 @@ final class SessionGPUEncoder {
     private static func marchSpec(
         from tuning: RenderTuning, params: [Float], opCount: UInt32
     ) -> MarchSpec {
-        MarchSpec(
-            iterations: tuning.bakeIterations
-                ? Int(params[Int(THRESH_SLOT_ITERATIONS)]) : nil,
-            maxSteps: tuning.bakeMaxSteps
-                ? Int(params[Int(THRESH_SLOT_MAX_STEPS)]) : nil,
-            hasWarpOps: tuning.gateWarpOps ? (opCount > 0) : nil,
-            colorMapMode: tuning.bakeColorMapMode
-                ? Int(params[Int(THRESH_SLOT_MAP_MODE)]) : nil,
-            aoEnabled: tuning.gateAO
-                ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil,
-            coneMarch: tuning.conePrepass ? true : nil)
+        MarchSpec.from(tuning: tuning, params: params, opCount: opCount)
     }
 
     /// Record this frame's zoom-rebase octave; returns true when it changed

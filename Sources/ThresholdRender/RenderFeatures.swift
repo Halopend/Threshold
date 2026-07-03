@@ -67,12 +67,14 @@ public enum RenderFeatureTable {
         // scenes apply their params/palette but render on compute shells.
         RenderFeature(
             id: "de.external", paths: [.offscreen, .interactive], requiredOnAll: false),
-        // Hierarchical cone-march prepass (perf block 9): coarse tile dispatch
-        // + THRESH_CONE-gated march start. Compute shells only — the
-        // compositor's raster path has no specialization seam yet (its port
-        // needs per-view prepass raygen + specialized fragment pipelines).
+        // Hierarchical cone-march prepass (perf block 9, raster port block 11):
+        // coarse tile dispatch + THRESH_CONE-gated march start. Now on all
+        // three shells — the compositor uses a per-view prepass (rays through
+        // ThreshViewUniforms.invProj) writing a depth array the fragment reads.
+        // Still requiredOnAll:false: it is a perf overlay, correct to omit.
         RenderFeature(
-            id: "march.conePrepass", paths: [.offscreen, .interactive],
+            id: "march.conePrepass",
+            paths: [.offscreen, .interactive, .compositor],
             requiredOnAll: false),
     ]
 }

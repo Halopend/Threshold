@@ -203,44 +203,51 @@ public final class GPUContext: @unchecked Sendable {
     /// temporal-upscale input variant (depth/motion writes + jittered
     /// ray-gen). False compiles exactly the pre-aux kernel (constant
     /// defaults false; the aux arguments are eliminated).
+    /// The function-constant values a specialized march/prepass/fragment
+    /// function needs: aux (index 0) + the bakes (1–7) when compiled from a
+    /// THRESH_SPEC_DE library, and the cone gate (index 8, aux-style bool) only
+    /// when requested. Shared by the compute (makeLinkedPipeline) and raster
+    /// (makeSpecializedRaster) paths so the two never drift.
+    static func specConstantValues(
+        auxOutputs: Bool, spec: MarchSpec?
+    ) -> MTLFunctionConstantValues {
+        let constants = MTLFunctionConstantValues()
+        var aux = auxOutputs
+        constants.setConstantValue(&aux, type: .bool, index: 0)
+        if let spec {
+            func setInt(_ value: Int, _ index: Int) {
+                var v = Int32(value)
+                constants.setConstantValue(&v, type: .int, index: index)
+            }
+            setInt(spec.iterations ?? -1, 1)
+            setInt(spec.maxSteps ?? -1, 2)
+            setInt(spec.hasWarpOps.map { $0 ? 1 : 0 } ?? -1, 3)
+            setInt(spec.colorMapMode ?? -1, 4)
+            setInt(spec.aoEnabled.map { $0 ? 1 : 0 } ?? -1, 5)
+            setInt(spec.hasDistanceOps.map { $0 ? 1 : 0 } ?? -1, 6)
+            setInt(spec.statsEnabled.map { $0 ? 1 : 0 } ?? -1, 7)
+        }
+        if let cone = spec?.coneMarch {
+            var v = cone
+            constants.setConstantValue(&v, type: .bool, index: 8)
+        }
+        return constants
+    }
+
     static func makeLinkedPipeline(
         device: MTLDevice, library: MTLLibrary, kernelName: String,
         deFunctions: [MTLFunction], auxOutputs: Bool = false,
         spec: MarchSpec? = nil
     ) throws -> MTLComputePipelineState {
+        // The march + cone-prepass kernels reference function constants (THRESH_AUX
+        // always; the bakes/cone gate in the specialized library), so they take
+        // the specialized-function creation path even for the default variant.
+        let constantKernels: Set<String> = [
+            "march_offscreen", "march_cone_prepass", "march_cone_prepass_view",
+        ]
         let kernel: MTLFunction
-        if kernelName == "march_offscreen" || kernelName == "march_cone_prepass" {
-            // The march kernel references the THRESH_AUX function constant,
-            // so Metal requires the specialized-function creation path even
-            // for the default (false) variant.
-            let constants = MTLFunctionConstantValues()
-            var aux = auxOutputs
-            constants.setConstantValue(&aux, type: .bool, index: 0)
-            // Bake the specialization constants (indices 1–5) when building a
-            // SPECIALIZED library (the one compiled with THRESH_SPEC_DE, which
-            // is the only one that declares them). Each is int with -1 = "use
-            // the runtime value"; ALWAYS set so they are never referenced-but-
-            // undefined. Generic/aux/eval pipelines pass spec = nil.
-            if let spec {
-                func setInt(_ value: Int, _ index: Int) {
-                    var v = Int32(value)
-                    constants.setConstantValue(&v, type: .int, index: index)
-                }
-                setInt(spec.iterations ?? -1, 1)
-                setInt(spec.maxSteps ?? -1, 2)
-                setInt(spec.hasWarpOps.map { $0 ? 1 : 0 } ?? -1, 3)
-                setInt(spec.colorMapMode ?? -1, 4)
-                setInt(spec.aoEnabled.map { $0 ? 1 : 0 } ?? -1, 5)
-                setInt(spec.hasDistanceOps.map { $0 ? 1 : 0 } ?? -1, 6)
-                setInt(spec.statsEnabled.map { $0 ? 1 : 0 } ?? -1, 7)
-            }
-            // Cone-march gate (index 8) uses the aux-style bool pattern
-            // (is_function_constant_defined → absent = false), so it is set
-            // ONLY when requested — generic/golden pipelines never see it.
-            if let cone = spec?.coneMarch {
-                var v = cone
-                constants.setConstantValue(&v, type: .bool, index: 8)
-            }
+        if constantKernels.contains(kernelName) {
+            let constants = specConstantValues(auxOutputs: auxOutputs, spec: spec)
             do {
                 kernel = try library.makeFunction(
                     name: kernelName, constantValues: constants)

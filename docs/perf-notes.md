@@ -416,3 +416,64 @@ CSV/JSONL + per-run sample JSONs to the results-only orphan branch
 `git log --oneline --notes=bench` (perf inline with code history) /
 `git show bench-history:history.csv` (the full CSV) — a perf regression
 bisects by walking either one.
+
+## visionOS raster cone-march + specialization port — 2026-07-03 (perf block 11)
+
+The stereo raster path (visionOS Compositor shell) had NO specialization seam
+at all — it dispatched one generic table-dispatch fragment pipeline. This
+block brings BOTH the specialization overlay (direct-call inlined DE, fast
+math, all the bakes) AND the hierarchical cone-march prepass to it, so the
+Vision Pro render path gains the same per-step + hierarchical wins the compute
+shells got in blocks 7–10.
+
+Mechanism:
+- **Per-view cone prepass** (`march_cone_prepass_view` in RaymarchCore.metal):
+  one compute thread per (tile, view). Rays are generated through
+  `ThreshViewUniforms.invProj`/`orient` — the SAME unproject-two-points model
+  the fragment uses (factored into `threshViewDirLocal`), NOT the compute
+  path's pinhole `threshRayDir`. Writes each view's safe start depth to a
+  `texture2d_array` slice. Everything is expressed in LOGICAL NDC, so
+  foveation (variable rasterization rate) needs no rate-map decode: a tile is
+  a fixed NDC rectangle, and the fragment's `in.ndc → tile` map is the exact
+  inverse of the prepass's `texel → centerNdc` layout (adversarially verified —
+  physical/logical mismatch never enters either side; at worst suboptimal tile
+  sizing in the fovea, never incorrect).
+- **Specialized raster pipeline** (`GPUContext.makeSpecializedRaster`): the
+  `thresh_march_fragment` compiled from the THRESH_SPEC_DE library with
+  function constants 0–8 (shared `specConstantValues` with the compute path),
+  a fragment-stage DE table, and the per-view prepass compute pipeline +
+  compute-stage table when `coneMarch` is set. `RasterSpecializationCache`
+  (ViewPass.swift) is the async non-blocking cache — frames render generic
+  until the variant lands off-thread, exactly like SpecializationCache.
+- **ViewPassEncoder** dispatches the prepass (compute) before the render pass
+  into a 3-deep cone-texture ring, binds it at fragment texture 3, and falls
+  back to generic when the variant isn't ready or the prepass can't allocate.
+  The generic fragment is now built via `makeFunction(constantValues:)` (empty)
+  because it gained a THRESH_CONE-gated argument.
+- `RenderTuning.conePrepass` flows to the raster path via `request.tuning`
+  (CompositorSession.stampHandOps now preserves tuning + renderScale);
+  `MarchSpec.from(tuning:params:opCount:)` is shared by the Mac and raster
+  encoders. RenderFeatureTable: `march.conePrepass` now spans all three shells.
+
+Verification: CompositorParityTests extended — a specialized+cone raster
+render stays within tolerance of the generic raster render with no
+NaN-sentinel tiles (the wiring gate: tile-map, prepass dispatch, texture-3
+binding). 393 tests green; ThresholdRender AND the full app build clean for
+the visionOS simulator SDK. A 3-agent adversarial panel (foveation tile-map,
+2-view amplification/wiring, GPU hazards/lifetime) returned ZERO refutations.
+
+NOT done here (honest gaps):
+- **No device numbers.** Vision Pro perf is device-only (PERF_LOG rule). The
+  Mac parity path proves CORRECTNESS (raster ≡ compute, cone ≡ non-cone within
+  tolerance); the FPS win must be measured in-headset. Expect the compute
+  path's ~2× step-bound win to translate, less the raster/fragment overheads.
+- **2-view amplified + foveated tile mapping** run only on device (the Mac
+  test is single-view, maxViewCount=1). The slice indexing (prepass write
+  slice gid.z ↔ fragment read slice ampIndex ↔ views[] index) was verified by
+  inspection, not execution.
+- **Dedicated (no-foveation) layout** encodes twice/frame over the 3-deep cone
+  ring — ~1.5 frames of headroom, the same marginal contract the stats ring
+  already carries; safe by GPU hazard ordering (only a pipelining cost). The
+  device default (layered + foveation) has full 3-frame headroom.
+- External DEs still render generic on the raster path (built-ins only — spike
+  scope, unchanged).
