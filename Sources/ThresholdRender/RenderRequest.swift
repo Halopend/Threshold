@@ -20,16 +20,22 @@ public struct RenderRequest: Sendable {
     public var palette: [GradientStop]
     public var width: Int
     public var height: Int
+    /// Resolution scale in (0, 1]: the live encoder marches into an
+    /// intermediate texture of `width×scale` and bilinear-upscales into the
+    /// drawable. 1 = march directly into the target (offscreen paths always
+    /// pass 1 — goldens never depend on the upscale).
+    public var renderScale: Float
 
     public init(uniforms: ThreshFrameUniforms, params: [Float],
                 ops: [ThreshWarpOp], palette: [GradientStop] = [],
-                width: Int, height: Int) {
+                width: Int, height: Int, renderScale: Float = 1) {
         self.uniforms = uniforms
         self.params = params
         self.ops = ops
         self.palette = palette
         self.width = width
         self.height = height
+        self.renderScale = renderScale
     }
 }
 

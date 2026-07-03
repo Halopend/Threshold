@@ -63,6 +63,15 @@ final class FrameProfiler {
     private var maxInterFrame = 0.0
     private var lastFrameEntry: UInt64 = 0
 
+    // Hitch attribution: a stutter is a single frame whose cadence gap blows
+    // past the recent norm, and the window AVERAGE hides which phase did it.
+    // Track an EMA of the inter-frame gap; when one frame exceeds
+    // max(1.5×EMA, EMA+4ms), log THAT frame's full phase breakdown and emit a
+    // signpost event so the spike is findable on the Instruments timeline.
+    private var interEMA = 0.0
+    private var hitchesInWindow = 0
+    private var lastGpuMs = 0.0
+
     init(
         telemetry: RenderTelemetry, summaryEvery: Int = 60, logSummaries: Bool,
         filePath: String? = nil
@@ -102,6 +111,24 @@ final class FrameProfiler {
         let inter = lastFrameEntry == 0 ? 0 : Mono.ms(lastFrameEntry, entry)
         lastFrameEntry = entry
 
+        // Hitch detection against the recent cadence (EMA warms up over the
+        // first frames; the 4ms floor keeps 120Hz→119Hz jitter from spamming).
+        if interEMA > 0, inter > max(interEMA * 1.5, interEMA + 4.0) {
+            hitchesInWindow += 1
+            telemetry.signposter.emitEvent("hitch", "\(inter, format: .fixed(precision: 2))ms")
+            if logSummaries {
+                let line = String(
+                    format: "HITCH frame %llu inter=%.2fms (ema %.2f) step=%.3f "
+                        + "drawable=%.3f encode=%.3f gpuPrev=%.2f gpuBefore=%.2f",
+                    frameIndex, inter, interEMA, stepMs, drawableMs, encodeMs,
+                    gpuMs, lastGpuMs)
+                telemetry.log.log("\(line, privacy: .public)")
+                emitToFile(line)
+            }
+        }
+        interEMA = interEMA == 0 ? inter : interEMA * 0.9 + inter * 0.1
+        lastGpuMs = gpuMs
+
         frames += 1
         sumInterFrame += inter
         sumStep += stepMs
@@ -122,9 +149,9 @@ final class FrameProfiler {
         let bound = gpuAvg > cpu * 1.5 ? "GPU-bound" : (cpu > gpuAvg * 1.5 ? "CPU-bound" : "mixed")
         emitToFile(String(
             format: "frame %llu %dpx realFps=%.1f inter=%.2fms(max %.2f) "
-                + "step=%.3f drawable=%.3f encode=%.3f gpu=%.2f -> %@",
+                + "step=%.3f drawable=%.3f encode=%.3f gpu=%.2f hitches=%d -> %@",
             frameIndex, pixels, realFps, avgInter, maxInterFrame,
-            sumStep / n, sumDrawable / n, sumEncode / n, gpuAvg, bound))
+            sumStep / n, sumDrawable / n, sumEncode / n, gpuAvg, hitchesInWindow, bound))
         telemetry.log.log("""
             frame \(frameIndex, privacy: .public) \(Int(sqrt(Double(pixels))), privacy: .public)²px \
             realFps=\(realFps, format: .fixed(precision: 1), privacy: .public) \
@@ -133,10 +160,12 @@ final class FrameProfiler {
             step=\(self.sumStep / n, format: .fixed(precision: 3), privacy: .public) \
             drawable=\(self.sumDrawable / n, format: .fixed(precision: 3), privacy: .public) \
             encode=\(self.sumEncode / n, format: .fixed(precision: 3), privacy: .public) \
-            gpu=\(gpuAvg, format: .fixed(precision: 2), privacy: .public) → \(bound, privacy: .public)
+            gpu=\(gpuAvg, format: .fixed(precision: 2), privacy: .public) \
+            hitches=\(self.hitchesInWindow, privacy: .public) → \(bound, privacy: .public)
             """)
         frames = 0
         sumInterFrame = 0; sumStep = 0; sumEncode = 0; sumDrawable = 0; sumGpu = 0
         maxInterFrame = 0
+        hitchesInWindow = 0
     }
 }

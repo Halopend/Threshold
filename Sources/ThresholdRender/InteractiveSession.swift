@@ -315,9 +315,19 @@ final class SessionGPUEncoder {
     private let statsRing: [MTLBuffer]
     private var ringCursor = 0
     private let statsSlot = FrameStatsSlot()
+    /// Frames-in-flight cap, measured necessary: CAMetalDisplayLink keeps
+    /// delivering drawables even when the GPU is frames behind, so without
+    /// this the queue grows until makeCommandBuffer blocks at its own limit
+    /// (~64) — seconds of present latency and judder on heavy scenes. Depth 3
+    /// matches the stats ring and the layer's drawable pool; the wait is the
+    /// deliberate pacing point (it shows up as `encode` in the profiler).
+    private let inflight = DispatchSemaphore(value: 3)
     /// Direct-call DE pipeline variants (Specialization.swift). `lookup` is
     /// non-blocking: frames render generic until a variant compiles.
     private let specializations: SpecializationCache
+    /// Cached intermediate target for the render-scale path — reallocated
+    /// only when the (quantized) scaled size changes.
+    private var scaledTarget: MTLTexture?
 
     init(context: GPUContext) throws {
         guard let queue = context.device.makeCommandQueue() else {
@@ -363,9 +373,17 @@ final class SessionGPUEncoder {
 
         guard let paramsBuffer = try? context.makeFloatBuffer(
                   request.params, label: "session param table"),
-              let opsBuffer = try? context.makeOpsBuffer(request.ops),
-              let commandBuffer = queue.makeCommandBuffer()
+              let opsBuffer = try? context.makeOpsBuffer(request.ops)
         else { return }
+
+        // Pace the loop to the GPU: block until a frame slot frees. Every
+        // path after this point either commits (the completed handler
+        // signals) or drops the frame (the defer signals).
+        inflight.wait()
+        var committed = false
+        defer { if !committed { inflight.signal() } }
+
+        guard let commandBuffer = queue.makeCommandBuffer() else { return }
         commandBuffer.label = "session frame"
 
         let statsBuffer = statsRing[ringCursor]
@@ -389,6 +407,30 @@ final class SessionGPUEncoder {
             }
         }
 
+        // Render-scale (governor lever): march into a smaller intermediate,
+        // then bilinear-upscale into the drawable. Allocation failure falls
+        // back to full resolution — never a dropped frame.
+        var marchTarget = texture
+        let scale = min(max(request.renderScale, 0.05), 1)
+        if scale < 0.999 {
+            let sw = max(Int((Float(texture.width) * scale).rounded()), 1)
+            let sh = max(Int((Float(texture.height) * scale).rounded()), 1)
+            if let cached = scaledTarget, cached.width == sw, cached.height == sh {
+                marchTarget = cached
+            } else {
+                let desc = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: texture.pixelFormat, width: sw, height: sh,
+                    mipmapped: false)
+                desc.usage = [.shaderWrite, .shaderRead]
+                desc.storageMode = .private
+                if let t = context.device.makeTexture(descriptor: desc) {
+                    t.label = "session scaled target"
+                    scaledTarget = t
+                    marchTarget = t
+                }
+            }
+        }
+
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.label = "session march"
         encoder.setComputePipelineState(
@@ -408,15 +450,29 @@ final class SessionGPUEncoder {
             encoder.setBytes(raw.baseAddress!, length: raw.count,
                              index: Int(THRESH_BUFFER_PALETTE))
         }
-        encoder.setTexture(texture, index: Int(THRESH_TEXTURE_OUTPUT))
+        encoder.setTexture(marchTarget, index: Int(THRESH_TEXTURE_OUTPUT))
 
         let threadsPerGroup = MTLSize(width: 8, height: 8, depth: 1)
         let groups = MTLSize(
-            width: (texture.width + 7) / 8,
-            height: (texture.height + 7) / 8,
+            width: (marchTarget.width + 7) / 8,
+            height: (marchTarget.height + 7) / 8,
             depth: 1)
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerGroup)
         encoder.endEncoding()
+
+        if marchTarget !== texture {
+            guard let upscale = commandBuffer.makeComputeCommandEncoder() else { return }
+            upscale.label = "session upscale"
+            upscale.setComputePipelineState(context.upscalePipeline)
+            upscale.setTexture(marchTarget, index: 0)
+            upscale.setTexture(texture, index: 1)
+            let fullGroups = MTLSize(
+                width: (texture.width + 7) / 8,
+                height: (texture.height + 7) / 8,
+                depth: 1)
+            upscale.dispatchThreadgroups(fullGroups, threadsPerThreadgroup: threadsPerGroup)
+            upscale.endEncoding()
+        }
 
         commandBuffer.present(drawable)
 
@@ -427,13 +483,16 @@ final class SessionGPUEncoder {
         // carries the value out.
         nonisolated(unsafe) let completedStats = statsBuffer
         let slot = statsSlot
+        let inflight = inflight
         commandBuffer.addCompletedHandler { completed in
             let steps = UInt64(completedStats.contents().load(as: UInt32.self))
             // Command-buffer GPU timestamps, not ambient time (Invariant 9).
             let ms = max(0, completed.gpuEndTime - completed.gpuStartTime) * 1000.0
             slot.store(gpuMilliseconds: ms, totalSteps: steps)
+            inflight.signal()
         }
         commandBuffer.commit()
+        committed = true
     }
 }
 

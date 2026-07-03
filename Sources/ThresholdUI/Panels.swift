@@ -215,7 +215,9 @@ public struct CustomDESection: View {
 /// fps / GPU ms / steps readout + the pause toggle.
 public struct StatsSection: View {
     let mirror: ParameterMirror
-    @State private var autoQuality = false
+    // On by default: the app shell enables the governor at startup (stutter
+    // is the default-config failure mode, ADR-003); this mirrors that state.
+    @State private var autoQuality = true
 
     public init(mirror: ParameterMirror) {
         self.mirror = mirror

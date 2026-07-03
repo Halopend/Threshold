@@ -930,3 +930,23 @@ kernel void eval_de(
     ctx.lodScale = U.scaleCtx.w;
     outDE[gid] = deTable[U.meta.y](inPoints[gid].xyz, ctx);
 }
+
+// ---------------------------------------------------------------------------
+// upscale_bilinear — the render-scale lever's second pass (live path only).
+// The march renders into a smaller intermediate texture; this stretches it
+// over the full drawable with hardware bilinear filtering. Texture indices
+// are a private contract with SessionGPUEncoder (0 = source, 1 = dest), not
+// part of the ABI header.
+kernel void upscale_bilinear(
+    texture2d<float, access::sample> src [[texture(0)]],
+    texture2d<float, access::write> dst  [[texture(1)]],
+    uint2 gid                            [[thread_position_in_grid]])
+{
+    const uint w = dst.get_width();
+    const uint h = dst.get_height();
+    if (gid.x >= w || gid.y >= h) { return; }
+    constexpr sampler lin(coord::normalized, address::clamp_to_edge,
+                          filter::linear);
+    const float2 uv = (float2(gid) + 0.5f) / float2(w, h);
+    dst.write(src.sample(lin, uv), gid);
+}

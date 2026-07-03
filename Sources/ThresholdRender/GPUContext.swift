@@ -72,6 +72,9 @@ public final class GPUContext: @unchecked Sendable {
     let evalOpsPipeline: MTLComputePipelineState
     let evalDistPipeline: MTLComputePipelineState
     let evalDEPipeline: MTLComputePipelineState
+    /// Bilinear stretch for the render-scale lever (live path): march into a
+    /// smaller intermediate, upscale into the drawable. No DE linkage.
+    let upscalePipeline: MTLComputePipelineState
 
     /// DE table for `march_offscreen`: index 0 = mandelbox, 1 = mandelbulb.
     let marchDETable: MTLVisibleFunctionTable
@@ -146,6 +149,16 @@ public final class GPUContext: @unchecked Sendable {
         self.evalDEPipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "eval_de",
             deFunctions: deFunctions)
+        guard let upscaleKernel = library.makeFunction(name: "upscale_bilinear") else {
+            throw RenderError.missingFunction("upscale_bilinear")
+        }
+        do {
+            self.upscalePipeline = try device.makeComputePipelineState(
+                function: upscaleKernel)
+        } catch {
+            throw RenderError.pipelineCreationFailed(
+                "upscale_bilinear: \(String(describing: error))")
+        }
 
         self.marchDETable = try Self.makeDETable(
             marchPipeline, functions: deFunctions, label: "march_offscreen DE table")

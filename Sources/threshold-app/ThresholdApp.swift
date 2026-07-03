@@ -54,6 +54,15 @@ final class AppModel {
     func start() {
         session.start()
         mirror.startPolling()
+        // Quality governor ON by default (ADR-003): without it, any scene
+        // heavier than the refresh budget misses vsyncs and the app reads as
+        // "stuttering" out of the box (docs/perf-notes.md, stutter block).
+        // THRESHOLD_GOVERNOR=<targetMs> overrides the target (profiling seam);
+        // the sidebar's Auto Quality toggle turns it off.
+        let target = ProcessInfo.processInfo.environment["THRESHOLD_GOVERNOR"]
+            .flatMap(Double.init)
+        mirror.setQualityGovernor(QualityGovernorConfig(
+            targetMilliseconds: target ?? QualityGovernorConfig().targetMilliseconds))
     }
 
     func stop() {

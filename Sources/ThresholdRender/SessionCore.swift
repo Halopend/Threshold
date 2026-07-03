@@ -140,10 +140,18 @@ final class SessionCore {
         // Quality governor (ADR-003): a registered system-lane writer.
         // Quality-class params are .multiplicative, so resolved = user ×
         // factor — the user's slider is a ceiling, not a fight.
+        var renderScale: Float = 1
         if let config = governorConfig {
             let factor = governor.update(gpuMilliseconds: gpuMilliseconds, config: config)
             engine.write(lane: .system, slot: Int(THRESH_SLOT_MAX_STEPS), value: factor)
             engine.write(lane: .system, slot: Int(THRESH_SLOT_ITERATIONS), value: factor)
+            // Resolution is the LINEAR cost lever (pixels × per-pixel cost):
+            // sqrt(factor) per axis ≈ pixel count × factor. Quantized to
+            // 1/20ths so the additive-recovery creep doesn't reallocate the
+            // intermediate texture every frame; floored at half resolution —
+            // past that, blur reads as broken, not adaptive.
+            renderScale = max(sqrt(factor), 0.5)
+            renderScale = (renderScale * 20).rounded() / 20
         }
 
         clock.update(now: timestamp)
@@ -228,7 +236,8 @@ final class SessionCore {
         return SessionFrame(
             request: RenderRequest(
                 uniforms: uniforms, params: params, ops: gpuOps,
-                palette: palette.stops, width: width, height: height),
+                palette: palette.stops, width: width, height: height,
+                renderScale: renderScale),
             resolved: resolved,
             frameIndex: frameIndex,
             time: clock.now,
