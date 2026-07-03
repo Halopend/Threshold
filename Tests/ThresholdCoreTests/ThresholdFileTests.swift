@@ -30,8 +30,8 @@ struct ThresholdFileTests {
     }
 
     @Test func unsupportedExtensionThrowsListingSupportedTypes() {
-        #expect(throws: ThresholdFile.OpenError.unsupportedType("threshmp")) {
-            _ = try ThresholdFile.decode(Data(), filename: "map.threshmp")
+        #expect(throws: ThresholdFile.OpenError.unsupportedType("threshfx")) {
+            _ = try ThresholdFile.decode(Data(), filename: "recipe.threshfx")
         }
         #expect(throws: ThresholdFile.OpenError.unsupportedType("")) {
             _ = try ThresholdFile.decode(Data(), filename: "extensionless")
@@ -47,6 +47,18 @@ struct ThresholdFileTests {
             _ = try ThresholdFile.decode(
                 Data("{}".utf8), filename: "versionless.threshanim")
         }
+    }
+
+    @Test func bindingMapDecodesByExtension() throws {
+        let binding = Binding(
+            signal: .audioRMS, param: .colorSaturation, lane: .music)
+        let data = try BindingCodec.encode(BindingMapEnvelope(bindings: [binding]))
+        let file = try ThresholdFile.decode(data, filename: "map.threshmp")
+        guard case .bindings(let envelope) = file else {
+            Issue.record("expected .bindings")
+            return
+        }
+        #expect(envelope.bindings == [binding])
     }
 
     @Test func legacySceneMigratesThroughTheSamePath() throws {

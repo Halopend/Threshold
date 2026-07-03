@@ -177,6 +177,35 @@ struct LegacyCorpusTests {
         #expect(clip.tracks.contains { $0.param == .engineIterations })
     }
 
+    // MARK: .threshmp corpus
+
+    @Test("Every legacy binding map decodes and round-trips; sources/lanes are sane")
+    func mapCorpusReplay() throws {
+        let mapsDir = scenesDir.deletingLastPathComponent().appendingPathComponent("maps")
+        let files = try FileManager.default
+            .contentsOfDirectory(at: mapsDir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "threshmp" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        try #require(!files.isEmpty, "legacy map corpus missing at \(mapsDir.path)")
+
+        var anyBindings = false
+        for file in files {
+            let envelope = try BindingCodec.decode(try Data(contentsOf: file))
+            let name = Comment(rawValue: file.lastPathComponent)
+            #expect(envelope.version == BindingCodec.currentVersion, name)
+            // Never delete: the raw config survives in `unknown`.
+            #expect(envelope.unknown["audioReactiveConfig"] != nil, name)
+            for binding in envelope.bindings {
+                #expect(binding.lane == .music, name)  // only the music lane
+                #expect(binding.signal.rawValue.hasPrefix("audio."), name)
+            }
+            anyBindings = anyBindings || !envelope.bindings.isEmpty
+            let again = try BindingCodec.decode(try BindingCodec.encode(envelope))
+            #expect(again == envelope, name)
+        }
+        #expect(anyBindings, "corpus maps target saturation/iterations/fractalScale — some must map")
+    }
+
     @Test("mandelboxSphereProjection maps to mandelbox + sphereProject op")
     func sphereProjectionUnification() throws {
         for file in try corpusFiles() {

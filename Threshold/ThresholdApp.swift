@@ -123,6 +123,8 @@ final class AppModel {
                 }
                 mirror.setAnimationClip(clip)
                 mirror.animationTransport(.play)
+            case .bindings(let envelope):
+                mirror.setBindings(envelope.bindings)
             }
         } catch {
             lastOpenError = "\(url.lastPathComponent): \(error)"

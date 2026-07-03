@@ -3,14 +3,14 @@
 // path"). Pure classification + decode; what happens next (scene apply,
 // embedded-DE compile, clip load) is the caller's platform wiring.
 //
-// `.threshmp` (binding maps) and `.threshfx` (warp recipes) join here as
-// their rebuild codecs land.
+// `.threshfx` (warp recipes) joins here when its rebuild codec lands.
 
 import Foundation
 
 public enum ThresholdFile: Sendable {
     case scene(SceneEnvelope)
     case animation(AnimationEnvelope)
+    case bindings(BindingMapEnvelope)
 
     public enum OpenError: Error, Equatable, CustomStringConvertible {
         /// Extension is not one this build can open. Payload = the extension.
@@ -25,7 +25,7 @@ public enum ThresholdFile: Sendable {
     }
 
     /// Extensions this build opens, lowercase, in UI-listing order.
-    public static let supportedExtensions = ["threshscene", "threshanim"]
+    public static let supportedExtensions = ["threshscene", "threshanim", "threshmp"]
 
     /// Decode a file by its name's extension. Codec errors (bad JSON, version
     /// gaps) propagate as-is — they carry the diagnostics the UI shows.
@@ -37,6 +37,8 @@ public enum ThresholdFile: Sendable {
             return .scene(try SceneCodec.decode(data))
         case "threshanim":
             return .animation(try AnimationCodec.decode(data))
+        case "threshmp":
+            return .bindings(try BindingCodec.decode(data))
         default:
             throw OpenError.unsupportedType(ext)
         }
