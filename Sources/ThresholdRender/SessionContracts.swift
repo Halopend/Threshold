@@ -25,11 +25,14 @@ public struct RenderSnapshot: Sendable {
     public let paused: Bool
     /// The active gradient palette — what the gradient editor displays.
     public let palette: Palette
+    /// Animation transport state — what the play/scrub UI displays.
+    public let animation: AnimationPlaybackState
 
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
         gpuMilliseconds: Double, totalSteps: UInt64, deKey: String,
-        warpStack: [WarpOpDTO], paused: Bool, palette: Palette
+        warpStack: [WarpOpDTO], paused: Bool, palette: Palette,
+        animation: AnimationPlaybackState = .idle
     ) {
         self.resolved = resolved
         self.frameIndex = frameIndex
@@ -40,6 +43,7 @@ public struct RenderSnapshot: Sendable {
         self.warpStack = warpStack
         self.paused = paused
         self.palette = palette
+        self.animation = animation
     }
 }
 
@@ -88,4 +92,18 @@ public enum SessionCommand: Sendable {
     case setBindings([Binding])
     /// Replace the active gradient palette (scene content — plan §5.5).
     case setPalette(Palette)
+    /// Load (or unload with nil) the animation clip. Loading leaves the
+    /// transport stopped; follow with `.animationTransport(.play)`.
+    case setAnimationClip(AnimationClip?)
+    /// Animation transport (plan §3.2: stop zeroes the animation lane;
+    /// user/gesture/music offsets survive).
+    case animationTransport(AnimationTransportCommand)
+}
+
+/// Transport verbs for the animation player, as session-command data.
+public enum AnimationTransportCommand: Sendable, Equatable {
+    case play
+    case pause
+    case stop
+    case seek(Double)
 }

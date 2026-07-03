@@ -21,6 +21,8 @@ struct SessionFrame {
     let paused: Bool
     /// The active gradient palette — what the gradient editor displays.
     let palette: Palette
+    /// Animation transport state — what the play/scrub UI displays.
+    let animation: AnimationPlaybackState
 
     /// Complete the snapshot with the PREVIOUS completed frame's GPU stats
     /// (the frame path never waits on the GPU — ARCHITECTURE.md §2).
@@ -34,6 +36,7 @@ struct SessionFrame {
             deKey: deKey,
             warpStack: warpStack,
             paused: paused,
-            palette: palette)
+            palette: palette,
+            animation: animation)
     }
 }

@@ -31,6 +31,7 @@ final class SessionCore {
     let clock: WallClock
     let engine: ModulationEngine
     let bindingEngine: BindingEngine
+    let animationPlayer: AnimationPlayer
 
     private(set) var descriptor: DEDescriptor
     /// The AUTHORED warp stack — what snapshots/editors show.
@@ -62,6 +63,7 @@ final class SessionCore {
         // parameter.
         self.engine = ModulationEngine(layout: layout, clock: clock, mailbox: laneMailbox)
         self.bindingEngine = BindingEngine(layout: layout)
+        self.animationPlayer = AnimationPlayer(layout: layout)
         self.descriptor = DERegistry.descriptor(forKey: defaultDEKey) ?? .mandelbulb
         if let scene = initialScene {
             apply(scene: scene)
@@ -87,6 +89,10 @@ final class SessionCore {
             timestamp: clock.now)
 
         bindingEngine.apply(signals: signals, engine: engine, now: clock.now)
+
+        // Animation lane writes (plan §3.2). Content time: delta is already 0
+        // while paused; timeScale scales playback like integrators.
+        animationPlayer.step(engine: engine, scaledDelta: clock.delta * clock.timeScale)
 
         let resolved = engine.resolve()
 
@@ -149,7 +155,8 @@ final class SessionCore {
             deKey: descriptor.key,
             warpStack: authoredStack,
             paused: paused,
-            palette: palette)
+            palette: palette,
+            animation: animationPlayer.playbackState)
     }
 
     // MARK: - Commands
@@ -198,6 +205,17 @@ final class SessionCore {
 
         case .setPalette(let newPalette):
             palette = newPalette
+
+        case .setAnimationClip(let clip):
+            animationPlayer.setClip(clip)
+
+        case .animationTransport(let verb):
+            switch verb {
+            case .play: animationPlayer.play()
+            case .pause: animationPlayer.pause()
+            case .stop: animationPlayer.stop()
+            case .seek(let t): animationPlayer.seek(to: t)
+            }
         }
     }
 
