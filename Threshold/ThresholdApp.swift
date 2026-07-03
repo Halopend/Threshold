@@ -16,19 +16,27 @@ import ThresholdInputs
 import ThresholdRender
 import ThresholdShaderIR
 import ThresholdUI
+import UniformTypeIdentifiers
 
 #if os(macOS) || os(iOS)
 
 // MARK: - Composition root (live-render platforms)
 
 @MainActor
+@Observable
 final class AppModel {
-    let layout: CatalogLayout
-    let surface: RenderSurface
-    let session: InteractiveSession
-    let signals: SignalTable
-    let mirror: ParameterMirror
-    let audio: AudioAnalyzer
+    @ObservationIgnored let layout: CatalogLayout
+    @ObservationIgnored let surface: RenderSurface
+    @ObservationIgnored let session: InteractiveSession
+    @ObservationIgnored let signals: SignalTable
+    @ObservationIgnored let mirror: ParameterMirror
+    @ObservationIgnored let audio: AudioAnalyzer
+    /// Compiles + probes embedded DEs OFF the render thread (plan §7.2);
+    /// programs land via the setExternalDE command.
+    @ObservationIgnored let loader: ExternalDELoader
+    /// The last file-open failure, shown as an alert (compile diagnostics
+    /// surface verbatim — plan §7.2 "never trust-and-crash").
+    var lastOpenError: String?
 
     init() throws {
         // Catalog: engine params + every built-in DE's params — one
@@ -51,6 +59,7 @@ final class AppModel {
             context: context, layout: layout, layer: surface.layer,
             signals: signals, initialScene: nil)
         self.session = session
+        self.loader = try ExternalDELoader(context: context)
 
         self.mirror = ParameterMirror(
             layout: layout, snapshots: session.snapshots, commands: session.commands)
@@ -88,6 +97,54 @@ final class AppModel {
         }
     }
 
+    // MARK: File open (plan §7.4)
+
+    /// UTTypes the importer accepts, from ThresholdFile's extension list.
+    static let openableTypes: [UTType] =
+        ThresholdFile.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
+
+    /// Open a .threshscene / .threshanim from a security-scoped URL.
+    /// Decode is synchronous (files are small); an embedded DE compiles on a
+    /// background task, and BOTH commands publish together after it passes —
+    /// a rejected DE means the scene does not half-apply (ExternalDE.swift).
+    func open(url: URL) {
+        let secured = url.startAccessingSecurityScopedResource()
+        defer { if secured { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            switch try ThresholdFile.decode(data, filename: url.lastPathComponent) {
+            case .scene(let envelope):
+                apply(scene: envelope, from: url.lastPathComponent)
+            case .animation(let envelope):
+                mirror.setAnimationClip(envelope.clip)
+                mirror.animationTransport(.play)
+            }
+        } catch {
+            lastOpenError = "\(url.lastPathComponent): \(error)"
+        }
+    }
+
+    private func apply(scene envelope: SceneEnvelope, from filename: String) {
+        guard envelope.embeddedDE != nil else {
+            mirror.applyScene(envelope)
+            return
+        }
+        // Compile off the main actor; loader + mailbox are Sendable. The
+        // cache makes reopening the same DE instant.
+        let commands = session.commands
+        let loader = loader
+        Task.detached(priority: .userInitiated) {
+            do {
+                let program = try envelope.embeddedDE.map { try loader.load($0) }
+                commands.publish(.applyScene(envelope))
+                commands.publish(.setExternalDE(program))
+            } catch {
+                let message = "\(filename): \(error)"
+                await MainActor.run { self.lastOpenError = message }
+            }
+        }
+    }
+
     /// Same demo set as the dev shell: bass → bulb power, level → AO.
     static let defaultAudioBindings: [ThresholdCore.Binding] = [
         ThresholdCore.Binding(
@@ -114,30 +171,59 @@ final class AppModel {
 // MARK: - Main view (live-render platforms)
 
 struct MainView: View {
-    let model: AppModel
+    @Bindable var model: AppModel
     @State private var audioReactive = false
+    @State private var importing = false
 
     var body: some View {
         HStack(spacing: 0) {
             RenderSurfaceView(surface: model.surface)
                 .frame(minWidth: 320, minHeight: 320)
                 .layoutPriority(1)
+                // Drag a .threshscene/.threshanim onto the render view.
+                .dropDestination(for: URL.self) { urls, _ in
+                    guard let url = urls.first else { return false }
+                    model.open(url: url)
+                    return true
+                }
 
             Divider()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Toggle("React to Audio (mic)", isOn: $audioReactive)
-                        .onChange(of: audioReactive) { _, on in
-                            model.setAudioReactive(on)
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 8)
+                    HStack {
+                        Button("Open…") { importing = true }
+                        Toggle("React to Audio (mic)", isOn: $audioReactive)
+                            .onChange(of: audioReactive) { _, on in
+                                model.setAudioReactive(on)
+                            }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
                     Divider()
                     ControlSidebar(mirror: model.mirror, layout: model.layout)
                 }
             }
             .frame(width: 340)
+        }
+        .fileImporter(
+            isPresented: $importing,
+            allowedContentTypes: AppModel.openableTypes
+        ) { result in
+            if case .success(let url) = result {
+                model.open(url: url)
+            }
+        }
+        .alert(
+            "Could not open file",
+            isPresented: SwiftUI.Binding(
+                get: { model.lastOpenError != nil },
+                set: { if !$0 { model.lastOpenError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.lastOpenError ?? "")
         }
     }
 }

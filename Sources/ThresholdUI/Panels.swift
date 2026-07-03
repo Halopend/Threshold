@@ -5,6 +5,7 @@
 
 import SwiftUI
 import ThresholdCore
+import ThresholdRender
 import ThresholdShaderIR
 
 // MARK: - CatalogSectionView
@@ -71,6 +72,7 @@ public struct ControlSidebar: View {
             StatsSection(mirror: mirror)
             DEPickerSection(mirror: mirror)
             CustomDESection(mirror: mirror)
+            AnimationSection(mirror: mirror)
             WarpStackSection(mirror: mirror)
             PaletteSection(mirror: mirror, layout: layout)
             ForEach(Self.groupsInOrder(layout), id: \.self) { group in
@@ -117,6 +119,66 @@ public struct DEPickerSection: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - AnimationSection
+
+/// Transport for the loaded animation clip (play/pause/stop + scrub).
+/// Renders nothing until a clip is loaded (the .threshanim open flow or a
+/// scene-shipped clip). All state is snapshot readback; verbs go through the
+/// command mailbox — the mirror computes no transport logic.
+public struct AnimationSection: View {
+    let mirror: ParameterMirror
+
+    public init(mirror: ParameterMirror) {
+        self.mirror = mirror
+    }
+
+    public var body: some View {
+        if mirror.animation.hasClip {
+            Section("Animation") {
+                LabeledContent("Clip", value: mirror.animation.clipName ?? "Untitled")
+                HStack(spacing: 12) {
+                    Button {
+                        mirror.animationTransport(
+                            mirror.animation.isPlaying ? .pause : .play)
+                    } label: {
+                        Image(systemName: mirror.animation.isPlaying
+                            ? "pause.fill" : "play.fill")
+                    }
+                    Button {
+                        mirror.animationTransport(.stop)
+                    } label: {
+                        Image(systemName: "stop.fill")
+                    }
+                    Button(role: .destructive) {
+                        mirror.setAnimationClip(nil)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    Spacer()
+                    Text(Self.timecode(mirror.animation.time)
+                         + " / " + Self.timecode(mirror.animation.duration))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                if mirror.animation.duration > 0 {
+                    Slider(value: SwiftUI.Binding(
+                        get: { mirror.animation.time },
+                        set: { mirror.animationTransport(.seek($0)) }
+                    ), in: 0...mirror.animation.duration)
+                }
+            }
+        }
+    }
+
+    static func timecode(_ seconds: Double) -> String {
+        let whole = Int(seconds.rounded(.down))
+        return String(format: "%d:%02d.%d",
+                      whole / 60, whole % 60,
+                      Int((seconds - Double(whole)) * 10))
     }
 }
 

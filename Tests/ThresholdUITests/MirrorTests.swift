@@ -218,6 +218,36 @@ struct MirrorCommandTests {
         }
     }
 
+    @Test("animation state mirrors from snapshots; transport routes commands")
+    func animationMirrorAndTransport() {
+        let (mirror, snapshots, commands) = makeMirror()
+        #expect(mirror.animation == .idle)
+
+        let playing = AnimationPlaybackState(
+            hasClip: true, clipName: "spin", time: 1.5, duration: 4,
+            isPlaying: true, isFinished: false)
+        snapshots.publish(makeSnapshot(
+            values: [Float](repeating: 0, count: mirror.layout.slotCount),
+            animation: playing))
+        mirror.refresh()
+        #expect(mirror.animation == playing)
+
+        let clip = AnimationClip(name: "spin", loop: .once, duration: 4, tracks: [])
+        mirror.setAnimationClip(clip)
+        mirror.animationTransport(.play)
+        mirror.animationTransport(.seek(2))
+        mirror.setAnimationClip(nil)
+        let drained = commands.drain()
+        try? #require(drained.count == 4)
+        guard case .setAnimationClip(let sent) = drained[0], sent?.name == "spin",
+              case .animationTransport(.play) = drained[1],
+              case .animationTransport(.seek(2)) = drained[2],
+              case .setAnimationClip(nil) = drained[3] else {
+            Issue.record("unexpected command sequence: \(drained)")
+            return
+        }
+    }
+
     @Test("refresh publishes no commands (readback is one-way)")
     func refreshPublishesNothing() {
         let (mirror, snapshots, commands) = makeMirror()

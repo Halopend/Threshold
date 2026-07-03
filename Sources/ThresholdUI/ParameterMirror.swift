@@ -63,6 +63,8 @@ public final class ParameterMirror {
     /// Dynamic-arena entries (external DE params) from the latest snapshot —
     /// rendered by CustomDESection exactly like static layout entries.
     public private(set) var dynamicEntries: [CatalogEntry] = []
+    /// Animation transport state — what the play/scrub UI displays.
+    public private(set) var animation: AnimationPlaybackState = .idle
     /// Local echo of in-flight slider drags (slot → target resolved value),
     /// so a drag reads back its own target instead of a stale snapshot.
     public private(set) var pendingEdits: [Int: Float] = [:]
@@ -179,6 +181,10 @@ public final class ParameterMirror {
             dynamicEntries = snapshot.dynamicEntries
             changed = true
         }
+        if snapshot.animation != animation {
+            animation = snapshot.animation
+            changed = true
+        }
 
         if changed { refreshGeneration &+= 1 }
     }
@@ -252,6 +258,19 @@ public final class ParameterMirror {
     public func setPalette(_ palette: Palette) {
         self.palette = palette
         commands.publish(.setPalette(palette))
+    }
+
+    /// Load (nil unloads) an animation clip. Transport starts stopped —
+    /// follow with `animationTransport(.play)` (SessionCommand contract).
+    public func setAnimationClip(_ clip: AnimationClip?) {
+        commands.publish(.setAnimationClip(clip))
+    }
+
+    /// Animation transport verb. No optimistic echo — the authoritative
+    /// playback state returns via the next snapshot (transport is cheap and
+    /// the play/scrub UI reads clip-local time the render thread computes).
+    public func animationTransport(_ verb: AnimationTransportCommand) {
+        commands.publish(.animationTransport(verb))
     }
 
     // MARK: Diffing
