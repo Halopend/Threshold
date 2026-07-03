@@ -246,6 +246,10 @@ public final class InteractiveSession: @unchecked Sendable {
         sp.endInterval("drawable", drawableState)
         let drawableMs = Mono.ms(drawableStart, Mono.now())
 
+        // Previous completed frame's stats — the frame path never waits.
+        // Fetched BEFORE the step so the quality governor sees them.
+        let stats = gpu.lastCompleted()
+
         // targetTimestamp is the ONE permitted time source (Invariant 9);
         // the dispatch grid follows the drawable's ACTUAL size each frame.
         let stepStart = Mono.now()
@@ -253,12 +257,10 @@ public final class InteractiveSession: @unchecked Sendable {
         let frame = core.step(
             now: update.targetTimestamp,
             width: texture.width,
-            height: texture.height)
+            height: texture.height,
+            gpuMilliseconds: stats.gpuMilliseconds)
         sp.endInterval("core.step", stepState)
         let stepMs = Mono.ms(stepStart, Mono.now())
-
-        // Previous completed frame's stats — the frame path never waits.
-        let stats = gpu.lastCompleted()
 
         let encodeStart = Mono.now()
         let encodeState = sp.beginInterval("encode")

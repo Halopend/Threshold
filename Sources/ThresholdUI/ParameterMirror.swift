@@ -273,6 +273,11 @@ public final class ParameterMirror {
         commands.publish(.animationTransport(verb))
     }
 
+    /// Enable/disable the fps-holding quality governor (ADR-003).
+    public func setQualityGovernor(_ config: QualityGovernorConfig?) {
+        commands.publish(.setQualityGovernor(config))
+    }
+
     // MARK: Diffing
 
     private static func differ(_ a: [Float], _ b: [Float]) -> Bool {

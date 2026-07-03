@@ -211,6 +211,7 @@ public struct CustomDESection: View {
 /// fps / GPU ms / steps readout + the pause toggle.
 public struct StatsSection: View {
     let mirror: ParameterMirror
+    @State private var autoQuality = false
 
     public init(mirror: ParameterMirror) {
         self.mirror = mirror
@@ -225,6 +226,12 @@ public struct StatsSection: View {
                 get: { mirror.paused },
                 set: { mirror.setPaused($0) }
             ))
+            // ADR-003 governor: quality sliders stay the user's CEILING; the
+            // governor only modulates below them.
+            Toggle("Auto Quality", isOn: $autoQuality)
+                .onChange(of: autoQuality) { _, on in
+                    mirror.setQualityGovernor(on ? QualityGovernorConfig() : nil)
+                }
         }
     }
 }

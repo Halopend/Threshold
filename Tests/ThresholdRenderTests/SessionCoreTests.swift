@@ -85,6 +85,13 @@ private struct Harness {
         return core.step(now: now, width: width, height: height)
     }
 
+    /// Step with a synthetic previous-frame GPU duration (governor input).
+    @discardableResult
+    mutating func step(gpuMilliseconds: Double) -> SessionFrame {
+        now += 1.0 / 60.0
+        return core.step(now: now, width: 32, height: 32, gpuMilliseconds: gpuMilliseconds)
+    }
+
     func slot(_ key: ParamKey) -> Int {
         layout.slot(for: key)!
     }
@@ -524,6 +531,40 @@ struct SessionCoreTests {
         let data = try SceneCodec.encode(captured)
         let reopened = try SceneCodec.decode(data)
         #expect(reopened.params[ParamKey.engineAOStrength.rawValue] == [1.25])
+    }
+
+    @Test func qualityGovernorHoldsBudgetAndRespectsTheUserCeiling() {
+        var h = Harness()
+        h.step()
+        let maxStepsSlot = Int(THRESH_SLOT_MAX_STEPS)
+        let authored = h.step().resolved.values[maxStepsSlot]  // catalog default 256
+
+        // Enable and feed a blown budget: quality backs off.
+        h.commands.publish(.setQualityGovernor(QualityGovernorConfig(
+            targetMilliseconds: 8, floor: 0.25)))
+        for _ in 0..<120 { h.step(gpuMilliseconds: 24) }
+        let throttled = h.step().resolved.values[maxStepsSlot]
+        #expect(throttled < authored * 0.5,
+                "sustained 3× overshoot must reduce quality (got \(throttled) vs \(authored))")
+        #expect(throttled >= authored * 0.25 - 1, "never below the floor")
+
+        // Headroom: quality creeps back up.
+        for _ in 0..<600 { h.step(gpuMilliseconds: 2) }
+        let recovered = h.step().resolved.values[maxStepsSlot]
+        #expect(recovered > throttled, "recovers with headroom")
+
+        // The user's slider is a ceiling the governor cannot raise past:
+        // user writes a LOW multiplicative factor; resolved follows the user.
+        h.commands.publish(.userEdit(slot: maxStepsSlot, targetResolved: 32))
+        for _ in 0..<10 { h.step(gpuMilliseconds: 2) }
+        let userCapped = h.step().resolved.values[maxStepsSlot]
+        #expect(userCapped <= 33, "user can lower below the governor (got \(userCapped))")
+
+        // Disabling clears the system lane entirely.
+        h.commands.publish(.clearUserEdit(slot: maxStepsSlot))
+        h.commands.publish(.setQualityGovernor(nil))
+        h.step()
+        #expect(h.step().resolved.values[maxStepsSlot] == authored)
     }
 
     @Test func builtinSceneApplyClearsAnExternalProgram() throws {

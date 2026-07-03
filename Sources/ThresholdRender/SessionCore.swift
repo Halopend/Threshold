@@ -57,6 +57,10 @@ final class SessionCore {
     /// The active scene's embedded DE source, kept for re-saving (the
     /// compiled program does not retain its source).
     private var activeEmbeddedDE: EmbeddedDE?
+    /// The fps-holding quality governor (ADR-003) — the first registered
+    /// system-lane writer. nil = disabled.
+    private var governorConfig: QualityGovernorConfig?
+    private var governor = QualityGovernor()
     /// The AUTHORED warp stack — what snapshots/editors show.
     private(set) var authoredStack: [WarpOpDTO] = []
     /// The simplified buffer the GPU sees (plan §5.2). Rebuilt only on
@@ -101,9 +105,24 @@ final class SessionCore {
     /// One frame. `now` is the display link's targetTimestamp — the ONE
     /// permitted time source; `width`/`height` are the drawable's ACTUAL size
     /// this frame (resize follows the drawable, not a cached value).
-    func step(now timestamp: Double, width: Int, height: Int) -> SessionFrame {
+    /// `gpuMilliseconds` is the PREVIOUS completed frame's GPU duration
+    /// (0 = unknown; the shell feeds it, offline paths pass nothing) — the
+    /// quality governor's only input.
+    func step(
+        now timestamp: Double, width: Int, height: Int,
+        gpuMilliseconds: Double = 0
+    ) -> SessionFrame {
         for command in commands.drain() {
             handle(command)
+        }
+
+        // Quality governor (ADR-003): a registered system-lane writer.
+        // Quality-class params are .multiplicative, so resolved = user ×
+        // factor — the user's slider is a ceiling, not a fight.
+        if let config = governorConfig {
+            let factor = governor.update(gpuMilliseconds: gpuMilliseconds, config: config)
+            engine.write(lane: .system, slot: Int(THRESH_SLOT_MAX_STEPS), value: factor)
+            engine.write(lane: .system, slot: Int(THRESH_SLOT_ITERATIONS), value: factor)
         }
 
         clock.update(now: timestamp)
@@ -260,6 +279,14 @@ final class SessionCore {
             case .pause: animationPlayer.pause()
             case .stop: animationPlayer.stop()
             case .seek(let t): animationPlayer.seek(to: t)
+            }
+
+        case .setQualityGovernor(let config):
+            governorConfig = config
+            if config == nil {
+                governor.reset()
+                engine.clearLane(.system, slot: Int(THRESH_SLOT_MAX_STEPS))
+                engine.clearLane(.system, slot: Int(THRESH_SLOT_ITERATIONS))
             }
 
         case .captureScene(let slot):

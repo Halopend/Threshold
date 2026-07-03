@@ -136,6 +136,10 @@ public enum SessionCommand: Sendable {
     /// camera + palette + embedded DE) into the slot — the native save path.
     /// Snapshotting needs live engine state, which is render-thread confined.
     case captureScene(into: SceneCaptureSlot)
+    /// Enable (or with nil, disable) the fps-holding quality governor
+    /// (ADR-003): a registered system-lane writer emitting a 0…1 factor on
+    /// the quality-class params. Disabling clears its lane writes.
+    case setQualityGovernor(QualityGovernorConfig?)
 }
 
 /// Transport verbs for the animation player, as session-command data.
