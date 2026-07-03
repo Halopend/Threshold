@@ -58,6 +58,8 @@ public final class ParameterMirror {
     /// The AUTHORED warp stack (pre-simplification) — what editors display.
     public private(set) var warpStack: [WarpOpDTO] = []
     public private(set) var paused: Bool = false
+    /// The active gradient palette — what the gradient editor displays.
+    public private(set) var palette: Palette = Palette(stops: [])
     /// Local echo of in-flight slider drags (slot → target resolved value),
     /// so a drag reads back its own target instead of a stale snapshot.
     public private(set) var pendingEdits: [Int: Float] = [:]
@@ -166,6 +168,10 @@ public final class ParameterMirror {
             paused = snapshot.paused
             changed = true
         }
+        if snapshot.palette != palette {
+            palette = snapshot.palette
+            changed = true
+        }
 
         if changed { refreshGeneration &+= 1 }
     }
@@ -232,6 +238,13 @@ public final class ParameterMirror {
 
     public func setBindings(_ bindings: [ThresholdCore.Binding]) {
         commands.publish(.setBindings(bindings))
+    }
+
+    /// Replace the gradient palette (scene content — plan §5.5). Optimistic
+    /// local echo, authoritative value returns via the next snapshot.
+    public func setPalette(_ palette: Palette) {
+        self.palette = palette
+        commands.publish(.setPalette(palette))
     }
 
     // MARK: Diffing

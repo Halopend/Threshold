@@ -15,16 +15,27 @@ public struct CatalogSectionView: View {
     let group: GroupID
     let layout: CatalogLayout
     let mirror: ParameterMirror
+    /// Base slots rendered by a dedicated section elsewhere (e.g. the color
+    /// mapping picker lives in PaletteSection) — skip them here to avoid
+    /// duplicate controls.
+    let excludedSlots: Set<Int>
 
-    public init(group: GroupID, layout: CatalogLayout, mirror: ParameterMirror) {
+    public init(
+        group: GroupID, layout: CatalogLayout, mirror: ParameterMirror,
+        excludedSlots: Set<Int> = []
+    ) {
         self.group = group
         self.layout = layout
         self.mirror = mirror
+        self.excludedSlots = excludedSlots
     }
 
     public var body: some View {
         Section(group.rawValue.capitalized) {
-            ForEach(layout.entries.filter { $0.spec.group == group }, id: \.slot) { entry in
+            ForEach(
+                layout.entries.filter { $0.spec.group == group && !excludedSlots.contains($0.slot) },
+                id: \.slot
+            ) { entry in
                 ParameterRow(entry: entry, mirror: mirror)
             }
         }
@@ -60,11 +71,21 @@ public struct ControlSidebar: View {
             StatsSection(mirror: mirror)
             DEPickerSection(mirror: mirror)
             WarpStackSection(mirror: mirror)
+            PaletteSection(mirror: mirror, layout: layout)
             ForEach(Self.groupsInOrder(layout), id: \.self) { group in
-                CatalogSectionView(group: group, layout: layout, mirror: mirror)
+                // The color mapping picker is rendered by PaletteSection, so
+                // exclude its slot from the generic color group.
+                CatalogSectionView(
+                    group: group, layout: layout, mirror: mirror,
+                    excludedSlots: group == .color ? Self.colorMappingSlots(layout) : [])
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// The colorMapMode slot (if registered) — owned by PaletteSection.
+    nonisolated static func colorMappingSlots(_ layout: CatalogLayout) -> Set<Int> {
+        layout.slot(for: .colorMapMode).map { [$0] } ?? []
     }
 }
 
@@ -272,6 +293,187 @@ public enum WarpMenu {
             },
         ]),
     ]
+}
+
+// MARK: - PaletteEdit (pure, testable)
+
+/// Pure gradient-stop list edits. Each returns a NEW `Palette` (the UI publishes
+/// the whole palette via `mirror.setPalette`). Out-of-range indices are no-ops.
+/// The `Palette` initializer re-sorts/clamps, so callers need not.
+public enum PaletteEdit {
+    public static func setColor(
+        _ palette: Palette, at index: Int, red: Float, green: Float, blue: Float
+    ) -> Palette {
+        var stops = palette.stops
+        guard stops.indices.contains(index) else { return palette }
+        stops[index] = GradientStop(
+            position: stops[index].position, red: red, green: green, blue: blue)
+        return Palette(stops: stops)
+    }
+
+    public static func setPosition(_ palette: Palette, at index: Int, to position: Float) -> Palette {
+        var stops = palette.stops
+        guard stops.indices.contains(index) else { return palette }
+        let s = stops[index]
+        stops[index] = GradientStop(position: position, red: s.red, green: s.green, blue: s.blue)
+        return Palette(stops: stops)
+    }
+
+    public static func deleting(_ palette: Palette, at index: Int) -> Palette {
+        var stops = palette.stops
+        guard stops.indices.contains(index), stops.count > 1 else { return palette }
+        stops.remove(at: index)
+        return Palette(stops: stops)
+    }
+
+    /// Add a stop at the midpoint of the largest gap, colored by sampling the
+    /// current gradient there (so the insertion is visually seamless).
+    public static func addingStop(_ palette: Palette) -> Palette {
+        let stops = palette.stops
+        guard stops.count < Palette.maxStops else { return palette }
+        var position: Float = 0.5
+        if stops.count >= 2 {
+            var widest: Float = -1
+            for i in 0..<(stops.count - 1) {
+                let gap = stops[i + 1].position - stops[i].position
+                if gap > widest {
+                    widest = gap
+                    position = (stops[i].position + stops[i + 1].position) / 2
+                }
+            }
+        } else if let only = stops.first {
+            position = only.position < 0.5 ? min(only.position + 0.25, 1) : max(only.position - 0.25, 0)
+        }
+        let c = palette.sample(t: position)
+        return Palette(stops: stops + [
+            GradientStop(position: position, red: c.red, green: c.green, blue: c.blue)])
+    }
+}
+
+// MARK: - PaletteSection
+
+/// The gradient editor (plan §5.5 stage 2): preset menu, live preview bar,
+/// per-stop color/position rows, and a named color-mapping picker. The palette
+/// is scene content, so edits publish the whole `Palette` — the same
+/// replace-the-content contract as the warp stack.
+public struct PaletteSection: View {
+    let mirror: ParameterMirror
+    let layout: CatalogLayout
+
+    public init(mirror: ParameterMirror, layout: CatalogLayout) {
+        self.mirror = mirror
+        self.layout = layout
+    }
+
+    private var palette: Palette { mirror.palette }
+
+    /// SwiftUI colors from the LINEAR stop rgb (correct-space preview/edit).
+    private static func color(_ s: GradientStop) -> Color {
+        Color(.sRGBLinear, red: Double(s.red), green: Double(s.green), blue: Double(s.blue))
+    }
+
+    private var previewGradient: LinearGradient {
+        let stops = palette.stops.map { s in
+            Gradient.Stop(color: Self.color(s), location: Double(s.position))
+        }
+        return LinearGradient(
+            gradient: Gradient(stops: stops.isEmpty
+                ? [Gradient.Stop(color: .gray, location: 0)] : stops),
+            startPoint: .leading, endPoint: .trailing)
+    }
+
+    public var body: some View {
+        Section("Palette") {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(previewGradient)
+                .frame(height: 22)
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
+
+            Menu("Preset") {
+                ForEach(PalettePreset.builtIn) { preset in
+                    Button(preset.name) { mirror.setPalette(preset.palette) }
+                }
+            }
+
+            if let slot = layout.slot(for: .colorMapMode) {
+                Picker("Mapping", selection: mappingBinding(slot: slot)) {
+                    ForEach(ColorMapMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+            }
+
+            ForEach(Array(palette.stops.enumerated()), id: \.offset) { index, stop in
+                StopRow(index: index, stop: stop, mirror: mirror, canDelete: palette.stops.count > 1)
+            }
+
+            if palette.stops.count < Palette.maxStops {
+                Button {
+                    mirror.setPalette(PaletteEdit.addingStop(palette))
+                } label: {
+                    Label("Add Stop", systemImage: "plus")
+                }
+            }
+        }
+    }
+
+    private func mappingBinding(slot: Int) -> SwiftUI.Binding<ColorMapMode> {
+        SwiftUI.Binding(
+            get: {
+                ColorMapMode(rawValue: Int(mirror.displayValue(slot: slot).rounded())) ?? .orbitTrap
+            },
+            set: { mirror.updateEdit(slot: slot, target: Float($0.rawValue)) }
+        )
+    }
+}
+
+/// One gradient-stop row: color well + position slider + delete.
+struct StopRow: View {
+    let index: Int
+    let stop: GradientStop
+    let mirror: ParameterMirror
+    let canDelete: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ColorPicker("", selection: colorBinding, supportsOpacity: false)
+                .labelsHidden()
+            Slider(value: positionBinding, in: 0...1)
+            Text(ValueFormatting.format(stop.position))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 44, alignment: .trailing)
+            Button(role: .destructive) {
+                mirror.setPalette(PaletteEdit.deleting(mirror.palette, at: index))
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!canDelete)
+        }
+    }
+
+    private var colorBinding: SwiftUI.Binding<Color> {
+        SwiftUI.Binding(
+            get: {
+                Color(.sRGBLinear, red: Double(stop.red),
+                      green: Double(stop.green), blue: Double(stop.blue))
+            },
+            set: { newColor in
+                let r = newColor.resolve(in: EnvironmentValues())
+                mirror.setPalette(PaletteEdit.setColor(
+                    mirror.palette, at: index,
+                    red: r.linearRed, green: r.linearGreen, blue: r.linearBlue))
+            }
+        )
+    }
+
+    private var positionBinding: SwiftUI.Binding<Double> {
+        SwiftUI.Binding(
+            get: { Double(stop.position) },
+            set: { mirror.setPalette(PaletteEdit.setPosition(mirror.palette, at: index, to: Float($0))) }
+        )
+    }
 }
 
 // MARK: - WarpStackSection
