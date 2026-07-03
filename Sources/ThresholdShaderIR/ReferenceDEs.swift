@@ -8,8 +8,12 @@
 //   .y = orbit trap (minimum |z| over the iteration)
 //
 // Param layouts (normative):
-//   mandelbox  params = [scale, minRadius, fixedRadius, foldLimit]
-//   mandelbulb params = [power]
+//   mandelbox       params = [scale, minRadius, fixedRadius, foldLimit]
+//   mandelbulb      params = [power]
+//   kleinian        params = [minX, minY, minZ, sphereFold, maxX, maxY, maxZ, crossRadius]
+//   menger          params = [scale, offsetX, offsetY, offsetZ]
+//   quaternionJulia params = [cX, cY, cZ, cW, threshold]
+//   mandelbulbJulia params = [power, cX, cY, cZ]
 //
 // Encoder convention (see DERegistry): the DE param slice uploaded to the GPU
 // is the declared params in layout order with the iteration count appended as
@@ -103,5 +107,153 @@ public enum ReferenceDEs {
             trap = min(trap, length(z))
         }
         return SIMD2(0.5 * logf(max(r, 1e-9)) * r / dr, trap)
+    }
+
+    /// Knighty's Pseudo Kleinian: per iteration a two-sided box fold
+    /// (`2·clamp(z, mins, maxs) − z`) then a one-sided sphere fold
+    /// (`k = max(sphereFold/r², 1)`), with a cylindrical cross-section DE
+    /// `0.7·max(r_xy − crossR, r_xy·z/|z|) / scale`.
+    ///
+    /// - Parameter params: `[minX, minY, minZ, sphereFold, maxX, maxY, maxZ, crossRadius]`
+    ///   (the ORIGINAL app's formulaParamValues[0...7] order — normative for
+    ///   the legacy migration).
+    public static func kleinian(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 8,
+                     "kleinian params = [minX, minY, minZ, sphereFold, maxX, maxY, maxZ, crossRadius]")
+        let mins = SIMD3(params[0], params[1], params[2])
+        let sphereFold = params[3]
+        let maxs = SIMD3(params[4], params[5], params[6])
+        let crossR = params[7]
+
+        var z = p
+        var scale: Float = 1
+        var trap = length(z)
+
+        for _ in 0..<max(0, iterations) {
+            z = simd_clamp(z, mins, maxs) * 2 - z
+            let r2 = dot(z, z)
+            let k = max(sphereFold / max(r2, 1e-6), 1)
+            z *= k
+            scale *= k
+            trap = min(trap, length(z))
+        }
+
+        let rxy = length(SIMD2(z.x, z.y))
+        let de = 0.7 * max(rxy - crossR, rxy * z.z / max(length(z), 1e-6))
+            / max(scale, 1e-6)
+        return SIMD2(de, trap)
+    }
+
+    /// Classic Menger sponge: abs-fold, descending coordinate sort,
+    /// `z ← z·scale − offset·(scale−1)` with the z-axis conditional refold.
+    /// Distance = (|z| − 1) / dr.
+    ///
+    /// - Parameter params: `[scale, offsetX, offsetY, offsetZ]`.
+    public static func menger(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 4, "menger params = [scale, offsetX, offsetY, offsetZ]")
+        let scale = params[0]
+        let offset = SIMD3(params[1], params[2], params[3])
+
+        var z = p
+        var dr: Float = 1
+        var trap = length(z)
+
+        for _ in 0..<max(0, iterations) {
+            z = abs(z)
+            // Sort so z.x ≥ z.y ≥ z.z.
+            if z.x < z.y { z = SIMD3(z.y, z.x, z.z) }
+            if z.x < z.z { z = SIMD3(z.z, z.y, z.x) }
+            if z.y < z.z { z = SIMD3(z.x, z.z, z.y) }
+
+            let offsetScaled = offset * (scale - 1)
+            z = z * scale - offsetScaled
+            if z.z < -0.5 * offsetScaled.z {
+                z.z += offsetScaled.z
+            }
+            dr = dr * abs(scale) + 1
+            trap = min(trap, length(z))
+        }
+        return SIMD2((length(z) - 1) / dr, trap)
+    }
+
+    /// Quaternion Julia set: `q ← q² + c` from `q₀ = (p, 0)` with the running
+    /// derivative quaternion `dq ← 2·q·dq`. Distance = `0.5·|q|·ln|q| / |dq|`,
+    /// escape when `|q|² > threshold`.
+    ///
+    /// - Parameter params: `[cX, cY, cZ, cW, threshold]`.
+    public static func quaternionJulia(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 5, "quaternionJulia params = [cX, cY, cZ, cW, threshold]")
+        let c = SIMD4(params[0], params[1], params[2], params[3])
+        let threshold = params[4]
+
+        var q = SIMD4(p.x, p.y, p.z, 0)
+        var dq = SIMD4<Float>(1, 0, 0, 0)
+        var trap = length(q)
+
+        for _ in 0..<max(0, iterations) {
+            dq = 2 * SIMD4(
+                q.x * dq.x - q.y * dq.y - q.z * dq.z - q.w * dq.w,
+                q.x * dq.y + q.y * dq.x + q.z * dq.w - q.w * dq.z,
+                q.x * dq.z - q.y * dq.w + q.z * dq.x + q.w * dq.y,
+                q.x * dq.w + q.y * dq.z - q.z * dq.y + q.w * dq.x)
+            q = SIMD4(
+                q.x * q.x - q.y * q.y - q.z * q.z - q.w * q.w,
+                2 * q.x * q.y,
+                2 * q.x * q.z,
+                2 * q.x * q.w) + c
+            trap = min(trap, length(q))
+            if dot(q, q) > threshold { break }
+        }
+
+        let r = max(length(q), 1e-6)
+        return SIMD2(0.5 * r * logf(r) / max(length(dq), 1e-9), trap)
+    }
+
+    /// Julia-mode Mandelbulb: the mandelbulb triplex-power iteration with a
+    /// fixed additive constant `c` instead of `p` (and NO `+1` derivative
+    /// term — Julia sets iterate a fixed map, `dr = power·r^(power−1)·dr`).
+    /// Escape radius 4, distance `0.5·ln(r)·r/dr`.
+    ///
+    /// - Parameter params: `[power, cX, cY, cZ]`.
+    public static func mandelbulbJulia(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 4, "mandelbulbJulia params = [power, cX, cY, cZ]")
+        let power = params[0]
+        let c = SIMD3(params[1], params[2], params[3])
+
+        var z = p
+        var dr: Float = 1
+        var r = length(z)
+        var trap = r
+
+        for _ in 0..<max(0, iterations) {
+            r = length(z)
+            if r > 4 { break }
+            let rSafe = max(r, 1e-9)
+            let theta = acosf(simd_clamp(z.z / rSafe, -1, 1)) * power
+            let phi = atan2f(z.y, z.x) * power
+            dr = powf(rSafe, power - 1) * power * dr
+            let zr = powf(rSafe, power)
+            z = zr * SIMD3(sinf(theta) * cosf(phi),
+                           sinf(phi) * sinf(theta),
+                           cosf(theta)) + c
+            trap = min(trap, length(z))
+        }
+        return SIMD2(0.5 * logf(max(r, 1e-9)) * r / max(dr, 1e-9), trap)
     }
 }

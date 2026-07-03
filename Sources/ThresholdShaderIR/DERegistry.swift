@@ -104,13 +104,96 @@ extension DEDescriptor {
         ],
         defaultIterations: 12
     )
+
+    /// Knighty's Pseudo Kleinian: box fold + sphere fold with a cylindrical
+    /// cross-section DE. Param order matches the ORIGINAL app's
+    /// formulaParamValues[0...7] so the legacy migration can map them 1:1.
+    /// (The original's ColorOfs/ColorScale tail params were coloring-system
+    /// knobs, not DE inputs — deliberately not carried over.)
+    public static let kleinian = DEDescriptor(
+        index: 2,
+        key: "kleinian",
+        displayName: "Kleinian",
+        mslFunctionName: "de_kleinian",
+        equation: "zₙ₊₁ = sphereFold(boxFold(zₙ, mins, maxs))",
+        paramLayout: [
+            Param(name: "minX", default: -0.3252, range: -2.0...2.0),
+            Param(name: "minY", default: -0.7862, range: -2.0...2.0),
+            Param(name: "minZ", default: -0.0948, range: -2.0...2.0),
+            Param(name: "sphereFold", default: 0.69, range: 0.01...3.0),
+            Param(name: "maxX", default: 0.35, range: -2.0...2.0),
+            Param(name: "maxY", default: 1.0, range: -2.0...2.0),
+            Param(name: "maxZ", default: 1.22, range: -2.0...2.0),
+            Param(name: "crossRadius", default: 0.84, range: 0.01...4.0),
+        ],
+        defaultIterations: 12
+    )
+
+    /// Classic Menger sponge (abs + sort fold, scale + offset). The original's
+    /// per-iteration rotation matrix is deliberately not a DE input here —
+    /// orientation belongs to the warp stack / camera, not the formula.
+    public static let mengerSponge = DEDescriptor(
+        index: 3,
+        key: "mengerSponge",
+        displayName: "Menger Sponge",
+        mslFunctionName: "de_menger",
+        equation: "zₙ₊₁ = scale·sort(|zₙ|) − offset·(scale−1)",
+        paramLayout: [
+            Param(name: "scale", default: 3.0, range: 1.0...6.0),
+            Param(name: "offsetX", default: 1.0, range: 0.0...4.0),
+            Param(name: "offsetY", default: 1.0, range: 0.0...4.0),
+            Param(name: "offsetZ", default: 1.0, range: 0.0...4.0),
+        ],
+        defaultIterations: 12
+    )
+
+    /// Quaternion Julia set (q ← q² + c with the running Jacobian norm).
+    /// `threshold` is the squared escape radius — a genuine shape control in
+    /// this family, kept declared.
+    public static let quaternionJulia = DEDescriptor(
+        index: 4,
+        key: "quaternionJulia",
+        displayName: "Quaternion Julia",
+        mslFunctionName: "de_quaternion_julia",
+        equation: "qₙ₊₁ = qₙ² + c",
+        paramLayout: [
+            Param(name: "cX", default: -0.2, range: -2.0...2.0),
+            Param(name: "cY", default: 0.8, range: -2.0...2.0),
+            Param(name: "cZ", default: 0.0, range: -2.0...2.0),
+            Param(name: "cW", default: 0.0, range: -2.0...2.0),
+            Param(name: "threshold", default: 10.0, range: 1.0...100.0),
+        ],
+        defaultIterations: 12
+    )
+
+    /// Julia-mode Mandelbulb: the mandelbulb iteration with a fixed additive
+    /// constant instead of p. The original's Bailout/DerivBias/PolarRotation
+    /// knobs were escape-hatch tuning, not shape — dropped; bailout is the
+    /// same constant 4 as the mandelbulb.
+    public static let mandelbulbJulia = DEDescriptor(
+        index: 5,
+        key: "mandelbulbJulia",
+        displayName: "Mandelbulb Julia",
+        mslFunctionName: "de_mandelbulb_julia",
+        equation: "zₙ₊₁ = zₙ^power + c",
+        paramLayout: [
+            Param(name: "power", default: 8.0, range: 2.0...16.0),
+            Param(name: "cX", default: 0.2, range: -2.0...2.0),
+            Param(name: "cY", default: -0.15, range: -2.0...2.0),
+            Param(name: "cZ", default: 0.35, range: -2.0...2.0),
+        ],
+        defaultIterations: 12
+    )
 }
 
 // MARK: - DERegistry
 
 public enum DERegistry {
     /// Built-in DEs, ordered by table index.
-    public static let builtin: [DEDescriptor] = [.mandelbox, .mandelbulb]
+    public static let builtin: [DEDescriptor] = [
+        .mandelbox, .mandelbulb, .kleinian, .mengerSponge,
+        .quaternionJulia, .mandelbulbJulia,
+    ]
 
     public static func descriptor(forKey key: String) -> DEDescriptor? {
         builtin.first { $0.key == key }

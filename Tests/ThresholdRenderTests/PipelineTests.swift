@@ -6,6 +6,7 @@ import Metal
 import simd
 import Testing
 import ThresholdShaderABI
+import ThresholdShaderIR
 @testable import ThresholdRender
 
 @Suite("GPU context & pipelines")
@@ -20,7 +21,7 @@ struct PipelineTests {
     @Test(.enabled(if: GPU.available))
     func libraryCompilesAndAllPipelinesBuild() throws {
         let ctx = try GPU.ctx()
-        #expect(ctx.deFunctionCount == 2)
+        #expect(ctx.deFunctionCount == DERegistry.builtin.count)
         #expect(ctx.marchPipeline.maxTotalThreadsPerThreadgroup >= 64)
         #expect(ctx.evalOpsPipeline.maxTotalThreadsPerThreadgroup >= 64)
         #expect(ctx.evalDistPipeline.maxTotalThreadsPerThreadgroup >= 64)

@@ -9,6 +9,7 @@
 import Foundation
 import Metal
 import ThresholdShaderABI
+import ThresholdShaderIR
 
 /// Errors surfaced by the render stack. Compiler diagnostics from
 /// `makeLibrary` are passed through verbatim (ARCHITECTURE §4).
@@ -110,8 +111,10 @@ public final class GPUContext: @unchecked Sendable {
         self.library = library
 
         // --- built-in DEs as linked visible functions ------------------------
-        // Index order in every table: 0 = mandelbox, 1 = mandelbulb.
-        let deNames = ["de_mandelbox", "de_mandelbulb"]
+        // Table order IS DERegistry.builtin order (each descriptor's `index`);
+        // one declaration site — adding a DE touches the registry + MSL,
+        // never this file.
+        let deNames = DERegistry.builtin.map(\.mslFunctionName)
         var deFunctions: [MTLFunction] = []
         deFunctions.reserveCapacity(deNames.count)
         for name in deNames {

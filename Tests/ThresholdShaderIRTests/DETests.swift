@@ -149,7 +149,7 @@ struct ReferenceDETests {
 struct DERegistryTests {
     @Test("builtin table: indices, keys, MSL names, layouts")
     func builtinTable() {
-        #expect(DERegistry.builtin.count == 2)
+        #expect(DERegistry.builtin.count == 6)
 
         let box = DERegistry.builtin[0]
         #expect(box.index == 0)
@@ -168,6 +168,15 @@ struct DERegistryTests {
         #expect(bulb.paramLayout.map(\.name) == ["power"])
         #expect(bulb.paramLayout.first?.default == 8.0)
 
+        // Structural invariants for the whole table: index == position
+        // (the visible-function-table contract), keys and MSL names unique.
+        for (position, descriptor) in DERegistry.builtin.enumerated() {
+            #expect(descriptor.index == UInt32(position),
+                    "\(descriptor.key) index \(descriptor.index) != table position \(position)")
+        }
+        #expect(Set(DERegistry.builtin.map(\.key)).count == DERegistry.builtin.count)
+        #expect(Set(DERegistry.builtin.map(\.mslFunctionName)).count == DERegistry.builtin.count)
+
         // Defaults sit inside their declared ranges.
         for descriptor in DERegistry.builtin {
             for param in descriptor.paramLayout {
@@ -175,6 +184,17 @@ struct DERegistryTests {
                         "\(descriptor.key).\(param.name) default outside range")
             }
         }
+
+        // The 2026-07 additions: param layouts are load-bearing (scene files
+        // + the legacy migration's formulaParamValues order).
+        #expect(DERegistry.descriptor(forKey: "kleinian")?.paramLayout.map(\.name)
+            == ["minX", "minY", "minZ", "sphereFold", "maxX", "maxY", "maxZ", "crossRadius"])
+        #expect(DERegistry.descriptor(forKey: "mengerSponge")?.paramLayout.map(\.name)
+            == ["scale", "offsetX", "offsetY", "offsetZ"])
+        #expect(DERegistry.descriptor(forKey: "quaternionJulia")?.paramLayout.map(\.name)
+            == ["cX", "cY", "cZ", "cW", "threshold"])
+        #expect(DERegistry.descriptor(forKey: "mandelbulbJulia")?.paramLayout.map(\.name)
+            == ["power", "cX", "cY", "cZ"])
 
         // Lookups.
         #expect(DERegistry.descriptor(forKey: "mandelbox")?.index == 0)

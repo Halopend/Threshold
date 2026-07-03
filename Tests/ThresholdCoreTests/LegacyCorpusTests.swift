@@ -87,6 +87,20 @@ struct LegacyCorpusTests {
         #expect(envelope.camera.position != CameraDTO.default.position)
     }
 
+    @Test("Stress_test: kleinian formulaParamValues map positionally to de.kleinian.*")
+    func kleinianFormulaParams() throws {
+        let data = try Data(
+            contentsOf: scenesDir.appendingPathComponent("Stress_test.threshscene"))
+        let envelope = try SceneCodec.decode(data)
+        // Legacy formulaParamValues[0...7]:
+        // [-0.7129297, -0.8780583, 0.07105777, 2.9999967, …]
+        let minX = try #require(envelope.params["de.kleinian.minX"]?.first)
+        #expect(abs(minX - -0.7129297) < 1e-6)
+        let sphereFold = try #require(envelope.params["de.kleinian.sphereFold"]?.first)
+        #expect(abs(sphereFold - 2.9999967) < 1e-6)
+        #expect(envelope.params["de.kleinian.crossRadius"]?.count == 1)
+    }
+
     @Test("mandelboxSphereProjection maps to mandelbox + sphereProject op")
     func sphereProjectionUnification() throws {
         for file in try corpusFiles() {

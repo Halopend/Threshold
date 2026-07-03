@@ -101,6 +101,22 @@ public enum LegacyScene {
             "fovYRadians": .number(Double.pi / 3),
         ])
 
+        // --- formula params (per-type, only where the rebuild DE exists) --
+        // kleinian's declared layout deliberately matches the original's
+        // formulaParamValues[0...7] (DERegistry.kleinian) so this is a
+        // positional copy. Other types map as their DEs land; unmapped
+        // formulaParamValues stay preserved in `unknown`.
+        if case .string("kleinian")? = tree["fractalType"],
+           case .array(let formula)? = tree["formulaParamValues"], formula.count >= 8 {
+            let names = ["minX", "minY", "minZ", "sphereFold",
+                         "maxX", "maxY", "maxZ", "crossRadius"]
+            for (i, name) in names.enumerated() {
+                if case .number(let n) = formula[i] {
+                    params["de.kleinian.\(name)"] = .array([.number(n)])
+                }
+            }
+        }
+
         // --- engine + grading scalars -------------------------------------
         copyParam("fractalIterations", to: .engineIterations)
         copyParam("maxRaySteps", to: .engineMaxSteps)

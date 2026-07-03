@@ -385,6 +385,125 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
     return float2(0.5f * log(max(r, 1e-9f)) * r / dr, trap);
 }
 
+// params: [minX, minY, minZ, sphereFold, maxX, maxY, maxZ, crossRadius]
+// + [iterations]. Knighty's Pseudo Kleinian — numerically identical to
+// ReferenceDEs.kleinian.
+[[visible]] float2 de_kleinian(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float3 mins = float3(ctx.params[0], ctx.params[1], ctx.params[2]);
+    const float sphereFold = ctx.params[3];
+    const float3 maxs = float3(ctx.params[4], ctx.params[5], ctx.params[6]);
+    const float crossR = ctx.params[7];
+    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+
+    float3 z = p;
+    float scale = 1.0f;
+    float trap = length(z);
+
+    for (int i = 0; i < iterations; ++i) {
+        z = clamp(z, mins, maxs) * 2.0f - z;
+        float r2 = dot(z, z);
+        float k = max(sphereFold / max(r2, 1e-6f), 1.0f);
+        z *= k;
+        scale *= k;
+        trap = min(trap, length(z));
+    }
+
+    float rxy = length(z.xy);
+    float de = 0.7f * max(rxy - crossR, rxy * z.z / max(length(z), 1e-6f))
+        / max(scale, 1e-6f);
+    return float2(de, trap);
+}
+
+// params: [scale, offsetX, offsetY, offsetZ] + [iterations]. Classic Menger
+// sponge — numerically identical to ReferenceDEs.menger.
+[[visible]] float2 de_menger(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float scale = ctx.params[0];
+    const float3 offset = float3(ctx.params[1], ctx.params[2], ctx.params[3]);
+    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+
+    float3 z = p;
+    float dr = 1.0f;
+    float trap = length(z);
+
+    for (int i = 0; i < iterations; ++i) {
+        z = fabs(z);
+        if (z.x < z.y) { float t = z.x; z.x = z.y; z.y = t; }
+        if (z.x < z.z) { float t = z.x; z.x = z.z; z.z = t; }
+        if (z.y < z.z) { float t = z.y; z.y = z.z; z.z = t; }
+
+        float3 offsetScaled = offset * (scale - 1.0f);
+        z = z * scale - offsetScaled;
+        if (z.z < -0.5f * offsetScaled.z) {
+            z.z += offsetScaled.z;
+        }
+        dr = dr * fabs(scale) + 1.0f;
+        trap = min(trap, length(z));
+    }
+    return float2((length(z) - 1.0f) / dr, trap);
+}
+
+// params: [cX, cY, cZ, cW, threshold] + [iterations]. Quaternion Julia —
+// numerically identical to ReferenceDEs.quaternionJulia.
+[[visible]] float2 de_quaternion_julia(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float4 c = float4(ctx.params[0], ctx.params[1], ctx.params[2], ctx.params[3]);
+    const float threshold = ctx.params[4];
+    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+
+    float4 q = float4(p, 0.0f);
+    float4 dq = float4(1.0f, 0.0f, 0.0f, 0.0f);
+    float trap = length(q);
+
+    for (int i = 0; i < iterations; ++i) {
+        dq = 2.0f * float4(
+            q.x * dq.x - q.y * dq.y - q.z * dq.z - q.w * dq.w,
+            q.x * dq.y + q.y * dq.x + q.z * dq.w - q.w * dq.z,
+            q.x * dq.z - q.y * dq.w + q.z * dq.x + q.w * dq.y,
+            q.x * dq.w + q.y * dq.z - q.z * dq.y + q.w * dq.x);
+        q = float4(
+            q.x * q.x - q.y * q.y - q.z * q.z - q.w * q.w,
+            2.0f * q.x * q.y,
+            2.0f * q.x * q.z,
+            2.0f * q.x * q.w) + c;
+        trap = min(trap, length(q));
+        if (dot(q, q) > threshold) { break; }
+    }
+
+    float r = max(length(q), 1e-6f);
+    return float2(0.5f * r * log(r) / max(length(dq), 1e-9f), trap);
+}
+
+// params: [power, cX, cY, cZ] + [iterations]. Julia-mode Mandelbulb (fixed
+// additive constant, NO +1 derivative term) — numerically identical to
+// ReferenceDEs.mandelbulbJulia.
+[[visible]] float2 de_mandelbulb_julia(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float power = ctx.params[0];
+    const float3 c = float3(ctx.params[1], ctx.params[2], ctx.params[3]);
+    const int iterations = int(ctx.params[ctx.paramCount - 1]);
+
+    float3 z = p;
+    float dr = 1.0f;
+    float r = length(z);
+    float trap = r;
+
+    for (int i = 0; i < iterations; ++i) {
+        r = length(z);
+        if (r > 4.0f) { break; }
+        float rSafe = max(r, 1e-9f);
+        float theta = acos(clamp(z.z / rSafe, -1.0f, 1.0f)) * power;
+        // atan2(0, 0): pin to the CPU (libm) value, see de_mandelbulb.
+        float phi = (z.y == 0.0f && z.x == 0.0f) ? 0.0f : atan2(z.y, z.x) * power;
+        dr = pow(rSafe, power - 1.0f) * power * dr;
+        float zr = pow(rSafe, power);
+        z = zr * float3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta)) + c;
+        trap = min(trap, length(z));
+    }
+    return float2(0.5f * log(max(r, 1e-9f)) * r / max(dr, 1e-9f), trap);
+}
+
 // ============================== the scene map ===============================
 //
 // THE single scene distance function (Invariant 7). March loop, tetrahedron
