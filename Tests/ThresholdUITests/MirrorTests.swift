@@ -111,23 +111,24 @@ struct MirrorDiffingTests {
 @MainActor
 @Suite("ParameterMirror command routing")
 struct MirrorCommandTests {
-    @Test("updateEdit publishes exactly one userEdit with slot and target")
+    @Test("An instantaneous updateEdit (no drag) commits straight to the scene")
     func updateEditRouting() {
         let (mirror, _, commands) = makeMirror()
 
+        // No beginEdit → a toggle/picker-style write → commit (persists+saves).
         mirror.updateEdit(slot: 17, target: 0.42)
 
         let drained = commands.drain()
         #expect(drained.count == 1)
-        guard case .userEdit(let slot, let target) = drained.first else {
-            Issue.record("expected .userEdit, got \(String(describing: drained.first))")
+        guard case .commitUserEdit(let slot, let target) = drained.first else {
+            Issue.record("expected .commitUserEdit, got \(String(describing: drained.first))")
             return
         }
         #expect(slot == 17)
         #expect(target == 0.42)
     }
 
-    @Test("beginEdit publishes nothing; endEdit publishes one clearUserEdit")
+    @Test("beginEdit publishes nothing; endEdit commits the edit to the scene")
     func editBracketRouting() {
         let (mirror, _, commands) = makeMirror()
 
@@ -137,14 +138,14 @@ struct MirrorCommandTests {
         mirror.endEdit(slot: 17)
         let drained = commands.drain()
         #expect(drained.count == 1)
-        guard case .clearUserEdit(let slot) = drained.first else {
-            Issue.record("expected .clearUserEdit, got \(String(describing: drained.first))")
+        guard case .commitUserEdit(let slot, _) = drained.first else {
+            Issue.record("expected .commitUserEdit, got \(String(describing: drained.first))")
             return
         }
         #expect(slot == 17)
     }
 
-    @Test("A drag is userEdit* then clearUserEdit, in order")
+    @Test("A drag is live userEdit* then a commit of the final value, in order")
     func dragSequence() {
         let (mirror, _, commands) = makeMirror()
 
@@ -158,7 +159,7 @@ struct MirrorCommandTests {
         guard drained.count == 3,
               case .userEdit(16, 0.1) = drained[0],
               case .userEdit(16, 0.2) = drained[1],
-              case .clearUserEdit(16) = drained[2]
+              case .commitUserEdit(16, 0.2) = drained[2]
         else {
             Issue.record("unexpected drag sequence: \(drained)")
             return

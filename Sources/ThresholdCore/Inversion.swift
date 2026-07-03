@@ -67,4 +67,44 @@ public enum Inversion {
             return clamped / product
         }
     }
+
+    /// Compute the SCENE-lane (authored base) value that makes the resolved
+    /// value equal `clamp(target)` once the momentary USER lane is cleared —
+    /// i.e. the value to COMMIT a slider edit into so it persists and saves.
+    /// Same inversion as `userLaneValue`, but the scene lane IS the base (no
+    /// separate base term) and the user lane is excluded (it is cleared on
+    /// commit). The other transient lanes (animation/system/gesture/music) keep
+    /// their current contribution, so grab-what-you-see continuity holds.
+    ///
+    /// Pure: reads engine state, mutates nothing.
+    public static func sceneLaneValue(
+        toAchieve target: Float,
+        slot: Int,
+        in engine: ModulationEngine
+    ) -> Float {
+        precondition(slot >= 0 && slot < engine.layout.slotCount, "slot \(slot) out of bounds")
+        guard let composition = engine.compositionForSlot(slot) else { return target }
+        let clamped = engine.clampToRange(target, slot: slot)
+        let otherLanes: [Lane] = [.animation, .system, .gesture, .music]
+
+        switch composition {
+        case .replace:
+            return clamped
+
+        case .additive:
+            var sum: Float = 0
+            for lane in otherLanes {
+                if let v = engine.currentValue(lane: lane, slot: slot) { sum += v }
+            }
+            return clamped - sum
+
+        case .multiplicative:
+            var product: Float = 1
+            for lane in otherLanes {
+                if let v = engine.currentValue(lane: lane, slot: slot) { product *= v }
+            }
+            guard abs(product) > 1e-6 else { return clamped }  // not invertible → target
+            return clamped / product
+        }
+    }
 }

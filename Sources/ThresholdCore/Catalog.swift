@@ -163,9 +163,13 @@ public final class Catalog {
                       composition: .replace, persistence: .scene,
                       group: .performance),
             atSlot: EngineSlot.maxDist.rawValue)
+        // Doubles as the over-relaxation factor ω (enhanced sphere tracing):
+        // < 1 conservative, 1 = plain sphere trace, > 1 over-relaxes (fewer
+        // march steps across empty space, with an overstep-retreat guard so
+        // surfaces are never tunneled). Default 0.9 keeps prior behavior.
         try! catalog.registerEngine(
-            ParamSpec(key: .engineStepSafety, label: "Step Safety",
-                      range: 0.01...1.0, default: 0.9,
+            ParamSpec(key: .engineStepSafety, label: "Step Multiplier (ω)",
+                      range: 0.5...2.0, default: 0.9,
                       composition: .replace, persistence: .deviceLocal,
                       group: .performance),
             atSlot: EngineSlot.stepSafety.rawValue)

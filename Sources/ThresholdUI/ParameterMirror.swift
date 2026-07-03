@@ -230,20 +230,27 @@ public final class ParameterMirror {
         pendingEdits[slot] = displayValue(slot: slot)
     }
 
-    /// Forward a resolved-value target for `slot`. One `userEdit` command per
-    /// call; the render thread computes the user-lane write (inversion needs
-    /// live engine state — never done here).
+    /// Forward a resolved-value target for `slot`. DURING a drag (between
+    /// begin/endEdit) this is a live grab-what-you-see write to the momentary
+    /// user lane; for an INSTANTANEOUS control (toggle, picker — no begin/end)
+    /// it commits straight to the authored scene lane so the change sticks.
     public func updateEdit(slot: Int, target: Float) {
-        if editingSlots.contains(slot) { pendingEdits[slot] = target }
-        commands.publish(.userEdit(slot: slot, targetResolved: target))
+        if editingSlots.contains(slot) {
+            pendingEdits[slot] = target
+            commands.publish(.userEdit(slot: slot, targetResolved: target))
+        } else {
+            commands.publish(.commitUserEdit(slot: slot, targetResolved: target))
+        }
     }
 
-    /// End the interaction (slider release): publish `clearUserEdit` per the
-    /// SessionCommand contract and drop the local echo.
+    /// End the interaction (slider release): COMMIT the dragged value to the
+    /// scene lane so it persists and Save captures it (was `clearUserEdit`,
+    /// which reverted the edit on release), and drop the local echo.
     public func endEdit(slot: Int) {
+        let target = pendingEdits[slot] ?? displayValue(slot: slot)
         editingSlots.remove(slot)
         pendingEdits[slot] = nil
-        commands.publish(.clearUserEdit(slot: slot))
+        commands.publish(.commitUserEdit(slot: slot, targetResolved: target))
     }
 
     // MARK: Structural commands

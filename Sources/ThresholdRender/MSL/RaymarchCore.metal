@@ -803,15 +803,35 @@ static inline ThreshMarchResult marchShade(
     bool bad = false;
     uint steps = 0;
 
+    // Enhanced sphere tracing (Keinert et al. 2014). `stepSafety` doubles as
+    // the over-relaxation factor ω: at ω > 1 the march steps PAST the DE
+    // sphere to cross empty space in fewer mapScene evaluations, and RETREATS
+    // (falling back to plain tracing) whenever an over-step's sphere fails to
+    // overlap the previous one — so a surface is never tunneled through. At
+    // ω ≤ 1 (the default 0.9) the sorFail branch can never fire, so this is
+    // bit-identical to a plain `t += dm.x * stepSafety` sphere trace.
+    float omega = stepSafety;
+    float prevRadius = 0.0f;
+    float stepLength = 0.0f;
+
     for (int i = 0; i < maxSteps; ++i) {
         float3 pos = ro + rd * t;
         float2 dm = mapScene(pos, U, params, ops, deTable);
         steps += 1;
         if (isnan(dm.x) || isinf(dm.x)) { bad = true; break; }
+        const float radius = dm.x;
+        const bool sorFail = (omega > 1.0f) && (radius + prevRadius) < stepLength;
+        if (sorFail) {
+            stepLength -= omega * stepLength;   // undo the over-step (t retreats)
+            omega = 1.0f;                        // conservative for the rest of the ray
+        } else {
+            stepLength = radius * omega;
+        }
+        prevRadius = radius;
         hitEps = epsBase * t;   // distance-proportional (cone) epsilon —
                                 // scale-invariant: dm.x is already world-space
-        if (dm.x < hitEps) { hit = true; trap = dm.y; break; }
-        t += dm.x * stepSafety;
+        if (!sorFail && radius < hitEps) { hit = true; trap = dm.y; break; }
+        t += stepLength;
         if (t > maxDist) { break; }
     }
 

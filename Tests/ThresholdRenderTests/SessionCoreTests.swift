@@ -221,6 +221,39 @@ struct SessionCoreTests {
                 "clearing the user-lane slot restores the pre-edit composition")
     }
 
+    @Test func commitUserEditPersistsAcrossReleaseInsteadOfReverting() {
+        var h = Harness()
+        h.step()
+        let addSlot = h.slot(TK.add)  // additive, base 1
+        let mulSlot = h.slot(TK.mul)  // multiplicative, base 2
+
+        // Nonzero transient (gesture) lanes so the commit exercises the
+        // scene-lane inversion, not just a trivial replace.
+        h.mailbox.publish(LaneWrite(lane: .gesture, slot: addSlot, value: 0.7))
+        h.mailbox.publish(LaneWrite(lane: .gesture, slot: mulSlot, value: 1.5))
+        h.step()
+
+        // Drag (live user lane) then RELEASE via commit.
+        h.commands.publish(.userEdit(slot: addSlot, targetResolved: 4.2))
+        h.commands.publish(.userEdit(slot: mulSlot, targetResolved: 2.5))
+        h.step()
+        h.commands.publish(.commitUserEdit(slot: addSlot, targetResolved: 4.2))
+        h.commands.publish(.commitUserEdit(slot: mulSlot, targetResolved: 2.5))
+        let committed = h.step()
+
+        // The edit does NOT revert on release (the bug being fixed) …
+        #expect(abs(committed.resolved.values[addSlot] - 4.2) <= 1e-4,
+                "commit keeps the resolved value at the target across release")
+        #expect(abs(committed.resolved.values[mulSlot] - 2.5) <= 1e-4)
+
+        // … and it persists across subsequent frames (it lives on the scene
+        // lane now, so it is permanent and Save captures it).
+        let later = h.step()
+        #expect(abs(later.resolved.values[addSlot] - 4.2) <= 1e-4,
+                "committed edit is permanent, not momentary")
+        #expect(abs(later.resolved.values[mulSlot] - 2.5) <= 1e-4)
+    }
+
     // MARK: bindings
 
     // TODO(core-bindings): this test currently runs against the PROVISIONAL

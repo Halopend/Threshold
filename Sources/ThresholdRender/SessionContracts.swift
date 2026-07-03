@@ -29,11 +29,16 @@ public struct RenderTuning: Sendable, Equatable {
     public var bakeColorMapMode: Bool
     /// Bake AO enablement (function_constant 5): skips the 5-tap AO when off.
     public var gateAO: Bool
+    /// Manual internal render scale in (0, 1] used when the fps governor is
+    /// OFF: the march runs at `drawable × scale` and MetalFX upscales to full
+    /// resolution. 1 = full-res. Ignored while the governor drives the scale.
+    public var manualRenderScale: Float
 
     public init(
         specializationEnabled: Bool = true, bakeIterations: Bool = false,
         bakeMaxSteps: Bool = false, gateWarpOps: Bool = false,
-        bakeColorMapMode: Bool = false, gateAO: Bool = false
+        bakeColorMapMode: Bool = false, gateAO: Bool = false,
+        manualRenderScale: Float = 1
     ) {
         self.specializationEnabled = specializationEnabled
         self.bakeIterations = bakeIterations
@@ -41,6 +46,7 @@ public struct RenderTuning: Sendable, Equatable {
         self.gateWarpOps = gateWarpOps
         self.bakeColorMapMode = bakeColorMapMode
         self.gateAO = gateAO
+        self.manualRenderScale = manualRenderScale
     }
 
     /// Seeded from the process env (`THRESHOLD_SPEC_ITERATIONS`) so the app
@@ -64,6 +70,7 @@ public struct RenderDiagnostics: Sendable, Equatable {
         case specialized     // direct-call inlined DE variant
         case specializedAux  // direct-call + temporal-upscale inputs
         case external        // an external DE program's own pipeline
+        case raster          // visionOS Compositor stereo fragment path
 
         public var label: String {
             switch self {
@@ -72,6 +79,7 @@ public struct RenderDiagnostics: Sendable, Equatable {
             case .specialized:    return "Specialized"
             case .specializedAux: return "Specialized + Upscale"
             case .external:       return "External DE"
+            case .raster:         return "Raster (visionOS)"
             }
         }
         public var isSpecialized: Bool { self == .specialized || self == .specializedAux }
@@ -224,8 +232,15 @@ public enum SessionCommand: Sendable {
     /// user-lane write that makes the resolved value equal `targetResolved`
     /// (inversion needs live engine state, which is render-thread confined).
     case userEdit(slot: Int, targetResolved: Float)
-    /// End of a momentary interaction for one slot (slider release).
+    /// End of a momentary interaction for one slot (slider release) that
+    /// DISCARDS the edit — clears the user lane, reverting to the base.
     case clearUserEdit(slot: Int)
+    /// Commit a slider/toggle edit: bake the resolved target into the authored
+    /// SCENE lane (so it persists AND is captured by Save), then release the
+    /// momentary user override. The resolved value is unchanged across the
+    /// swap (grab-what-you-see continuity) — this is the normal slider-release
+    /// path, replacing the revert-on-release `clearUserEdit`.
+    case commitUserEdit(slot: Int, targetResolved: Float)
     case clearLane(Lane)
     case setPaused(Bool)
     /// Replace the active binding set (bindings are data — plan §4.2).

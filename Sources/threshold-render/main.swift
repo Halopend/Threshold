@@ -336,6 +336,13 @@ for frame in 0..<opts.frames {
     engineParams.maxSteps = resolved.values[Int(THRESH_SLOT_MAX_STEPS)]
     engineParams.maxDist = resolved.values[Int(THRESH_SLOT_MAX_DIST)]
     engineParams.stepSafety = resolved.values[Int(THRESH_SLOT_STEP_SAFETY)]
+    // Measurement override: engine.stepSafety is .deviceLocal (not scene-
+    // persisted), so THRESHOLD_STEP_MULTIPLIER is the CLI A/B knob for the
+    // over-relaxation factor ω.
+    if let omega = ProcessInfo.processInfo.environment["THRESHOLD_STEP_MULTIPLIER"]
+        .flatMap(Float.init) {
+        engineParams.stepSafety = omega
+    }
     engineParams.iterations = resolved.values[Int(THRESH_SLOT_ITERATIONS)]
     engineParams.aoStrength = resolved.values[Int(THRESH_SLOT_AO_STRENGTH)]
     engineParams.shadowSoft = resolved.values[Int(THRESH_SLOT_SHADOW_SOFT)]

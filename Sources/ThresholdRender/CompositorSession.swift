@@ -237,8 +237,12 @@ public final class CompositorSession: @unchecked Sendable {
             // renderQuality. On this shell renderScale is NOT an intermediate
             // texture (that is the Mac/InteractiveSession path) — the drawable
             // itself shrinks, so the march runs fewer fragments and the
-            // compositor upscales natively.
-            pendingRenderQuality = sessionFrame.request.renderScale
+            // compositor upscales natively. CLAMP to the configured ceiling:
+            // the governor's scale reaches 1.0 on light scenes, and the
+            // compositor rejects any renderQuality above maxRenderQuality
+            // ("BUG IN CLIENT: called -setRenderQuality with value larger than
+            // configuration render quality").
+            pendingRenderQuality = min(sessionFrame.request.renderScale, Self.maxRenderQuality)
 
             let originFromDevice =
                 deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
@@ -273,9 +277,19 @@ public final class CompositorSession: @unchecked Sendable {
             }
             frame.endSubmission()
 
+            // Debug telemetry for the control-window panel (the visionOS
+            // shell renders through the stereo raster fragment path, not the
+            // compute specialization cache). Report the renderQuality actually
+            // applied (clamped to the ceiling) — the drawable shrinks and the
+            // compositor upscales natively, so `upscaling` tracks quality < 1.
+            let scale = foveated ? pendingRenderQuality : 1
             snapshots.publish(sessionFrame.snapshot(
                 gpuMilliseconds: stats.gpuMilliseconds,
-                totalSteps: stats.totalSteps))
+                totalSteps: stats.totalSteps,
+                diagnostics: RenderDiagnostics(
+                    pipeline: .raster,
+                    renderScale: scale,
+                    upscaling: scale < 0.999)))
         }
     }
 

@@ -70,9 +70,9 @@ public struct ControlSidebar: View {
 
     public var body: some View {
         Form {
+            FractalSwitcherSection(mirror: mirror)
             StatsSection(mirror: mirror)
             PipelineSection(mirror: mirror)
-            DEPickerSection(mirror: mirror)
             CustomDESection(mirror: mirror)
             AnimationSection(mirror: mirror)
             #if os(visionOS)
@@ -94,6 +94,52 @@ public struct ControlSidebar: View {
     /// The colorMapMode slot (if registered) — owned by PaletteSection.
     nonisolated static func colorMappingSlots(_ layout: CatalogLayout) -> Set<Int> {
         layout.slot(for: .colorMapMode).map { [$0] } ?? []
+    }
+}
+
+// MARK: - FractalSwitcherSection
+
+/// A prominent, tappable fractal (DE) switcher — a grid of big buttons with
+/// the active one highlighted. Replaces the dropdown picker: far easier to hit
+/// in a headset (visionOS control window) and shows the current fractal at a
+/// glance. Built-ins only; an active external DE leaves none highlighted (and
+/// tapping a built-in switches to it, clearing the external — setDE contract).
+public struct FractalSwitcherSection: View {
+    let mirror: ParameterMirror
+
+    public init(mirror: ParameterMirror) {
+        self.mirror = mirror
+    }
+
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
+
+    public var body: some View {
+        Section("Fractal") {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(DERegistry.builtin, id: \.key) { descriptor in
+                    let active = mirror.deKey == descriptor.key
+                    Button {
+                        mirror.setDE(key: descriptor.key)
+                    } label: {
+                        Text(descriptor.displayName)
+                            .font(.callout)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, minHeight: 42)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(active ? .accentColor : .secondary)
+                    .overlay(alignment: .topTrailing) {
+                        if active {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.tint)
+                                .padding(3)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
     }
 }
 
@@ -284,6 +330,21 @@ public struct PipelineSection: View {
                     "Render scale",
                     value: String(format: "%.0f%%", mirror.diagnostics.renderScale * 100))
             }
+            // Manual upscaling: march at reduced internal resolution and
+            // MetalFX-upscale to full res. Applies when Auto Quality (the fps
+            // governor) is OFF; otherwise the governor drives the scale.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Upscale")
+                    Slider(value: renderScale, in: 0.25...1.0)
+                    Text(String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100))
+                        .monospacedDigit().foregroundStyle(.secondary)
+                        .frame(minWidth: 44, alignment: .trailing)
+                }
+                Text("render resolution — Auto Quality must be off")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
             Toggle("Specialized Pipeline", isOn: tuning(\.specializationEnabled))
             Group {
                 Toggle("Bake Iterations (unroll)", isOn: tuning(\.bakeIterations))
@@ -296,8 +357,8 @@ public struct PipelineSection: View {
         }
     }
 
-    /// Binding onto one field of the mirror's RenderTuning; a write rebuilds
-    /// the whole value and publishes it (setRenderTuning contract).
+    /// Binding onto one Bool field of the mirror's RenderTuning; a write
+    /// rebuilds the whole value and publishes it (setRenderTuning contract).
     private func tuning(
         _ keyPath: WritableKeyPath<RenderTuning, Bool>
     ) -> SwiftUI.Binding<Bool> {
@@ -306,6 +367,17 @@ public struct PipelineSection: View {
             set: { newValue in
                 var next = mirror.renderTuning
                 next[keyPath: keyPath] = newValue
+                mirror.setRenderTuning(next)
+            })
+    }
+
+    /// The manual render-scale slider binding (Float ↔ Double).
+    private var renderScale: SwiftUI.Binding<Double> {
+        SwiftUI.Binding(
+            get: { Double(mirror.renderTuning.manualRenderScale) },
+            set: { newValue in
+                var next = mirror.renderTuning
+                next.manualRenderScale = Float(newValue)
                 mirror.setRenderTuning(next)
             })
     }

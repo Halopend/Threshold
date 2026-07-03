@@ -154,6 +154,9 @@ final class SessionCore {
             let factor = governor.update(gpuMilliseconds: gpuMilliseconds, config: config)
             renderScale = min(max(sqrt(factor), config.minRenderScale), 1)
             renderScale = (renderScale * 20).rounded() / 20
+        } else {
+            // Governor off: honor the manual upscaling slider (RenderTuning).
+            renderScale = min(max(tuning.manualRenderScale, 0.1), 1)
         }
 
         clock.update(now: timestamp)
@@ -286,6 +289,17 @@ final class SessionCore {
 
         case .clearUserEdit(let slot):
             guard slot >= 0 && slot < layout.slotCount else { return }
+            engine.clearLane(.user, slot: slot)
+
+        case .commitUserEdit(let slot, let target):
+            // Persist the edit into the authored scene lane (the only lane Save
+            // captures — SceneCodec.snapshot), then release the momentary user
+            // override. sceneLaneValue keeps the resolved value at `target`
+            // given the other transient lanes, so nothing jumps on release.
+            guard slot >= 0 && slot < layout.slotCount else { return }
+            engine.write(
+                lane: .scene, slot: slot,
+                value: Inversion.sceneLaneValue(toAchieve: target, slot: slot, in: engine))
             engine.clearLane(.user, slot: slot)
 
         case .clearLane(let lane):
