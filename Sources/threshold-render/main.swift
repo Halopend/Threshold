@@ -200,12 +200,14 @@ if let path = opts.writeDefaultScenePath {
     }
 }
 
+// Envelope contract: fractalTypeKey is IGNORED when embeddedDE is set. The
+// external program loads after GPU init below (compile needs the device).
+let builtinDescriptor: DEDescriptor?
 if envelope.embeddedDE != nil {
-    // The envelope contract says fractalTypeKey is IGNORED when embeddedDE is
-    // set — silently rendering the wrong DE would violate it.
-    die("this harness does not support embedded DEs yet (scene declares one)")
-}
-guard let descriptor = DERegistry.descriptor(forKey: envelope.fractalTypeKey) else {
+    builtinDescriptor = nil
+} else if let known = DERegistry.descriptor(forKey: envelope.fractalTypeKey) {
+    builtinDescriptor = known
+} else {
     die("unknown fractal type '\(envelope.fractalTypeKey)' "
         + "(known: \(DERegistry.builtin.map(\.key).joined(separator: ", ")))")
 }
@@ -248,6 +250,36 @@ do {
     die("GPU init failed (the harness needs a Metal device): \(error)")
 }
 
+// External DE: compile → probe → accept, or die with the diagnostics
+// (plan §7.2 — rejection surfaces the compiler output, never a crash).
+let program: ExternalDEProgram?
+let descriptor: DEDescriptor
+if let embedded = envelope.embeddedDE {
+    do {
+        let loader = try ExternalDELoader(context: context)
+        let loaded = try loader.load(embedded)
+        program = loaded
+        descriptor = loaded.descriptor
+        if !opts.quiet {
+            print("external DE \(descriptor.key): compiled, linked, probe passed")
+        }
+    } catch {
+        die("embedded DE rejected: \(error)")
+    }
+} else {
+    program = nil
+    descriptor = builtinDescriptor!  // guaranteed by the guard above
+}
+
+/// External DE params are not catalog-registered (the catalog froze before
+/// the scene was read) — they resolve from the scene file directly under
+/// `de.external.<name>`, falling back to declared defaults.
+func externalDEParamValues(_ descriptor: DEDescriptor, envelope: SceneEnvelope) -> [Float] {
+    descriptor.paramLayout.map { param in
+        envelope.params["de.external.\(param.name)"]?.first ?? param.default
+    }
+}
+
 var perFrame: [FrameStats] = []
 var lastResult: RenderResult?
 
@@ -274,7 +306,9 @@ for frame in 0..<opts.frames {
     engineParams.tonemap = resolved.values[Int(THRESH_SLOT_TONEMAP)]
     let (params, deParamOffset) = ParamTableLayout.build(
         engine: engineParams,
-        deParams: deParamValues(descriptor, layout: layout, resolved: resolved))
+        deParams: program != nil
+            ? externalDEParamValues(descriptor, envelope: envelope)
+            : deParamValues(descriptor, layout: layout, resolved: resolved))
 
     var uniforms = ThreshFrameUniforms()
     uniforms.camPosFov = SIMD4(
@@ -299,7 +333,7 @@ for frame in 0..<opts.frames {
         palette: envelope.palette?.stops ?? [],
         width: opts.width, height: opts.height)
     do {
-        let result = try renderer.render(request)
+        let result = try renderer.render(request, program: program)
         perFrame.append(FrameStats(
             frame: frame, time: clock.now,
             totalSteps: result.stats.totalSteps,

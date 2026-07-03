@@ -30,7 +30,12 @@ public final class OffscreenRenderer: @unchecked Sendable {
         self.queue = queue
     }
 
-    public func render(_ request: RenderRequest) throws -> RenderResult {
+    /// Render one request. Pass `program` to dispatch an external DE — its
+    /// pipeline/table extend the built-in set, so a request whose
+    /// `uniforms.meta.y` is a BUILT-IN index still works through it.
+    public func render(
+        _ request: RenderRequest, program: ExternalDEProgram? = nil
+    ) throws -> RenderResult {
         guard request.width > 0, request.height > 0 else {
             throw RenderError.badRequest("non-positive dimensions")
         }
@@ -45,7 +50,7 @@ public final class OffscreenRenderer: @unchecked Sendable {
                 "uniforms.meta param layout (count \(uniforms.meta.z), offset \(uniforms.meta.w)) " +
                 "inconsistent with params.count \(request.params.count)")
         }
-        guard Int(uniforms.meta.y) < context.deFunctionCount else {
+        guard Int(uniforms.meta.y) < (program?.deFunctionCount ?? context.deFunctionCount) else {
             throw RenderError.badRequest("deIndex \(uniforms.meta.y) out of range")
         }
 
@@ -74,7 +79,7 @@ public final class OffscreenRenderer: @unchecked Sendable {
             throw RenderError.allocationFailed("command buffer/encoder")
         }
         encoder.label = "march_offscreen"
-        encoder.setComputePipelineState(context.marchPipeline)
+        encoder.setComputePipelineState(program?.marchPipeline ?? context.marchPipeline)
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setBytes(raw.baseAddress!, length: raw.count,
                              index: Int(THRESH_BUFFER_UNIFORMS))
@@ -82,7 +87,7 @@ public final class OffscreenRenderer: @unchecked Sendable {
         encoder.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
-        encoder.setVisibleFunctionTable(context.marchDETable,
+        encoder.setVisibleFunctionTable(program?.marchDETable ?? context.marchDETable,
                                         bufferIndex: GPUContext.deTableBufferIndex)
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in

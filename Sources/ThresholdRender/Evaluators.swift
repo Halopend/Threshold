@@ -115,14 +115,18 @@ public final class DEEvaluator: @unchecked Sendable {
     /// `deParams` are the DE's DECLARED params; iterations is appended as the
     /// slice's last entry per the encoder convention.
     /// Returns (.x distance estimate, .y min |z| orbit trap) per point.
+    /// Evaluates a DE (built-in table index, or an external program's index —
+    /// pass `program` to bind its extended pipeline/table) at each point.
     public func evaluate(points: [SIMD3<Float>],
                          deIndex: Int,
                          deParams: [Float],
                          iterations: Int,
                          time: Float = 0,
-                         lodScale: Float = 1) throws -> [SIMD2<Float>] {
+                         lodScale: Float = 1,
+                         program: ExternalDEProgram? = nil) throws -> [SIMD2<Float>] {
         guard !points.isEmpty else { return [] }
-        guard deIndex >= 0, deIndex < context.deFunctionCount else {
+        let functionCount = program?.deFunctionCount ?? context.deFunctionCount
+        guard deIndex >= 0, deIndex < functionCount else {
             throw RenderError.badRequest("deIndex \(deIndex) out of range")
         }
         var engine = EngineParams()
@@ -154,7 +158,7 @@ public final class DEEvaluator: @unchecked Sendable {
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw RenderError.allocationFailed("command buffer/encoder")
         }
-        encoder.setComputePipelineState(context.evalDEPipeline)
+        encoder.setComputePipelineState(program?.evalDEPipeline ?? context.evalDEPipeline)
         encoder.setBuffer(inBuffer, offset: 0, index: 0)
         encoder.setBuffer(outBuffer, offset: 0, index: 1)
         encoder.setBuffer(paramsBuffer, offset: 0, index: 2)
@@ -162,7 +166,7 @@ public final class DEEvaluator: @unchecked Sendable {
             encoder.setBytes(raw.baseAddress!, length: raw.count, index: 3)
         }
         encoder.setBytes(&pointCount, length: MemoryLayout<UInt32>.size, index: 4)
-        encoder.setVisibleFunctionTable(context.evalDETable,
+        encoder.setVisibleFunctionTable(program?.evalDETable ?? context.evalDETable,
                                         bufferIndex: GPUContext.evalDETableBufferIndex)
         dispatch1D(encoder, count: count)
         encoder.endEncoding()

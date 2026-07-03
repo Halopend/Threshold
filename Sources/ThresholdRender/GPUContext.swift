@@ -61,6 +61,12 @@ public final class GPUContext: @unchecked Sendable {
 
     public let device: MTLDevice
     let library: MTLLibrary
+    /// The bundled ABI header source — prepended to the core at compile, and
+    /// the published header external DEs compile against (plan §5.1/§7.2).
+    let abiHeaderSource: String
+    /// Built-in DE `[[visible]]` functions in table order — the base set every
+    /// pipeline links; external programs link these + their own function.
+    let builtinDEFunctions: [MTLFunction]
 
     let marchPipeline: MTLComputePipelineState
     let evalOpsPipeline: MTLComputePipelineState
@@ -95,6 +101,7 @@ public final class GPUContext: @unchecked Sendable {
         let header = try String(contentsOf: headerURL, encoding: .utf8)
         let core = try String(contentsOf: sourceURL, encoding: .utf8)
         let source = header + "\n" + core
+        self.abiHeaderSource = header
 
         // --- compile --------------------------------------------------------
         // mathMode .safe: no fast-math re-association / FMA contraction
@@ -124,51 +131,71 @@ public final class GPUContext: @unchecked Sendable {
             deFunctions.append(f)
         }
         self.deFunctionCount = deFunctions.count
+        self.builtinDEFunctions = deFunctions
 
         // --- pipelines --------------------------------------------------------
-        func makePipeline(_ kernelName: String) throws -> MTLComputePipelineState {
-            guard let kernel = library.makeFunction(name: kernelName) else {
-                throw RenderError.missingFunction(kernelName)
-            }
-            let desc = MTLComputePipelineDescriptor()
-            desc.label = kernelName
-            desc.computeFunction = kernel
-            let linked = MTLLinkedFunctions()
-            linked.functions = deFunctions
-            desc.linkedFunctions = linked
-            do {
-                return try device.makeComputePipelineState(
-                    descriptor: desc, options: [], reflection: nil)
-            } catch {
-                throw RenderError.pipelineCreationFailed(
-                    "\(kernelName): \(String(describing: error))")
-            }
+        self.marchPipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "march_offscreen",
+            deFunctions: deFunctions)
+        self.evalOpsPipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "eval_ops",
+            deFunctions: deFunctions)
+        self.evalDistPipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "eval_dist",
+            deFunctions: deFunctions)
+        self.evalDEPipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "eval_de",
+            deFunctions: deFunctions)
+
+        self.marchDETable = try Self.makeDETable(
+            marchPipeline, functions: deFunctions, label: "march_offscreen DE table")
+        self.evalDETable = try Self.makeDETable(
+            evalDEPipeline, functions: deFunctions, label: "eval_de DE table")
+    }
+
+    // MARK: - Pipeline/table construction (shared with ExternalDELoader)
+
+    /// A compute pipeline for `kernelName` with `deFunctions` linked as
+    /// visible functions (built-ins, plus an external DE when loading one).
+    static func makeLinkedPipeline(
+        device: MTLDevice, library: MTLLibrary, kernelName: String,
+        deFunctions: [MTLFunction]
+    ) throws -> MTLComputePipelineState {
+        guard let kernel = library.makeFunction(name: kernelName) else {
+            throw RenderError.missingFunction(kernelName)
         }
-
-        func makeDETable(_ pipeline: MTLComputePipelineState,
-                         label: String) throws -> MTLVisibleFunctionTable {
-            let desc = MTLVisibleFunctionTableDescriptor()
-            desc.functionCount = deFunctions.count
-            guard let table = pipeline.makeVisibleFunctionTable(descriptor: desc) else {
-                throw RenderError.functionTableCreationFailed(label)
-            }
-            for (index, f) in deFunctions.enumerated() {
-                guard let handle = pipeline.functionHandle(function: f) else {
-                    throw RenderError.functionTableCreationFailed(
-                        "\(label): no handle for \(f.name)")
-                }
-                table.setFunction(handle, index: index)
-            }
-            return table
+        let desc = MTLComputePipelineDescriptor()
+        desc.label = kernelName
+        desc.computeFunction = kernel
+        let linked = MTLLinkedFunctions()
+        linked.functions = deFunctions
+        desc.linkedFunctions = linked
+        do {
+            return try device.makeComputePipelineState(
+                descriptor: desc, options: [], reflection: nil)
+        } catch {
+            throw RenderError.pipelineCreationFailed(
+                "\(kernelName): \(String(describing: error))")
         }
+    }
 
-        self.marchPipeline = try makePipeline("march_offscreen")
-        self.evalOpsPipeline = try makePipeline("eval_ops")
-        self.evalDistPipeline = try makePipeline("eval_dist")
-        self.evalDEPipeline = try makePipeline("eval_de")
-
-        self.marchDETable = try makeDETable(marchPipeline, label: "march_offscreen DE table")
-        self.evalDETable = try makeDETable(evalDEPipeline, label: "eval_de DE table")
+    /// A visible function table over `functions` in index order.
+    static func makeDETable(
+        _ pipeline: MTLComputePipelineState, functions: [MTLFunction], label: String
+    ) throws -> MTLVisibleFunctionTable {
+        let desc = MTLVisibleFunctionTableDescriptor()
+        desc.functionCount = functions.count
+        guard let table = pipeline.makeVisibleFunctionTable(descriptor: desc) else {
+            throw RenderError.functionTableCreationFailed(label)
+        }
+        for (index, f) in functions.enumerated() {
+            guard let handle = pipeline.functionHandle(function: f) else {
+                throw RenderError.functionTableCreationFailed(
+                    "\(label): no handle for \(f.name)")
+            }
+            table.setFunction(handle, index: index)
+        }
+        return table
     }
 }
 

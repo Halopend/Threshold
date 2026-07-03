@@ -8,19 +8,51 @@ import Foundation
 
 // MARK: - Sub-envelopes
 
+/// One declared parameter of an embedded DE: enough metadata to build a
+/// DEDescriptor param entry (and, later, catalog registration) for an
+/// externally-authored formula.
+public struct EmbeddedDEParam: Sendable, Equatable, Codable {
+    public var name: String
+    public var defaultValue: Float
+    public var min: Float
+    public var max: Float
+
+    public init(name: String, defaultValue: Float, min: Float, max: Float) {
+        self.name = name
+        self.defaultValue = defaultValue
+        self.min = min
+        self.max = max
+    }
+}
+
 /// Externally-authored distance estimator embedded in a scene (plan §7.2).
 /// Compilation/validation is the render layer's job; persistence just carries
 /// the source and its provenance.
 public struct EmbeddedDE: Sendable, Equatable, Codable {
+    /// MSL source defining `[[visible]] float2 de_main(float3, thread const
+    /// ThreshDEContext&)` — compiled at load against the published ABI header.
     public var source: String
     public var abiVersion: Int
     /// Content hash of `source` (hex); cache key and tamper check.
     public var hash: String
+    /// Declared params, in GPU slice order (same convention as built-in
+    /// descriptors: the iteration count is appended after these).
+    public var params: [EmbeddedDEParam]
 
-    public init(source: String, abiVersion: Int, hash: String) {
+    public init(source: String, abiVersion: Int, hash: String,
+                params: [EmbeddedDEParam] = []) {
         self.source = source
         self.abiVersion = abiVersion
         self.hash = hash
+        self.params = params
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = try c.decode(String.self, forKey: .source)
+        abiVersion = try c.decode(Int.self, forKey: .abiVersion)
+        hash = try c.decode(String.self, forKey: .hash)
+        params = try c.decodeIfPresent([EmbeddedDEParam].self, forKey: .params) ?? []
     }
 }
 
