@@ -464,6 +464,68 @@ struct SessionCoreTests {
                 "re-seeded from the current scene; the user edit must NOT survive recycling")
     }
 
+    @Test func gestureLaneOrbitMovesTheCamera() {
+        var h = Harness()
+        let before = h.step()
+
+        // Desktop orbit writes the gesture lane (plan §8.3) — through the
+        // session's lane mailbox, like any input source.
+        let yawSlot = h.slot(.cameraOrbitYaw)
+        h.mailbox.publish(LaneWrite(lane: .gesture, slot: yawSlot, value: Float.pi))
+        // Gesture smoothing is 0.15 s — step past it.
+        for _ in 0..<120 { h.step() }
+        let after = h.step()
+
+        #expect(before.request.uniforms.camPosFov.z > 0, "starts at +Z")
+        #expect(after.request.uniforms.camPosFov.z < 0,
+                "π yaw orbits to the opposite side (z \(after.request.uniforms.camPosFov.z))")
+
+        // Scene apply writes only the scene lane — the gesture orbit SURVIVES
+        // (Invariant 11).
+        h.commands.publish(.applyScene(SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox")))
+        for _ in 0..<10 { h.step() }
+        #expect(h.step().request.uniforms.camPosFov.z < 0)
+    }
+
+    @Test func captureSceneRoundTripsAuthoredContent() throws {
+        var h = Harness()
+        h.step()
+        var scene = SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox")
+        scene.params[ParamKey.engineAOStrength.rawValue] = [1.25]
+        scene.warpStack = [WarpOpDTO(kind: WK.twist, strength: 0.5,
+                                     a: [0, 1, 0, 0], b: [0, 0, 0, 0])]
+        scene.palette = Palette(stops: [
+            GradientStop(position: 0, red: 1, green: 0, blue: 0),
+            GradientStop(position: 1, red: 0, green: 0, blue: 1),
+        ])
+        h.commands.publish(.applyScene(scene))
+        h.step()
+
+        // Transient lanes must NOT persist (Invariant 3): add a user edit.
+        h.commands.publish(.userEdit(slot: h.slot(.engineAOStrength), targetResolved: 0.1))
+        h.step()
+
+        let slot = SceneCaptureSlot()
+        h.commands.publish(.captureScene(into: slot))
+        h.step()
+        let captured = try #require(slot.take())
+        #expect(slot.take() == nil, "take() drains the slot")
+
+        #expect(captured.fractalTypeKey == "mandelbox")
+        #expect(captured.params[ParamKey.engineAOStrength.rawValue] == [1.25],
+                "the AUTHORED value, not the user-edited resolve")
+        #expect(captured.warpStack.count == 1 && captured.warpStack[0].kind == WK.twist)
+        #expect(captured.palette?.stops.count == 2)
+        #expect(captured.version == SceneCodec.currentVersion)
+
+        // The capture re-applies cleanly (save → open round trip).
+        let data = try SceneCodec.encode(captured)
+        let reopened = try SceneCodec.decode(data)
+        #expect(reopened.params[ParamKey.engineAOStrength.rawValue] == [1.25])
+    }
+
     @Test func builtinSceneApplyClearsAnExternalProgram() throws {
         // CPU-only: command/descriptor bookkeeping (no GPU program needed for
         // the clear path — apply a builtin scene while external is nil).

@@ -244,6 +244,8 @@ public final class Catalog {
             atSlot: EngineSlot.tonemap.rawValue)
         // Zoom (plan §6.3): rate + integrator phase feeding ScaleContext.
         try! catalog.registerScaleParams()
+        // Camera rig (plan §8.3): orbit/dolly offsets over the scene pose.
+        try! catalog.registerCameraParams()
         // swiftlint:enable force_try
         return catalog
     }

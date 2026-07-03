@@ -30,6 +30,14 @@ public final class RenderSurface {
     /// The hosting view (also what `RenderSurfaceView` wraps).
     public let view: NSView
 
+    /// Scroll-wheel callback (scrollingDeltaY, points) — the shell routes it
+    /// to camera dolly. SwiftUI has no scroll-wheel gesture on macOS, so the
+    /// host view forwards the raw event.
+    public var onScroll: ((CGFloat) -> Void)? {
+        get { (view as? MetalLayerHostView)?.onScroll }
+        set { (view as? MetalLayerHostView)?.onScroll = newValue }
+    }
+
     public init() {
         let layer = CAMetalLayer()
         InteractiveSession.configure(layer: layer)  // single source of truth
@@ -45,12 +53,21 @@ public final class RenderSurface {
 /// and the window's backing scale (Retina-aware; tracks display moves).
 final class MetalLayerHostView: NSView {
     private let metalLayer: CAMetalLayer
+    var onScroll: ((CGFloat) -> Void)?
 
     init(metalLayer: CAMetalLayer) {
         self.metalLayer = metalLayer
         super.init(frame: .zero)
         wantsLayer = true
         layer = metalLayer
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let onScroll else {
+            super.scrollWheel(with: event)
+            return
+        }
+        onScroll(event.scrollingDeltaY)
     }
 
     @available(*, unavailable)

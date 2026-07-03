@@ -72,6 +72,29 @@ public final class SnapshotSlot: Sendable {
     }
 }
 
+// MARK: - SceneCaptureSlot
+
+/// Single-slot handoff for a scene capture: the render thread publishes the
+/// snapshot envelope, the requesting thread polls `take()`. Same shape as
+/// SnapshotSlot — command mailbox in, slot out (Invariant 13).
+public final class SceneCaptureSlot: Sendable {
+    private let slot = Mutex<SceneEnvelope?>(nil)
+
+    public init() {}
+
+    public func publish(_ envelope: SceneEnvelope) {
+        slot.withLock { $0 = envelope }
+    }
+
+    /// Removes and returns the captured envelope, if one has landed.
+    public func take() -> SceneEnvelope? {
+        slot.withLock { captured in
+            defer { captured = nil }
+            return captured
+        }
+    }
+}
+
 // MARK: - SessionCommand
 
 /// Structural changes, drained by the render thread at frame start so a
@@ -109,6 +132,10 @@ public enum SessionCommand: Sendable {
     /// Animation transport (plan §3.2: stop zeroes the animation lane;
     /// user/gesture/music offsets survive).
     case animationTransport(AnimationTransportCommand)
+    /// Capture the AUTHORED scene (scene-lane catalog walk + warp stack +
+    /// camera + palette + embedded DE) into the slot — the native save path.
+    /// Snapshotting needs live engine state, which is render-thread confined.
+    case captureScene(into: SceneCaptureSlot)
 }
 
 /// Transport verbs for the animation player, as session-command data.

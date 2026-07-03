@@ -37,6 +37,8 @@ final class AppModel {
     /// The last file-open failure, shown as an alert (compile diagnostics
     /// surface verbatim — plan §7.2 "never trust-and-crash").
     var lastOpenError: String?
+    /// Camera gestures → gesture-lane writes (plan §8.3).
+    @ObservationIgnored let camera: CameraInteraction
 
     init() throws {
         // Catalog: engine params + every built-in DE's params — one
@@ -60,6 +62,10 @@ final class AppModel {
             signals: signals, initialScene: nil)
         self.session = session
         self.loader = try ExternalDELoader(context: context)
+        self.camera = CameraInteraction(layout: layout, mailbox: session.laneMailbox)
+        #if os(macOS)
+        surface.onScroll = { [camera] deltaY in camera.scroll(deltaY: deltaY) }
+        #endif
 
         self.mirror = ParameterMirror(
             layout: layout, snapshots: session.snapshots, commands: session.commands)
@@ -131,6 +137,28 @@ final class AppModel {
         }
     }
 
+    /// Capture the authored scene from the render thread (plan §7.1: save is
+    /// a catalog walk — nothing hand-written to forget). The command lands on
+    /// the next frame; polling covers a paused-but-stepping loop.
+    func captureScene() async -> SceneEnvelope? {
+        let slot = SceneCaptureSlot()
+        session.commands.publish(.captureScene(into: slot))
+        for _ in 0..<40 {
+            if var envelope = slot.take() {
+                // Migrated legacy formulas carry no hash — stamp one so the
+                // saved file is a fully-formed native document.
+                if var embedded = envelope.embeddedDE, embedded.hash.isEmpty {
+                    embedded.hash = ExternalDELoader.sourceHash(embedded.source)
+                    envelope.embeddedDE = embedded
+                }
+                return envelope
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        lastOpenError = "scene capture timed out — is the render loop running?"
+        return nil
+    }
+
     private func apply(scene envelope: SceneEnvelope, from filename: String) {
         guard envelope.embeddedDE != nil else {
             mirror.applyScene(envelope)
@@ -177,17 +205,48 @@ final class AppModel {
 
 // MARK: - Main view (live-render platforms)
 
+/// Export wrapper for the save flow — just bytes with a scene extension.
+struct SceneFileDocument: FileDocument {
+    static let sceneType = UTType(filenameExtension: "threshscene") ?? .json
+    static var readableContentTypes: [UTType] { [sceneType] }
+
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
 struct MainView: View {
     @Bindable var model: AppModel
     @State private var audioReactive = false
     @State private var importing = false
+    @State private var exporting = false
+    @State private var exportDocument: SceneFileDocument?
 
     var body: some View {
         HStack(spacing: 0) {
             RenderSurfaceView(surface: model.surface)
                 .frame(minWidth: 320, minHeight: 320)
                 .layoutPriority(1)
-                // Drag a .threshscene/.threshanim onto the render view.
+                // Orbit (drag) + dolly (pinch) → gesture lane (plan §8.3).
+                .gesture(
+                    DragGesture(minimumDistance: 2)
+                        .onChanged { model.camera.dragChanged(translation: $0.translation) }
+                        .onEnded { model.camera.dragEnded(translation: $0.translation) }
+                )
+                .simultaneousGesture(
+                    MagnifyGesture()
+                        .onChanged { model.camera.magnifyChanged($0.magnification) }
+                        .onEnded { model.camera.magnifyEnded($0.magnification) }
+                )
+                // Drag a .threshscene/.threshanim/.threshmp onto the view.
                 .dropDestination(for: URL.self) { urls, _ in
                     guard let url = urls.first else { return false }
                     model.open(url: url)
@@ -200,13 +259,16 @@ struct MainView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Button("Open…") { importing = true }
-                        Toggle("React to Audio (mic)", isOn: $audioReactive)
-                            .onChange(of: audioReactive) { _, on in
-                                model.setAudioReactive(on)
-                            }
+                        Button("Save…") { saveScene() }
+                        Button("Reset View") { model.camera.reset() }
                     }
                     .padding(.horizontal)
                     .padding(.top, 8)
+                    Toggle("React to Audio (mic)", isOn: $audioReactive)
+                        .onChange(of: audioReactive) { _, on in
+                            model.setAudioReactive(on)
+                        }
+                        .padding(.horizontal)
                     Divider()
                     ControlSidebar(mirror: model.mirror, layout: model.layout)
                 }
@@ -221,6 +283,14 @@ struct MainView: View {
                 model.open(url: url)
             }
         }
+        .fileExporter(
+            isPresented: $exporting,
+            document: exportDocument,
+            contentType: SceneFileDocument.sceneType,
+            defaultFilename: "Scene.threshscene"
+        ) { _ in
+            exportDocument = nil
+        }
         .alert(
             "Could not open file",
             isPresented: SwiftUI.Binding(
@@ -231,6 +301,18 @@ struct MainView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.lastOpenError ?? "")
+        }
+    }
+
+    private func saveScene() {
+        Task {
+            guard let envelope = await model.captureScene() else { return }
+            do {
+                exportDocument = SceneFileDocument(data: try SceneCodec.encode(envelope))
+                exporting = true
+            } catch {
+                model.lastOpenError = "save failed: \(error)"
+            }
         }
     }
 }

@@ -310,19 +310,20 @@ for frame in 0..<opts.frames {
             ? externalDEParamValues(descriptor, envelope: envelope)
             : deParamValues(descriptor, layout: layout, resolved: resolved))
 
+    // Camera: base pose + resolved rig offsets, same derivation as the
+    // interactive session (SessionCore.step). CameraRig handles degenerate
+    // quaternions (identity fallback).
     var uniforms = ThreshFrameUniforms()
-    uniforms.camPosFov = SIMD4(
-        camera.position[0], camera.position[1], camera.position[2],
-        tan(camera.fovYRadians * 0.5))
-    // The kernel's quatRotate requires a unit quaternion; scene files carry
-    // arbitrary floats. Degenerate orientations fall back to identity.
-    let rawQuat = SIMD4(
-        camera.orientation[0], camera.orientation[1],
-        camera.orientation[2], camera.orientation[3])
-    let quatLength = (rawQuat * rawQuat).sum().squareRoot()
-    uniforms.camQuat = quatLength > 1e-6 && quatLength.isFinite
-        ? rawQuat / quatLength
-        : SIMD4(0, 0, 0, 1)
+    func rigValue(_ key: ParamKey, _ fallback: Float) -> Float {
+        layout.slot(for: key).map { resolved.values[$0] } ?? fallback
+    }
+    let pose = CameraRig.pose(
+        base: camera,
+        yaw: rigValue(.cameraOrbitYaw, 0),
+        pitch: rigValue(.cameraOrbitPitch, 0),
+        dolly: rigValue(.cameraDolly, 1))
+    uniforms.camPosFov = SIMD4(pose.position, tan(camera.fovYRadians * 0.5))
+    uniforms.camQuat = pose.orientation
     // Zoom (plan §6.3): resolved scale.zoom → ScaleContext, same derivation
     // as the interactive session (SessionCore.step).
     let scaleContext = ScaleContext(

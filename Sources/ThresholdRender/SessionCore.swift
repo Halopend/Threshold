@@ -54,6 +54,9 @@ final class SessionCore {
     /// external DE params registered AFTER the scene apply (the setExternalDE
     /// command follows applyScene; SceneCodec.apply drops unknown keys).
     private var lastSceneParams: [String: [Float]] = [:]
+    /// The active scene's embedded DE source, kept for re-saving (the
+    /// compiled program does not retain its source).
+    private var activeEmbeddedDE: EmbeddedDE?
     /// The AUTHORED warp stack — what snapshots/editors show.
     private(set) var authoredStack: [WarpOpDTO] = []
     /// The simplified buffer the GPU sees (plan §5.2). Rebuilt only on
@@ -156,19 +159,20 @@ final class SessionCore {
         let (params, deParamOffset) = ParamTableLayout.build(
             engine: engineParams, deParams: deValues)
 
-        // Uniforms from the session camera (same construction as the harness;
-        // degenerate quaternions fall back to identity).
+        // Camera: the scene's base pose + resolved rig offsets (plan §8.3 —
+        // gesture orbit, sliders, animation, and music drift are all just
+        // lane values on camera.* params).
         var uniforms = ThreshFrameUniforms()
-        uniforms.camPosFov = SIMD4(
-            camera.position[0], camera.position[1], camera.position[2],
-            tan(camera.fovYRadians * 0.5))
-        let rawQuat = SIMD4(
-            camera.orientation[0], camera.orientation[1],
-            camera.orientation[2], camera.orientation[3])
-        let quatLength = (rawQuat * rawQuat).sum().squareRoot()
-        uniforms.camQuat = quatLength > 1e-6 && quatLength.isFinite
-            ? rawQuat / quatLength
-            : SIMD4(0, 0, 0, 1)
+        func rigValue(_ key: ParamKey, _ fallback: Float) -> Float {
+            layout.slot(for: key).map { resolved.values[$0] } ?? fallback
+        }
+        let pose = CameraRig.pose(
+            base: camera,
+            yaw: rigValue(.cameraOrbitYaw, 0),
+            pitch: rigValue(.cameraOrbitPitch, 0),
+            dolly: rigValue(.cameraDolly, 1))
+        uniforms.camPosFov = SIMD4(pose.position, tan(camera.fovYRadians * 0.5))
+        uniforms.camQuat = pose.orientation
         // Zoom (plan §6.3): resolved scale.zoom (integrator phase driven by
         // scale.zoomSpeed) → ScaleContext, THE scale derivation site.
         let scaleContext = ScaleContext(
@@ -257,6 +261,21 @@ final class SessionCore {
             case .stop: animationPlayer.stop()
             case .seek(let t): animationPlayer.seek(to: t)
             }
+
+        case .captureScene(let slot):
+            // Authored content only: scene lane + structure. Transient lanes
+            // (user/gesture/music) deliberately do not persist (Invariant 3).
+            var envelope = SceneCodec.snapshot(
+                layout: layout,
+                engine: engine,
+                fractalTypeKey: externalProgram != nil
+                    ? lastBuiltinDescriptor.key : descriptor.key,
+                warpStack: authoredStack,
+                camera: camera,
+                embeddedDE: externalProgram != nil ? activeEmbeddedDE : nil,
+                abiVersion: EmbeddedDE.currentABIVersion)
+            envelope.palette = palette
+            slot.publish(envelope)
         }
     }
 
@@ -318,6 +337,7 @@ final class SessionCore {
         // setExternalDE. Until that lands, keep the current descriptor
         // (fractalTypeKey is ignored when embeddedDE is set).
         lastSceneParams = envelope.params
+        activeEmbeddedDE = envelope.embeddedDE
         if envelope.embeddedDE == nil,
            let sceneDE = DERegistry.descriptor(forKey: envelope.fractalTypeKey) {
             lastBuiltinDescriptor = sceneDE
