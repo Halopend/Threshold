@@ -49,7 +49,10 @@ extension GPUContext {
             + abiHeaderSource + "\n" + core
 
         let options = MTLCompileOptions()
-        options.mathMode = .safe  // identical semantics to the generic compile
+        // Identical semantics to the generic compile (including the
+        // measurement-seam override — a specialized variant must never differ
+        // from the generic pipeline it replaces).
+        options.mathMode = GPUContext.mathModeOverride ?? .safe
         let library: MTLLibrary
         do {
             library = try device.makeLibrary(source: source, options: options)

@@ -96,6 +96,39 @@ the bundle, `xcrun xctrace record --template 'Metal System Trace' --attach
 <pid>`; note CAMetalDisplayLink throttles hard when the window is occluded
 — foreground the window or the numbers are garbage.
 
+## Math-mode A/B + legacy audit — 2026-07-03 (perf block 3)
+
+`THRESHOLD_MATH_MODE=fast|relaxed|safe` (GPUContext measurement seam,
+default unchanged .safe; specialization follows the same mode). 1024²,
+40 frames, `--specialize`, corpus scenes; two runs each (machine-load
+variance in absolutes, ratios stable):
+
+| Scene | safe | relaxed | fast | win |
+|---|---|---|---|---|
+| default-bulb | 7.3 / 8.7 ms | 5.2 ms | 5.5 / 7.1 ms | ~19–29% |
+| warped-bulb | 37.6 / 38.9 ms | 26.9 ms | 24.8 / 29.6 ms | ~24–34% |
+| Stress_test (legacy, 1080p) | 223 ms | — | 151 ms | ~32% |
+
+- `relaxed` and `fast` produce **byte-identical images** on these scenes —
+  if we ever leave .safe, relaxed (keeps INF/NaN semantics) is free.
+- Image delta vs safe: 0.07–0.34% of pixels change, mean Δ ≈ 0.005/255,
+  but max Δ up to 174/255 (silhouette pixels flipping hit/miss) — this is
+  why goldens are only valid under .safe.
+- Decision unchanged: .safe stays the default (determinism/CPU-equivalence).
+  The compatible route to part of this win is per-call-site `metal::fast`
+  on non-DE math (coloring/tonemap), NOT the global flag. The 19–34% above
+  is the ceiling for the whole-shader switch.
+
+Legacy-renderer audit (docs/research/legacy-renderer-techniques.md): the
+old app rendered the same stress scene in **19.6 ms @1080p** with its
+acceleration stack on (52.3 ms off — measured 2.67× from over-relaxation
+ω≤1.6 + cone-march coarse prepass + distance LOD + bounding-sphere skip)
+vs our 223/151 ms. Math mode explains ~1.5× of the gap; the rest is
+step-count acceleration + orbit-cache shading we haven't built. That file
+has the ranked port list; the per-DE-type ω caps (mandelbulb only
+tolerates 1.1 — log-DE overestimates defeat the overshoot guard) are the
+piece of design worth lifting verbatim.
+
 ## Measured non-problems (decided against, with reasons)
 
 - **Per-frame CPU allocations** (SessionGPUEncoder's params/ops MTLBuffers):

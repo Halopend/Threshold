@@ -85,6 +85,17 @@ public final class GPUContext: @unchecked Sendable {
     /// (index 0 = mandelbox, index 1 = mandelbulb).
     public let deFunctionCount: Int
 
+    /// Perf-experiment override for the shader math mode (see compile section
+    /// below). nil = the deliberate default (.safe).
+    static var mathModeOverride: MTLMathMode? {
+        switch ProcessInfo.processInfo.environment["THRESHOLD_MATH_MODE"] {
+        case "fast": return .fast
+        case "relaxed": return .relaxed
+        case "safe": return .safe
+        default: return nil
+        }
+    }
+
     public init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
@@ -109,9 +120,11 @@ public final class GPUContext: @unchecked Sendable {
         // --- compile --------------------------------------------------------
         // mathMode .safe: no fast-math re-association / FMA contraction
         // surprises — determinism and CPU-equivalence beat a few percent of
-        // ALU throughput here.
+        // ALU throughput here. THRESHOLD_MATH_MODE=fast|relaxed is a
+        // MEASUREMENT seam only (perf A/B): it changes images, so goldens are
+        // only valid under the default.
         let options = MTLCompileOptions()
-        options.mathMode = .safe
+        options.mathMode = Self.mathModeOverride ?? .safe
         let library: MTLLibrary
         do {
             library = try device.makeLibrary(source: source, options: options)
