@@ -129,6 +129,49 @@ has the ranked port list; the per-DE-type ω caps (mandelbulb only
 tolerates 1.1 — log-DE overestimates defeat the overshoot guard) are the
 piece of design worth lifting verbatim.
 
+## Platform quality settings — 2026-07-03 (perf block 4)
+
+Ported the original app's platform-native resolution levers, driven by the
+existing ADR-003 quality governor. One governor, one `renderScale` signal
+(SessionCore, from prior-frame GPU ms), applied through each platform's best
+mechanism:
+
+- **visionOS (CompositorSession)** — the compositor's `renderQuality` API
+  (visionOS 26, our min target). `maxRenderQuality = 0.8` at layer config
+  (memory/thermal ceiling, Apple guidance + original app's measured choice);
+  per frame, `layer.renderQuality = <governor renderScale>` set BEFORE
+  `queryDrawables` so the drawable itself shrinks — the march runs fewer
+  fragments and the compositor upscales natively, **foveation-aware**, over
+  its own smoothed ramp. Applied one frame late (prior-frame target), which
+  is immaterial against the compositor's multi-frame tween. This is the lever
+  the original app credited for holding 90 fps; the rebuild's Compositor
+  shell had none of it before. NOT the Mac intermediate-texture path —
+  `renderScale` here only sizes the drawable.
+- **macOS/iOS (InteractiveSession)** — unchanged from block 2 (intermediate
+  texture + bilinear upscale). The "Mac equivalent" already existed.
+
+Both real-app composition roots now ARM the governor (they didn't before —
+only the SwiftPM dev shell did, so the shipping Xcode app on BOTH platforms
+ran with no adaptive quality, which is a direct cause of the reported
+stutter). `AppModelShared.defaultGovernor`: 8 ms target on Mac
+(120 Hz-friendly), 10 ms on Vision Pro (under the 11.1 ms/90 fps budget with
+present headroom). The Auto Quality toggle (default on) still flips it.
+
+Verified: full test suite (372) green; `ThresholdRender` and the whole
+`Threshold` app both build clean for the visionOS simulator SDK. On-device
+`renderQuality` behavior + the right floor still need a Vision Pro sweep
+(no headset numbers yet — the original app's PERF_LOG rule stands: device
+numbers are the only citable Vision Pro perf).
+
+Open tuning (needs device): the shared `renderScale` floor is 0.5 (Mac
+bilinear-tuned). The compositor upscaler degrades more gracefully, so Vision
+Pro may want a lower floor — a one-line change once a sweep says so. Also
+still open: MetalFX spatial upscale on Mac (sharper than bilinear at equal
+input scale — the original app's `MacSpatialUpscaler` is the reference), and
+making resolution the governor's PRIMARY lever over iteration reduction
+(iteration drops change the fractal silhouette; resolution drops only soften
+— cleaner under load, especially in-headset).
+
 ## Measured non-problems (decided against, with reasons)
 
 - **Per-frame CPU allocations** (SessionGPUEncoder's params/ops MTLBuffers):

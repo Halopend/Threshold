@@ -71,6 +71,18 @@ public final class CompositorSession: @unchecked Sendable {
         self.snapshots = SnapshotSlot()
     }
 
+    /// Compositor render-quality CEILING (visionOS 26). This is the Vision Pro
+    /// counterpart of the Mac render-scale lever's top: `maxRenderQuality` is
+    /// set once and governs the drawable color-texture MEMORY allocation; the
+    /// per-frame `renderQuality` (driven by the quality governor) scales the
+    /// actual drawable size within it for free — no reallocation. 0.8 follows
+    /// Apple's "set the max to the most your content needs" guidance and the
+    /// original app's measured choice: it trims per-eye drawable memory (and
+    /// sustained fill/thermals) on a constrained headset, and a heavy fractal
+    /// that is GPU-bound well below native gains nothing from a 1.0 ceiling.
+    /// The governor renders at or below this; tune with on-device memory data.
+    public static let maxRenderQuality: Float = 0.8
+
     /// The layer configuration the shell renders against. Called from the
     /// CompositorLayer configuration closure.
     public static func configure(
@@ -85,6 +97,14 @@ public final class CompositorSession: @unchecked Sendable {
         let layouts = capabilities.supportedLayouts(options:
             capabilities.supportsFoveation ? [.foveationEnabled] : [])
         configuration.layout = layouts.contains(.layered) ? .layered : .dedicated
+        // Runtime render-quality control only takes effect with foveation on
+        // (the compositor's foveation-aware upscaler is what resizes the
+        // drawable). maxRenderQuality caps the per-frame renderQuality set in
+        // the loop; without it the platform default sits well below native and
+        // the image is uniformly soft (the original app's finding).
+        if configuration.isFoveationEnabled {
+            configuration.maxRenderQuality = LayerRenderer.RenderQuality(maxRenderQuality)
+        }
     }
 
     /// Spawn the render thread against a live LayerRenderer. Called from the
@@ -147,6 +167,17 @@ public final class CompositorSession: @unchecked Sendable {
         /// (one frame stale, well inside every freshness tolerance).
         var sessionTime = 0.0
 
+        // Adaptive render quality (the Vision Pro resolution lever). The
+        // governor's resolution target for the PREVIOUS frame (SessionCore
+        // computes it from prior-frame GPU time and carries it on the request)
+        // sets THIS frame's drawable size. One frame late is immaterial: the
+        // governor already reacts to prior-frame timing, and the compositor
+        // ramps renderQuality smoothly over several frames regardless. Seeded
+        // at the ceiling so a light opening scene starts sharp.
+        let foveated = layer.configuration.isFoveationEnabled
+        var pendingRenderQuality = Self.maxRenderQuality
+        var lastAppliedRenderQuality: Float = -1
+
         while !stopRequested.load(ordering: .acquiring) {
             switch layer.state {
             case .invalidated:
@@ -163,6 +194,15 @@ public final class CompositorSession: @unchecked Sendable {
             guard let frame = layer.queryNextFrame() else { continue }
             frame.startUpdate()
             frame.endUpdate()
+
+            // Apply the resolution target BEFORE querying the drawable, so the
+            // drawable is sized for it. Deduped — the compositor tweens each
+            // change, so re-setting the same value every frame would fight its
+            // ramp. Gated on foveation (renderQuality is inert without it).
+            if foveated, abs(pendingRenderQuality - lastAppliedRenderQuality) > 0.001 {
+                lastAppliedRenderQuality = pendingRenderQuality
+                layer.renderQuality = LayerRenderer.RenderQuality(pendingRenderQuality)
+            }
 
             guard let timing = frame.predictTiming() else { continue }
             LayerRenderer.Clock().wait(until: timing.optimalInputTime)
@@ -193,6 +233,12 @@ public final class CompositorSession: @unchecked Sendable {
                 height: colorTexture.height,
                 gpuMilliseconds: stats.gpuMilliseconds)
             sessionTime = sessionFrame.time
+            // The governor's resolution scale becomes next frame's compositor
+            // renderQuality. On this shell renderScale is NOT an intermediate
+            // texture (that is the Mac/InteractiveSession path) — the drawable
+            // itself shrinks, so the march runs fewer fragments and the
+            // compositor upscales natively.
+            pendingRenderQuality = sessionFrame.request.renderScale
 
             let originFromDevice =
                 deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4

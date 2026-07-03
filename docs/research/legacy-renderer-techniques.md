@@ -62,6 +62,20 @@ Algorithmic (march):
 - **Temporal depth warm start** (visionOS) + **coherent packet marching** —
   present but gated/unmeasured.
 
+visionOS-side (the platform quality lever — PORTED 2026-07-03, perf block 4):
+
+- **Compositor `renderQuality`** (visionOS 26) — `maxRenderQuality` set once
+  at layer config (drawable memory ceiling, they used 0.8), and per-frame
+  `layerRenderer.renderQuality` driven by an `AdaptiveRenderQualityController`
+  closed loop that dropped quality when FPS sagged and recovered toward the
+  user's slider (a ceiling). The compositor resizes the drawable natively,
+  **foveation-aware**, over a smoothed ramp — no app-side upscale pass. The
+  original app credited this as the FPS-holding lever on device. Now wired
+  in the rebuild's CompositorSession, driven by our ADR-003 governor
+  (docs/perf-notes.md perf block 4).
+- **Foveation** via `isFoveationEnabled` + the drawable's rasterization rate
+  map (already present in the rebuild's raster path; renderQuality needs it).
+
 Metal-side:
 
 - **Fast math everywhere**: `MTL_FAST_MATH = YES` (precompiled lib) and
