@@ -801,10 +801,38 @@ public struct PipelineSection: View {
                 Toggle("Gate Warp Ops (DCE)", isOn: tuning(\.gateWarpOps))
                 Toggle("Bake Color Map Mode", isOn: tuning(\.bakeColorMapMode))
                 Toggle("Gate AO", isOn: tuning(\.gateAO))
+
+                // Hierarchical cone-march prepass: the big step-count win, but
+                // its tile-shared start depths shimmer at silhouettes. Stability
+                // trades that shimmer back for a few steps (higher = smoother).
+                Divider().padding(.vertical, 2)
+                Toggle("Cone Prepass (hierarchical)", isOn: tuning(\.conePrepass))
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("Cone Stability", selection: coneStability) {
+                        ForEach(ConeStability.allCases, id: \.self) { level in
+                            Text(level.label).tag(level)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!mirror.renderTuning.conePrepass)
+                    Text("higher = less silhouette shimmer, slightly slower")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             .disabled(!mirror.renderTuning.specializationEnabled)
         }
         .moduleCard(.orange)
+    }
+
+    /// Binding onto the RenderTuning cone-stability level (segmented picker).
+    private var coneStability: SwiftUI.Binding<ConeStability> {
+        SwiftUI.Binding(
+            get: { mirror.renderTuning.coneStability },
+            set: { newValue in
+                var next = mirror.renderTuning
+                next.coneStability = newValue
+                mirror.setRenderTuning(next)
+            })
     }
 
     /// Binding onto one Bool field of the mirror's RenderTuning; a write

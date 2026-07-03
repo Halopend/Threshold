@@ -477,3 +477,37 @@ NOT done here (honest gaps):
   device default (layered + foveation) has full 3-frame headroom.
 - External DEs still render generic on the raster path (built-ins only — spike
   scope, unchanged).
+
+## Cone-prepass UI controls + stability lever — 2026-07-03 (perf block 12)
+
+The cone prepass (blocks 9–11) is a large step-count win but its tile-shared
+start depths shimmer at silhouettes (tile-quantized starts jitter frame-to-
+frame). Exposed two live controls in the Pipeline panel (ThresholdUI
+PipelineSection), plus the underlying shimmer lever:
+
+- **"Cone Prepass" toggle** → `RenderTuning.conePrepass` (function_constant 8,
+  already existed). The definitive shimmer kill-switch / A-B.
+- **"Cone Stability" segmented picker** (Fast / Balanced / Stable) →
+  `RenderTuning.coneStability` → `MarchSpec.coneMargin` → new
+  **function_constant 9** (`thresh_cone_margin`). The prepass stop threshold
+  is `margin × epsBase × t` (was a hardcoded 3×); higher backs the shared
+  start depth further off the surface so the per-pixel march refines more and
+  fewer edge pixels immediate-hit at the tile depth — less shimmer, a few more
+  steps. Levels: Fast 3× (the block-9 default), Balanced 6×, Stable 12×.
+
+Function-constant decision (the question was whether to use one): the on/off
+gate stays a function constant (structural — gates the prepass dispatch + the
+fragment cone argument). The margin is ALSO a function constant, but a
+**discrete** one — a continuous slider would recompile a pipeline variant per
+tick (compile storm), whereas 3 levels are 3 cached variants. A continuous
+value would have needed a new engine param slot (ABI change); the discrete
+function constant reuses the existing MarchSpec→specConstantValues→cache
+machinery with zero ABI surface. CLI A-B: `THRESHOLD_CONE_MARGIN=<int>`.
+
+Measured (2048² mandelbox, same session, thermally elevated): margin 3 →
+16.69 ms, 6 → 17.24, 12 → 17.79 — monotone, ~3% per doubling, confirming the
+shimmer↔speed trade is real and small. Default (nil / .fast) is BYTE-IDENTICAL
+to the block-9 baseline (shader maps the -1 sentinel to 3.0); goldens and the
+395-test suite unchanged. visionOS raster path picks this up for free —
+MarchSpec.from feeds both encoders, so the picker drives the Vision Pro shell
+too (device shimmer/perf still needs an on-headset sweep).

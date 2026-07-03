@@ -89,6 +89,12 @@ public struct MarchSpec: Sendable, Hashable {
     /// Step-count telemetry (function_constant 7): false → drop the per-pixel
     /// stats atomic (totalSteps reads back 0). Benchmark variants bake false.
     public var statsEnabled: Bool?
+    /// Cone-prepass stop margin (function_constant 9): the prepass stops when
+    /// tile clearance falls to `coneMargin × epsBase × t`. Higher = less
+    /// silhouette shimmer, slightly slower. nil → the shader's 3× default.
+    /// Only meaningful with `coneMarch` set. A small discrete set (each a
+    /// cached variant) — the "Cone Stability" UI lever.
+    public var coneMargin: Int?
     /// Tile cone-march prepass (function_constant 8): true → a separate
     /// coarse dispatch (march_cone_prepass, one thread per 8×8 tile) writes
     /// each tile's safe start depth to an r32float texture the march kernel
@@ -103,7 +109,8 @@ public struct MarchSpec: Sendable, Hashable {
     public init(iterations: Int? = nil, maxSteps: Int? = nil,
                 hasWarpOps: Bool? = nil, colorMapMode: Int? = nil,
                 aoEnabled: Bool? = nil, hasDistanceOps: Bool? = nil,
-                statsEnabled: Bool? = nil, coneMarch: Bool? = nil) {
+                statsEnabled: Bool? = nil, coneMarch: Bool? = nil,
+                coneMargin: Int? = nil) {
         self.iterations = iterations
         self.maxSteps = maxSteps
         self.hasWarpOps = hasWarpOps
@@ -112,6 +119,7 @@ public struct MarchSpec: Sendable, Hashable {
         self.hasDistanceOps = hasDistanceOps
         self.statsEnabled = statsEnabled
         self.coneMarch = coneMarch
+        self.coneMargin = coneMargin
     }
 
     /// Translate live tuning + the resolved param table into the constants to
@@ -133,21 +141,22 @@ public struct MarchSpec: Sendable, Hashable {
                 ? Int(params[Int(THRESH_SLOT_MAP_MODE)]) : nil,
             aoEnabled: tuning.gateAO
                 ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil,
-            coneMarch: tuning.conePrepass ? true : nil)
+            coneMarch: tuning.conePrepass ? true : nil,
+            coneMargin: tuning.conePrepass ? tuning.coneStability.margin : nil)
     }
 
     /// Nothing baked — the variant is just the direct-call inline.
     public var isEmpty: Bool {
         iterations == nil && maxSteps == nil && hasWarpOps == nil
             && colorMapMode == nil && aoEnabled == nil && hasDistanceOps == nil
-            && statsEnabled == nil && coneMarch == nil
+            && statsEnabled == nil && coneMarch == nil && coneMargin == nil
     }
 
     /// Stable cache-key fragment.
     var keyFragment: String {
         func i(_ v: Int?) -> String { v.map(String.init) ?? "-" }
         func b(_ v: Bool?) -> String { v.map { $0 ? "1" : "0" } ?? "-" }
-        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))"
+        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))m\(i(coneMargin))"
     }
 
     /// Human-readable summary of what's baked (for the diagnostics readout).
@@ -161,6 +170,7 @@ public struct MarchSpec: Sendable, Hashable {
         if let hasDistanceOps { parts.append(hasDistanceOps ? "dist-ops" : "no-dist-ops") }
         if let statsEnabled { parts.append(statsEnabled ? "stats" : "no-stats") }
         if let coneMarch { parts.append(coneMarch ? "cone" : "no-cone") }
+        if let coneMargin { parts.append("cone-margin=\(coneMargin)") }
         return parts.joined(separator: ", ")
     }
 }

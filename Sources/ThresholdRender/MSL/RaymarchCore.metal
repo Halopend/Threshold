@@ -352,7 +352,24 @@ constant int thresh_map_mode      [[function_constant(4)]];
 constant int thresh_ao_enabled    [[function_constant(5)]];
 constant int thresh_has_dist_ops  [[function_constant(6)]];
 constant int thresh_stats_enabled [[function_constant(7)]];
+constant int thresh_cone_margin   [[function_constant(9)]];
 #endif
+
+// Cone-prepass stop margin (function_constant 9): the prepass stops when the
+// tile's clearance falls to `margin × epsBase × t` (block 9 fixed it at 3×).
+// A LARGER margin backs each tile's shared start depth further from the
+// surface, so the per-pixel march refines more and fewer edge pixels
+// immediate-hit at the tile depth — that is the shimmer (tile-quantized
+// silhouettes jittering frame-to-frame). A small discrete set of levels, each
+// a cached pipeline variant (a continuous value would recompile per tick), is
+// the UI's "Cone Stability" lever. -1 / absent → the 3× default.
+static inline float threshConeMargin() {
+#ifdef THRESH_SPEC_DE
+    return (thresh_cone_margin > 0) ? float(thresh_cone_margin) : 3.0f;
+#else
+    return 3.0f;
+#endif
+}
 
 // The DE fold-loop bound: the baked compile-time count in a specialized
 // variant (the loop unrolls), else the runtime slice value — the iterations
@@ -1157,11 +1174,12 @@ kernel void march_cone_prepass(
         // Largest Δt keeping the WHOLE advanced cone segment inside the
         // empty sphere: Δ + coneK·(t+Δ) ≤ d.
         const float slack = d - coneK * t;
-        // Stop 3× ABOVE the fine march's hit epsilon (verified finding: an
-        // equal threshold lets edge pixels immediate-hit at the tile-shared
-        // depth — 8×8-quantized silhouettes). The margin leaves the per-pixel
-        // march refinement room.
-        if (slack <= 3.0f * epsBase * t) { break; }
+        // Stop ABOVE the fine march's hit epsilon (verified finding: an equal
+        // threshold lets edge pixels immediate-hit at the tile-shared depth —
+        // 8×8-quantized silhouettes). The margin (Cone Stability) leaves the
+        // per-pixel march refinement room; larger = less shimmer, slightly
+        // slower.
+        if (slack <= threshConeMargin() * epsBase * t) { break; }
         t += slack * 0.9f / (1.0f + coneK);
         if (t > maxDist) { t = maxDist; break; }
     }
@@ -1335,7 +1353,7 @@ kernel void march_cone_prepass_view(
             t = 0.0f; break;                             // non-finite: no skip
         }
         const float slack = d - coneK * t;
-        if (slack <= 3.0f * epsBase * t) { break; }      // 3× margin (block 9)
+        if (slack <= threshConeMargin() * epsBase * t) { break; }  // Cone Stability
         t += slack * 0.9f / (1.0f + coneK);
         if (t > maxDist) { t = maxDist; break; }
     }

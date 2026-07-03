@@ -329,7 +329,11 @@ if opts.specialize, program == nil {
             // asked for step counts (pure telemetry; image unchanged).
             statsEnabled: !(opts.benchFrames > 0 && opts.statsPath == nil),
             // Hierarchical tile prepass (THRESHOLD_SPEC_CONE=0 for A/B).
-            coneMarch: on("THRESHOLD_SPEC_CONE"))
+            coneMarch: on("THRESHOLD_SPEC_CONE"),
+            // Cone stop margin (shimmer↔speed): THRESHOLD_CONE_MARGIN=<int>,
+            // default nil → the shader's 3× (block-9 baseline preserved).
+            coneMargin: on("THRESHOLD_SPEC_CONE")
+                ? flags["THRESHOLD_CONE_MARGIN"].flatMap(Int.init) : nil)
         specialized = try context.makeSpecializedMarch(
             deFunctionName: descriptor.mslFunctionName, spec: spec)
         if !opts.quiet {

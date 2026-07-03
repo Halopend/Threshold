@@ -5,6 +5,38 @@
 import Synchronization
 import ThresholdCore
 
+// MARK: - ConeStability
+
+/// How far the cone-march prepass backs its shared tile start depth off the
+/// surface — the shimmer↔speed lever. The hierarchical prepass starts every
+/// pixel in a tile at one shared depth; near silhouettes those depths differ
+/// sharply and jitter frame-to-frame (the "shimmer"). A higher margin leaves
+/// the per-pixel march more refinement room, so fewer edge pixels lock onto
+/// the tile depth — less shimmer, a few more steps. Each level is one cached
+/// pipeline variant (function_constant 9), so it is discrete, not a slider.
+public enum ConeStability: Int, Sendable, CaseIterable {
+    case fast = 0       // 3× — the block-9 default (fastest, most shimmer)
+    case balanced = 1   // 6×
+    case stable = 2     // 12× (smoothest, slightly slower)
+
+    /// The `margin × epsBase × t` multiplier baked into the prepass.
+    public var margin: Int {
+        switch self {
+        case .fast: return 3
+        case .balanced: return 6
+        case .stable: return 12
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .fast: return "Fast"
+        case .balanced: return "Balanced"
+        case .stable: return "Stable"
+        }
+    }
+}
+
 // MARK: - RenderTuning
 
 /// Runtime-tunable render-pipeline knobs — the "advanced settings" the live
@@ -35,6 +67,11 @@ public struct RenderTuning: Sendable, Equatable {
     /// marched output slightly (start points differ in float) — the toggle is
     /// the A/B lever.
     public var conePrepass: Bool
+    /// Cone-prepass stability: how far the shared tile start depth backs off
+    /// the surface (function_constant 9). Higher = less silhouette shimmer,
+    /// slightly slower. Only meaningful with `conePrepass` on. Default `.fast`
+    /// reproduces the block-9 hardcoded 3× margin.
+    public var coneStability: ConeStability
     /// Manual internal render scale in (0, 1] used when the fps governor is
     /// OFF: the march runs at `drawable × scale` and MetalFX upscales to full
     /// resolution. 1 = full-res. Ignored while the governor drives the scale.
@@ -44,7 +81,7 @@ public struct RenderTuning: Sendable, Equatable {
         specializationEnabled: Bool = true, bakeIterations: Bool = false,
         bakeMaxSteps: Bool = false, gateWarpOps: Bool = false,
         bakeColorMapMode: Bool = false, gateAO: Bool = false,
-        conePrepass: Bool = false,
+        conePrepass: Bool = false, coneStability: ConeStability = .fast,
         manualRenderScale: Float = 1
     ) {
         self.specializationEnabled = specializationEnabled
@@ -54,6 +91,7 @@ public struct RenderTuning: Sendable, Equatable {
         self.bakeColorMapMode = bakeColorMapMode
         self.gateAO = gateAO
         self.conePrepass = conePrepass
+        self.coneStability = coneStability
         self.manualRenderScale = manualRenderScale
     }
 

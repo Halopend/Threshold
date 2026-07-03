@@ -82,6 +82,51 @@ struct ConePrepassTests {
                 "cone image has large-delta regions (\(big) bytes)")
     }
 
+    /// Cone Stability (function_constant 9): the tuning level maps to the
+    /// baked margin, a higher margin builds a distinct variant that renders
+    /// without poisoned tiles, and the default (.fast / nil) is unchanged.
+    @Test func coneStabilityMapsToMargin() {
+        #expect(ConeStability.fast.margin == 3)
+        #expect(ConeStability.balanced.margin == 6)
+        #expect(ConeStability.stable.margin == 12)
+
+        var engine = EngineParams()
+        let (params, _) = ParamTableLayout.build(
+            engine: engine, deParams: DEDescriptor.mandelbox.paramLayout.map(\.default))
+        // Cone off → no margin baked.
+        var tuning = RenderTuning(conePrepass: false, coneStability: .stable)
+        #expect(MarchSpec.from(tuning: tuning, params: params, opCount: 0).coneMargin == nil)
+        // Cone on → the level's margin.
+        tuning = RenderTuning(conePrepass: true, coneStability: .stable)
+        #expect(MarchSpec.from(tuning: tuning, params: params, opCount: 0).coneMargin == 12)
+        tuning = RenderTuning(conePrepass: true, coneStability: .fast)
+        #expect(MarchSpec.from(tuning: tuning, params: params, opCount: 0).coneMargin == 3)
+        _ = engine  // silence unused-mutation
+    }
+
+    @Test(.enabled(if: GPU.available))
+    func stableMarginRendersWithoutPoisonedTiles() throws {
+        let ctx = try GPU.ctx()
+        let renderer = try OffscreenRenderer(context: ctx)
+        let de = DEDescriptor.mandelbox
+        let request = makeRequest(de)
+        // A distinct high-margin variant must build (its own cache key) and
+        // render a sane, sentinel-free image.
+        let stable = try ctx.makeSpecializedMarch(
+            deFunctionName: de.mslFunctionName,
+            spec: MarchSpec(coneMarch: true, coneMargin: 12))
+        #expect(stable.conePrepass != nil)
+        let result = try renderer.render(request, specialized: stable)
+        #expect(result.rgba8.contains { $0 > 8 }, "blank proves nothing")
+        var sentinels = 0
+        for i in stride(from: 0, to: result.rgba8.count, by: 4)
+        where result.rgba8[i] == 255 && result.rgba8[i + 1] == 0
+            && result.rgba8[i + 2] == 255 && result.rgba8[i + 3] == 0 {
+            sentinels += 1
+        }
+        #expect(sentinels == 0, "stable-margin cone produced NaN-sentinel tiles")
+    }
+
     #if os(macOS)
     /// Live path: SessionGPUEncoder with conePrepass tuning renders through
     /// a real CAMetalLayer drawable once the specialized variant lands —
