@@ -75,6 +75,44 @@ public struct Palette: Sendable, Equatable, Codable, Hashable {
         stops = Palette.sanitized(newStops)
     }
 
+    /// CPU reference sampler — the byte-for-byte mirror of `samplePalette` in
+    /// RaymarchCore.metal (the same wrap, bracket search, and linear↔smoothstep
+    /// segment blend). Kept in lockstep so tests can pin the GPU look on the
+    /// CPU. Returns linear rgb.
+    ///
+    /// - Parameters:
+    ///   - t: raw mapping coordinate (wrapped internally).
+    ///   - repeatCount: gradient tiling (clamped to >= 1).
+    ///   - offset: phase shift, wrapped with the coordinate.
+    ///   - smoothing: 0 = linear segments, 1 = smoothstep segments.
+    public func sample(
+        t: Float, repeatCount: Float = 1, offset: Float = 0, smoothing: Float = 0
+    ) -> (red: Float, green: Float, blue: Float) {
+        let n = stops.count
+        if n == 0 { return (0.5, 0.5, 0.5) }
+        var u = t * max(repeatCount, 1) + offset
+        u -= u.rounded(.down)  // wrap into [0,1)
+        if n == 1 || u <= stops[0].position {
+            return (stops[0].red, stops[0].green, stops[0].blue)
+        }
+        if u >= stops[n - 1].position {
+            return (stops[n - 1].red, stops[n - 1].green, stops[n - 1].blue)
+        }
+        let s = min(max(smoothing, 0), 1)
+        for i in 0..<(n - 1) where u >= stops[i].position && u <= stops[i + 1].position {
+            let p0 = stops[i].position
+            let p1 = stops[i + 1].position
+            var f = (u - p0) / max(p1 - p0, 1e-6)
+            let fs = f * f * (3 - 2 * f)
+            f = f + (fs - f) * s
+            let a = stops[i], b = stops[i + 1]
+            return (a.red + (b.red - a.red) * f,
+                    a.green + (b.green - a.green) * f,
+                    a.blue + (b.blue - a.blue) * f)
+        }
+        return (stops[n - 1].red, stops[n - 1].green, stops[n - 1].blue)
+    }
+
     private static func sanitized(_ input: [GradientStop]) -> [GradientStop] {
         func clamp01(_ v: Float) -> Float { v.isFinite ? min(max(v, 0), 1) : 0 }
         let cleaned = input.map {

@@ -129,6 +129,25 @@ struct SceneRoundTripSuite {
         SceneCodec.apply(envelope, layout: layout, engine: fresh)
         #expect(fresh.readIntegratorPhase(slot: phaseSlot) == livePhase)
     }
+
+    @Test("Palette round-trips through encode/decode (sorted, clamped)")
+    func paletteRoundTrip() throws {
+        let (layout, engine, _) = try persistenceFixture()
+        var envelope = SceneCodec.snapshot(layout: layout, engine: engine, fractalTypeKey: "m")
+        envelope.palette = PalettePreset.preset(id: "ocean")?.palette
+        let decoded = try SceneCodec.decode(SceneCodec.encode(envelope))
+        #expect(decoded.palette == envelope.palette)
+        #expect(decoded.palette?.stops.map(\.position)
+            == PalettePreset.preset(id: "ocean")?.palette.stops.map(\.position))
+    }
+
+    @Test("A scene with no palette decodes to nil (renderer default applies)")
+    func absentPaletteIsNil() throws {
+        let (layout, engine, _) = try persistenceFixture()
+        let envelope = SceneCodec.snapshot(layout: layout, engine: engine, fractalTypeKey: "m")
+        let decoded = try SceneCodec.decode(SceneCodec.encode(envelope))
+        #expect(decoded.palette == nil)
+    }
 }
 
 // MARK: - Unknown content preservation
