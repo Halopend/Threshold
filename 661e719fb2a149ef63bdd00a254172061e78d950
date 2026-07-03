@@ -1,0 +1,5 @@
+bench (mandelbox iters=9 steps=120, specialized):
+1024x1024: 4.02 ms (249.1 fps) p95 4.10
+1800x1800: 10.87 ms (92.0 fps) p95 10.95
+2048x2048: 13.65 ms (73.2 fps) p95 13.73
+goal 2048>=30fps: PASS
