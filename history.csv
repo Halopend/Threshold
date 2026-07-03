@@ -44,3 +44,6 @@ time,rev,note,scene,maxSteps,frames,resolution,medianMs,meanMs,p95Ms,minMs,maxMs
 2026-07-03T22:16:19Z,661e719,"Cone-prepass UI controls (toggle + Cone Stability picker) + function_constant 9 shimmer margin",bench-mandelbox,120,60,1024,4.02,4.04,4.10,4.00,4.69,249.1,-
 2026-07-03T22:16:19Z,661e719,"Cone-prepass UI controls (toggle + Cone Stability picker) + function_constant 9 shimmer margin",bench-mandelbox,120,60,1800,10.87,10.87,10.95,10.85,10.95,92.0,-
 2026-07-03T22:16:19Z,661e719,"Cone-prepass UI controls (toggle + Cone Stability picker) + function_constant 9 shimmer margin",bench-mandelbox,120,60,2048,13.65,13.66,13.73,13.64,13.75,73.2,PASS(≥30)
+2026-07-03T22:44:02Z,e868113,"Render Quality ceiling (ADR-003) in UI + selectable compute backend for the compositor shell",bench-mandelbox,120,60,1024,4.02,4.05,4.14,4.00,4.18,248.5,-
+2026-07-03T22:44:02Z,e868113,"Render Quality ceiling (ADR-003) in UI + selectable compute backend for the compositor shell",bench-mandelbox,120,60,1800,10.96,10.99,11.08,10.92,11.16,91.2,-
+2026-07-03T22:44:02Z,e868113,"Render Quality ceiling (ADR-003) in UI + selectable compute backend for the compositor shell",bench-mandelbox,120,60,2048,13.81,13.80,13.87,13.72,13.90,72.4,PASS(≥30)
