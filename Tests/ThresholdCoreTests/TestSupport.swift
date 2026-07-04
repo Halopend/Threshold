@@ -32,6 +32,16 @@ struct SplitMix64: RandomNumberGenerator {
     }
 }
 
+// MARK: - Slot anchoring
+
+/// The first slot `Catalog.register` (and therefore `makeEngine`) hands out
+/// for content params — everything below is engine-reserved. Tests address
+/// resolved values by absolute slot, so they anchor on THIS rather than a
+/// magic literal; adding engine-reserved slots (e.g. the safety bubble bumped
+/// it 16 → 20) then shifts every content test in lockstep instead of breaking
+/// them one hardcoded number at a time.
+let firstContentSlot = EngineSlot.reservedCount
+
 // MARK: - Catalog/engine builders
 
 /// A scalar spec with test-friendly defaults (instant smoothing everywhere

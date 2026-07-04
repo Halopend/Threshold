@@ -2,7 +2,7 @@ import simd
 import Testing
 @testable import ThresholdCore
 
-// A small layout: float3 "pos" (slots 16..18), scalar "power" (19), "warpx" (20).
+// A small layout: float3 "pos" (firstContentSlot..+2), scalar "power" (+3), "warpx" (+4).
 private func makeLayout() -> CatalogLayout {
     let cat = Catalog()
     try! cat.register(ParamSpec(key: ParamKey("de.f.pos"), label: "Position",
@@ -31,9 +31,9 @@ private func writeMap(_ writes: [LaneWrite]) -> [Int: Float] {
         table: table, layout: layout, gain: 0.5)
     let m = writeMap(writes)
     // offset = drive · gain(0.5) · span(2) = drive · 1
-    #expect(m[16] == 1.0)
-    #expect(m[17] == 0.5)
-    #expect(m[18] == -1.0)
+    #expect(m[firstContentSlot] == 1.0)
+    #expect(m[firstContentSlot + 1] == 0.5)
+    #expect(m[firstContentSlot + 2] == -1.0)
     #expect(writes.allSatisfy { $0.lane == .gesture })
     #expect(writes.count == 3)
 }
@@ -47,9 +47,9 @@ private func writeMap(_ writes: [LaneWrite]) -> [Int: Float] {
     let writes = GestureLaneResolver.resolve(
         drives: [src: .vector(SIMD3(1, 9, 9))],
         table: table, layout: layout, gain: 0.5)
-    // Only x assigned → one write at warpx (slot 20), span 2 → 1·0.5·2 = 1.0.
+    // Only x assigned → one write at warpx (firstContentSlot + 4), span 2 → 1·0.5·2 = 1.0.
     #expect(writes.count == 1)
-    #expect(writes[0].slot == 20)
+    #expect(writes[0].slot == firstContentSlot + 4)
     #expect(writes[0].value == 1.0)
 }
 
@@ -64,7 +64,7 @@ private func writeMap(_ writes: [LaneWrite]) -> [Int: Float] {
     let writes = GestureLaneResolver.resolve(
         drives: [src: .scalar(1.0)], table: table, layout: layout, gain: 0.5)
     #expect(writes.count == 1)
-    #expect(writes[0].slot == 19)
+    #expect(writes[0].slot == firstContentSlot + 3)
     #expect(writes[0].value == 4.0)   // 1 · 0.5 · span(8)
 }
 

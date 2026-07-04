@@ -22,14 +22,14 @@ struct CompositionTests {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeEngine([spec("t.a", default: 7)], clock: clock)
         clock.advance()
-        #expect(engine.resolve().values[16] == 7)
+        #expect(engine.resolve().values[firstContentSlot] == 7)
     }
 
     @Test("Additive: set lanes sum on top of the scene-or-default base")
     func additive() throws {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeEngine([spec("t.a", default: 0.5)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .scene, slot: slot, value: 1.0)
         engine.write(lane: .animation, slot: slot, value: 0.25)
@@ -55,7 +55,7 @@ struct CompositionTests {
         let engine = try makeEngine(
             [spec("t.m", range: 0...1000, default: 2, composition: .multiplicative)],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         // Only user set: default 2 × 3 = 6 (every other lane neutral).
         engine.write(lane: .user, slot: slot, value: 3)
@@ -80,7 +80,7 @@ struct CompositionTests {
         let engine = try makeEngine(
             [spec("t.m", range: 0...1000, default: 5, composition: .multiplicative)],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
         engine.write(lane: .gesture, slot: slot, value: 1)
         clock.advance()
         #expect(engine.resolve().values[slot] == 5)
@@ -92,7 +92,7 @@ struct CompositionTests {
         let engine = try makeEngine(
             [spec("t.r", range: 0...100, default: 1, composition: .replace)],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .animation, slot: slot, value: 10)
         clock.advance()
@@ -130,11 +130,11 @@ struct CompositionTests {
         let engine = try makeEngine(
             [spec("t.v", range: -10...10, default: 1, kind: .float3)],
             clock: clock)
-        // Slots 16, 17, 18.
+        // Slots firstContentSlot, +1, +2.
         #expect(engine.write(lane: .user, key: ParamKey("t.v"), values: [1, 2, 3]))
         clock.advance()
         let values = engine.resolve().values
-        #expect(values[16] == 2 && values[17] == 3 && values[18] == 4)  // default 1 + write
+        #expect(values[firstContentSlot] == 2 && values[firstContentSlot + 1] == 3 && values[firstContentSlot + 2] == 4)  // default 1 + write
     }
 
     @Test("Generation increments monotonically")

@@ -132,9 +132,9 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 
 @Test func autoDetectGroupsDottedTriple() {
     let entries = [
-        scalarEntry(16, key: "de.f.Translate.x", label: "Translate.x", range: -2...2),
-        scalarEntry(17, key: "de.f.Translate.y", label: "Translate.y", range: -3...3),
-        scalarEntry(18, key: "de.f.Translate.z", label: "Translate.z", range: -1...1),
+        scalarEntry(firstContentSlot, key: "de.f.Translate.x", label: "Translate.x", range: -2...2),
+        scalarEntry(firstContentSlot + 1, key: "de.f.Translate.y", label: "Translate.y", range: -3...3),
+        scalarEntry(firstContentSlot + 2, key: "de.f.Translate.z", label: "Translate.z", range: -1...1),
     ]
     let groups = Vec3Group.autoDetect(from: entries)
     #expect(groups.count == 1)
@@ -149,8 +149,8 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 
 @Test func autoDetectAllowsPartialTriple() {
     let entries = [
-        scalarEntry(16, key: "a.x", label: "Offset x"),
-        scalarEntry(17, key: "a.y", label: "Offset y"),
+        scalarEntry(firstContentSlot, key: "a.x", label: "Offset x"),
+        scalarEntry(firstContentSlot + 1, key: "a.y", label: "Offset y"),
     ]
     let groups = Vec3Group.autoDetect(from: entries)
     #expect(groups.count == 1)
@@ -160,9 +160,9 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 
 @Test func autoDetectIgnoresLoneAxisAndFloat3AndNonAxis() {
     let entries = [
-        scalarEntry(16, key: "lone.x", label: "Solo.x"),       // lone axis — not a group
-        scalarEntry(17, key: "p.power", label: "Power"),        // no axis token
-        vec3Entry(18, key: "de.f.pos", label: "Position"),      // native float3 — skipped
+        scalarEntry(firstContentSlot, key: "lone.x", label: "Solo.x"),       // lone axis — not a group
+        scalarEntry(firstContentSlot + 1, key: "p.power", label: "Power"),        // no axis token
+        vec3Entry(firstContentSlot + 2, key: "de.f.pos", label: "Position"),      // native float3 — skipped
     ]
     #expect(Vec3Group.autoDetect(from: entries).isEmpty)
 }
@@ -170,17 +170,17 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 @Test func autoDetectDoesNotSplitWordsEndingInAxisLetter() {
     // "Max" ends in x but has no separator — must NOT split into "Ma" + x.
     let entries = [
-        scalarEntry(16, key: "m.max", label: "Max"),
-        scalarEntry(17, key: "m.box", label: "Box"),
+        scalarEntry(firstContentSlot, key: "m.max", label: "Max"),
+        scalarEntry(firstContentSlot + 1, key: "m.box", label: "Box"),
     ]
     #expect(Vec3Group.autoDetect(from: entries).isEmpty)
 }
 
 @Test func autoDetectHandlesUnderscoreAndSpaceSeparators() {
     let entries = [
-        scalarEntry(16, key: "u.x", label: "Fold_X"),
-        scalarEntry(17, key: "u.y", label: "Fold_Y"),
-        scalarEntry(18, key: "u.z", label: "Fold_Z"),
+        scalarEntry(firstContentSlot, key: "u.x", label: "Fold_X"),
+        scalarEntry(firstContentSlot + 1, key: "u.y", label: "Fold_Y"),
+        scalarEntry(firstContentSlot + 2, key: "u.z", label: "Fold_Z"),
     ]
     let groups = Vec3Group.autoDetect(from: entries)
     #expect(groups.count == 1)
@@ -192,11 +192,11 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 
 @Test func deriveSortsIntoVectorsScalarsAndGroups() {
     let entries = [
-        vec3Entry(16, key: "de.f.pos", label: "Position"),
-        scalarEntry(19, key: "de.f.power", label: "Power"),
-        scalarEntry(20, key: "de.f.Warp.x", label: "Warp.x"),
-        scalarEntry(21, key: "de.f.Warp.y", label: "Warp.y"),
-        scalarEntry(22, key: "de.f.Warp.z", label: "Warp.z"),
+        vec3Entry(firstContentSlot, key: "de.f.pos", label: "Position"),
+        scalarEntry(firstContentSlot + 3, key: "de.f.power", label: "Power"),
+        scalarEntry(firstContentSlot + 4, key: "de.f.Warp.x", label: "Warp.x"),
+        scalarEntry(firstContentSlot + 5, key: "de.f.Warp.y", label: "Warp.y"),
+        scalarEntry(firstContentSlot + 6, key: "de.f.Warp.z", label: "Warp.z"),
     ]
     let p = BindableParams.derive(from: entries)
     #expect(p.vectors.map(\.key) == [ParamKey("de.f.pos")])
@@ -209,10 +209,10 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 
 @Test func deriveExcludesBoolsAndEnums() {
     let entries = [
-        scalarEntry(16, key: "s", label: "Scalar"),
-        CatalogEntry(slot: 17, spec: ParamSpec(
+        scalarEntry(firstContentSlot, key: "s", label: "Scalar"),
+        CatalogEntry(slot: firstContentSlot + 1, spec: ParamSpec(
             key: ParamKey("b"), label: "Flag", kind: .bool, range: 0...1, default: 0)),
-        CatalogEntry(slot: 18, spec: ParamSpec(
+        CatalogEntry(slot: firstContentSlot + 2, spec: ParamSpec(
             key: ParamKey("e"), label: "Mode", kind: .enumeration(caseCount: 3),
             range: 0...2, default: 0)),
     ]

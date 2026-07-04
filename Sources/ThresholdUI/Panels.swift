@@ -64,6 +64,9 @@ public enum ControlTab: String, CaseIterable, Sendable {
                 SubTab("zoom", "Zoom", "plus.magnifyingglass"),
                 SubTab("animation", "Animate", "film.stack"),
                 SubTab("camera", "Camera", "move.3d"),
+                SubTab("music", "Music", "waveform"),
+                SubTab("lfos", "LFOs", "waveform.path.ecg"),
+                SubTab("routes", "Routes", "point.topleft.down.to.point.bottomright.curvepath"),
             ]
         case .setup:
             return [
@@ -120,16 +123,22 @@ public struct ControlSidebar: View {
     private let injectedStore: GestureBindingStore?
     private var gestureStore: GestureBindingStore { injectedStore ?? ownedStore }
 
+    /// Audio-input verbs (mic on/off) for the Motion ▸ Music sub-tab; nil hides
+    /// the mic toggle (shells without audio capture).
+    let audioActions: AudioActions?
+
     public init(
         mirror: ParameterMirror, layout: CatalogLayout,
         sceneActions: SceneActions? = nil,
         animationActions: AnimationActions? = nil,
+        audioActions: AudioActions? = nil,
         gestureStore: GestureBindingStore? = nil
     ) {
         self.mirror = mirror
         self.layout = layout
         self.sceneActions = sceneActions
         self.animationActions = animationActions
+        self.audioActions = audioActions
         self.injectedStore = gestureStore
     }
 
@@ -277,6 +286,12 @@ public struct ControlSidebar: View {
                     keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
                     mirror: mirror, layout: layout,
                     footer: "Drag the view to orbit · pinch or scroll to dolly.")
+            case "music":
+                MusicSection(mirror: mirror, layout: layout, audio: audioActions)
+            case "lfos":
+                LFOBankSection(mirror: mirror)
+            case "routes":
+                RoutesSection(mirror: mirror, layout: layout)
             default:
                 ZoomSection(mirror: mirror, layout: layout)
             }

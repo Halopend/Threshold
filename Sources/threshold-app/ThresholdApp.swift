@@ -21,6 +21,9 @@ final class AppModel {
     let signals: SignalTable
     let mirror: ParameterMirror
     let audio: AudioAnalyzer
+    /// Whether the mic is currently feeding the audio.* signals (Music tab
+    /// toggle). Routing is independent — see `setAudioEnabled`.
+    var audioEnabled = false
 
     init() throws {
         // Catalog: engine params + every built-in DE's params (same wiring as
@@ -73,33 +76,13 @@ final class AppModel {
         session.stop()
     }
 
-    // MARK: Music reactivity demo set
+    // MARK: Audio input
 
-    /// Default bindings installed by the "React to Audio" toggle: bass drives
-    /// the bulb's power, overall level drives AO. Ordinary `Binding` data —
-    /// the same mechanism a scene-shipped mapping uses (plan §4.2).
-    static let defaultAudioBindings: [ThresholdCore.Binding] = [
-        ThresholdCore.Binding(
-            signal: .audioBandLow,
-            param: ParamKey.de("mandelbulb", "power"),
-            lane: .music,
-            mapping: SignalMapping(
-                inputLo: 0, inputHi: 1, outputLo: 0, outputHi: 2.5,
-                curve: .exponential(k: 1.6), deadzone: 0.02),
-            policy: .momentary,
-            scale: 1),
-        ThresholdCore.Binding(
-            signal: .audioRMS,
-            param: .engineAOStrength,
-            lane: .music,
-            mapping: SignalMapping(
-                inputLo: 0, inputHi: 0.7, outputLo: 0, outputHi: 0.8,
-                curve: .smooth, deadzone: 0.01),
-            policy: .momentary,
-            scale: 1),
-    ]
-
-    func setAudioReactive(_ on: Bool) {
+    /// Start/stop the mic feeding the audio.* signals. This ONLY controls
+    /// capture — what the audio features do is decided by the routes the user
+    /// builds in Motion ▸ Routes (or the Music tab's quick-adds). Enabling audio
+    /// no longer installs demo bindings; routing is fully user-owned.
+    func setAudioEnabled(_ on: Bool) {
         if on {
             do {
                 try audio.start()
@@ -108,13 +91,14 @@ final class AppModel {
                 if let now = session.snapshots.latest?.time {
                     audio.timebaseOffset = now
                 }
-                mirror.setBindings(Self.defaultAudioBindings)
+                audioEnabled = true
             } catch {
                 print("audio start failed: \(error)")
+                audioEnabled = false
             }
         } else {
             audio.stop()
-            mirror.setBindings([])
+            audioEnabled = false
         }
     }
 }
@@ -195,7 +179,6 @@ struct ThresholdApp: App {
 
 struct MainView: View {
     let model: AppModel
-    @State private var audioReactive = false
 
     var body: some View {
         HSplitView {
@@ -203,18 +186,15 @@ struct MainView: View {
                 .frame(minWidth: 480, minHeight: 480)
                 .layoutPriority(1)
 
-            // The sidebar scrolls itself (tab strip stays fixed on top).
-            VStack(spacing: 0) {
-                Toggle("React to Audio (mic)", isOn: $audioReactive)
-                    .onChange(of: audioReactive) { _, on in
-                        model.setAudioReactive(on)
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                Divider()
-                ControlSidebar(mirror: model.mirror, layout: model.layout)
-            }
-            .frame(minWidth: 320, idealWidth: 360, maxWidth: 480)
+            // The sidebar scrolls itself (tab strip stays fixed on top). Audio
+            // input lives in Motion ▸ Music now (AudioActions), so the shell no
+            // longer needs its own toggle.
+            ControlSidebar(
+                mirror: model.mirror, layout: model.layout,
+                audioActions: AudioActions(
+                    isEnabled: { model.audioEnabled },
+                    setEnabled: { model.setAudioEnabled($0) }))
+                .frame(minWidth: 320, idealWidth: 360, maxWidth: 480)
         }
     }
 }

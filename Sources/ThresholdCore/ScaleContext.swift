@@ -105,10 +105,15 @@ extension Catalog {
     /// only, where −64 is the honest float budget (no rebase; see the
     /// header).
     public func registerScaleParams() throws {
+        // Zoom SPEED stays instant (ADR-005): it is an integrator rate, and
+        // the phase integrator already turns a stepped rate into continuous
+        // motion (∫ of a step is a ramp — position never jumps). Smoothing the
+        // rate on top would double-smooth and desync the deterministic
+        // integration the harness/golden tests rely on.
         try register(ParamSpec(
             key: .scaleZoomSpeed, label: "Zoom Speed",
             range: -2...2, default: 0,
-            composition: .additive, smoothing: .continuous,
+            composition: .additive, smoothing: .instant,
             persistence: .scene,
             capabilities: [.musicBindable, .animatable],
             group: .camera))

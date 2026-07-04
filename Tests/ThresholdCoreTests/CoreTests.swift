@@ -119,10 +119,10 @@ struct ParamTypeTests {
                           curve: .sCurve, smoothing: .instant),
             ],
             clock: clock)
-        for slot in 16...18 { engine.write(lane: .user, slot: slot, value: 4) }
+        for slot in firstContentSlot...(firstContentSlot + 2) { engine.write(lane: .user, slot: slot, value: 4) }
         clock.advance()
         let values = engine.resolve().values
-        #expect(values[16] == values[17] && values[17] == values[18])
-        #expect(values[16] == 5)  // default 1 + 4, curve ignored
+        #expect(values[firstContentSlot] == values[firstContentSlot + 1] && values[firstContentSlot + 1] == values[firstContentSlot + 2])
+        #expect(values[firstContentSlot] == 5)  // default 1 + 4, curve ignored
     }
 }

@@ -111,6 +111,41 @@ struct SceneRoundTripSuite {
         #expect(try SceneCodec.encode(envelope) == SceneCodec.encode(envelope))
     }
 
+    @Test("Scene-embedded bindings and LFO bank round-trip")
+    func reactiveContentRoundTrip() throws {
+        let envelope = SceneEnvelope(
+            version: SceneCodec.currentVersion,
+            fractalTypeKey: "mandelbulb",
+            bindings: [
+                Binding(
+                    signal: .lfoA, param: .cameraOrbitYaw, lane: .music,
+                    mapping: SignalMapping(
+                        inputLo: -1, inputHi: 1, outputLo: -0.5, outputHi: 0.5, curve: .smooth),
+                    policy: .latched),
+                Binding(
+                    signal: .audioBandLow, param: .engineAOStrength, lane: .music,
+                    mapping: SignalMapping(inputLo: 0, inputHi: 1, outputLo: 0, outputHi: 0.8)),
+            ],
+            lfos: [
+                LFOSpec(
+                    slot: .lfoA, name: "orbit",
+                    components: [
+                        LFOComponent(wave: .sine, rateHz: 0.2, phase: 0, amplitude: 1),
+                        LFOComponent(wave: .triangle, rateHz: 0.05, phase: 0.25, amplitude: 0.3),
+                    ],
+                    bias: 0),
+            ])
+        let decoded = try SceneCodec.decode(SceneCodec.encode(envelope))
+        #expect(decoded.bindings == envelope.bindings)
+        #expect(decoded.lfos == envelope.lfos)
+        // Scenes that carry no reactive content decode to empty (forward compat
+        // with pre-feature scenes), and the keys are omitted from the bytes.
+        let bare = SceneEnvelope(version: SceneCodec.currentVersion, fractalTypeKey: "m")
+        let bareData = try SceneCodec.encode(bare)
+        #expect(!String(decoding: bareData, as: UTF8.self).contains("\"lfos\""))
+        #expect(try SceneCodec.decode(bareData).bindings.isEmpty)
+    }
+
     @Test("Integrator phase snapshots and restores")
     func integratorPhase() throws {
         let (layout, engine, clock) = try persistenceFixture()

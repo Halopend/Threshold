@@ -358,10 +358,18 @@ public final class ModulationEngine {
         if lane == .music { musicWritten.insert(slot) }
     }
 
-    /// `write` that bypasses smoothing: current jumps WITH the target. For
-    /// writes that must not animate — non-transition scene applies (the
-    /// harness/startup path) and commit-on-release rebasing, where the
+    /// `write` that bypasses smoothing: the smoothed current jumps WITH the
+    /// target. For writes that must not animate — non-transition scene applies
+    /// (the harness/startup path) and commit-on-release rebasing, where the
     /// resolved value is already at the written position (ADR-005).
+    ///
+    /// On a FIRST write to a slot, `write` first seeds current to the lane's
+    /// composition neutral (default for scene) before this overwrites it to
+    /// `value`; the net effect is still current == target == value, so the
+    /// first post-write resolve reads `value` with no ramp. For the scene lane
+    /// specifically the distinction is moot — scene tau is 0 everywhere, so a
+    /// plain `write` already lands current == target at the next resolve; the
+    /// explicit jump here keeps the "no animation" contract independent of that.
     public func snapWrite(lane: Lane, slot: Int, value: Float) {
         write(lane: lane, slot: slot, value: value)
         guard value.isFinite else { return }
@@ -386,23 +394,6 @@ public final class ModulationEngine {
             return
         }
         releasing[li].insert(slot)
-    }
-
-    /// Commit a momentary user edit into the authored scene lane with full
-    /// visual continuity (ADR-005): the scene base snaps to the value that
-    /// makes the RELEASED resolved value equal `clamp(target)`, the user lane
-    /// is re-anchored so this frame's resolved value does not move, and then
-    /// released — it glides to neutral at the user tau, landing the resolved
-    /// value on the committed target. With user tau 0 this degrades to
-    /// exactly the old snap behavior.
-    public func commitUserEdit(slot: Int, target: Float) {
-        precondition(slot >= 0 && slot < layout.slotCount)
-        let visual = resolvedValue(slot: slot)
-        snapWrite(lane: .scene, slot: slot,
-                  value: Inversion.sceneLaneValue(toAchieve: target, slot: slot, in: self))
-        snapWrite(lane: .user, slot: slot,
-                  value: Inversion.userLaneValue(toAchieve: visual, slot: slot, in: self))
-        releaseLane(.user, slot: slot)
     }
 
     /// Convenience: write all components of a param by key. Returns false if
@@ -614,18 +605,24 @@ public final class ModulationEngine {
         //    alpha = 1 - exp(-dt/tau); tau == 0 jumps. Music slots NOT written
         //    this frame are skipped here — the decay pass owns them; releasing
         //    slots are skipped too — the release pass owns them (ADR-005).
-        //    An open scene-transition window overrides the scene tau on
-        //    tweenable slots (never downward: an already-slower spec tau wins).
+        //    An open scene-transition window REPLACES the scene tau on
+        //    tweenable slots with the transition tau (D/4): every tweened
+        //    param moves in lockstep at the transition rate — coordinated —
+        //    and reaches ~98% by the deadline so pass 1c's exact landing is a
+        //    negligible snap, not a visible pop. It overrides the spec tau in
+        //    BOTH directions on purpose: the transition duration governs, not
+        //    each param's live-edit feel.
         let sceneLaneIndex = Lane.scene.rawValue
-        let transitionTau = sceneTransitionRemaining > 0 ? sceneTransitionTau : 0
+        let inTransition = sceneTransitionRemaining > 0
+        let transitionTau = sceneTransitionTau
         for lane in Lane.allCases {
             let li = lane.rawValue
             hasValue[li].forEachSetBit { slot in
                 if li == musicLane && !musicWritten.contains(slot) { return }
                 if releasing[li].contains(slot) { return }
                 var tau = tauByLane[li][slot]
-                if li == sceneLaneIndex && tweenable[slot] {
-                    tau = max(tau, transitionTau)
+                if inTransition && li == sceneLaneIndex && tweenable[slot] {
+                    tau = transitionTau
                 }
                 if tau <= 0 {
                     current[li][slot] = target[li][slot]

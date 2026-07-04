@@ -156,9 +156,12 @@ public struct Smoothing: Sendable, Codable, Hashable {
 
     /// Continuous-content feel (ADR-005, legacy parity): user edits ease over
     /// ~0.2 s — the exponential match for the original app's 0.35 s
-    /// critically-damped `smoothDamp` on every geometry change. Scene stays 0:
-    /// scene applies snap unless an explicit `SceneTransition` overrides the
-    /// lane for its window (`ModulationEngine.beginSceneTransition`), so the
+    /// critically-damped `smoothDamp` on every geometry change. On slider
+    /// release the momentary user offset GLIDES to neutral at this same tau
+    /// before clearing (graceful release), rather than the original's instant
+    /// clear — a deliberate refinement so nothing snaps at the end of a drag.
+    /// Scene stays 0: scene applies snap unless an explicit `SceneTransition`
+    /// overrides the lane for its window (`beginSceneTransition`), so the
     /// harness and tests stay deterministic by default.
     public static let continuous = Smoothing(user: 0.2, gesture: 0.15, music: 0.08)
 

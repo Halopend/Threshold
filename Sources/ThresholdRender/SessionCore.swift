@@ -32,6 +32,7 @@ final class SessionCore {
     let engine: ModulationEngine
     let bindingEngine: BindingEngine
     let animationPlayer: AnimationPlayer
+    let lfoEngine: LFOEngine
 
     private(set) var descriptor: DEDescriptor
     /// Active external DE program; when set, `descriptor` is its descriptor
@@ -137,6 +138,7 @@ final class SessionCore {
         self.engine = ModulationEngine(layout: layout, clock: clock, mailbox: laneMailbox)
         self.bindingEngine = BindingEngine(layout: layout)
         self.animationPlayer = AnimationPlayer(layout: layout)
+        self.lfoEngine = LFOEngine()
         let initial = DERegistry.descriptor(forKey: defaultDEKey) ?? .mandelbulb
         self.descriptor = initial
         self.lastBuiltinDescriptor = initial
@@ -177,8 +179,10 @@ final class SessionCore {
                 camera.position = camera.position.map { $0 * worldScale }
                 // A mid-flight camera tween lives in the same world — rebase
                 // its displayed pose too, or the glide would jump an octave.
-                cameraTween?.current.position =
-                    cameraTween!.current.position.map { $0 * worldScale }
+                if var tween = cameraTween {
+                    tween.current.position = tween.current.position.map { $0 * worldScale }
+                    cameraTween = tween
+                }
                 octave &+= k
             }
         }
@@ -217,6 +221,12 @@ final class SessionCore {
             value: SIMD4(Float(clock.now), 0, 0, 0),
             confidence: 1,
             timestamp: clock.now)
+
+        // Procedural LFOs publish into the signal table BEFORE the binding
+        // engine reads it, so an LFO's value reaches its bound param the SAME
+        // frame (no one-frame lag). Content time (clock.now): LFOs freeze while
+        // paused, exactly like animation and integrators.
+        lfoEngine.publish(into: signals, now: clock.now)
 
         bindingEngine.apply(signals: signals, engine: engine, now: clock.now)
 
@@ -354,21 +364,30 @@ final class SessionCore {
                 value: Inversion.userLaneValue(toAchieve: target, slot: slot, in: engine))
 
         case .clearUserEdit(let slot):
-            // Graceful discard (ADR-005): the user offset glides back to the
-            // base at the user tau instead of jumping (instant for tau-0 /
-            // discrete params).
+            // Discard a momentary edit: revert to base instantly. A discard is
+            // a one-shot command like commit (ADR-005) — it must not depend on
+            // later frames landing to finish a glide, so it snaps rather than
+            // eases. (Continuous FOLLOW during the drag itself still eases; it
+            // is only the cancel that is immediate.)
             guard slot >= 0 && slot < layout.slotCount else { return }
-            engine.releaseLane(.user, slot: slot)
+            engine.clearLane(.user, slot: slot)
 
         case .commitUserEdit(let slot, let target):
-            // Persist the edit into the authored scene lane (the only lane
-            // Save captures — SceneCodec.snapshot), then gracefully release
-            // the momentary user override: the engine snaps the base, re-
-            // anchors the user lane so this frame's resolved value holds, and
-            // glides the remainder at the user tau (ADR-005). Degrades to the
-            // old snap for tau-0 params.
+            // Persist the edit into the authored scene lane (the only lane Save
+            // captures — SceneCodec.snapshot), then release the momentary user
+            // override. The commit is INSTANT on purpose (ADR-005): the live
+            // drag already eased the resolved value to `target` via the user
+            // lane's continuous smoothing, so baking `target` into the scene
+            // lane and clearing user keeps the resolved value exactly where it
+            // is — no post-commit motion, no dependency on extra frames landing
+            // (a throttled/idle render loop must not strand a committed edit
+            // mid-glide). sceneLaneValue keeps resolved at `target` given the
+            // other transient lanes.
             guard slot >= 0 && slot < layout.slotCount else { return }
-            engine.commitUserEdit(slot: slot, target: target)
+            engine.write(
+                lane: .scene, slot: slot,
+                value: Inversion.sceneLaneValue(toAchieve: target, slot: slot, in: engine))
+            engine.clearLane(.user, slot: slot)
 
         case .clearLane(let lane):
             engine.clearLane(lane)
@@ -382,6 +401,9 @@ final class SessionCore {
 
         case .setBindings(let bindings):
             bindingEngine.bindings = bindings
+
+        case .setLFOs(let specs):
+            lfoEngine.lfos = specs
 
         case .setPalette(let newPalette):
             palette = newPalette
@@ -428,6 +450,11 @@ final class SessionCore {
             // Camera is saved in the rebased world (the codec snapshotted the
             // matching rebased phase) — carry the depth counter alongside.
             envelope.scaleOctave = octave
+            // Reactive content is scene-embedded (unlike the transient lanes):
+            // the active bindings + LFO bank ARE authored content and save with
+            // the scene.
+            envelope.bindings = bindingEngine.bindings
+            envelope.lfos = lfoEngine.lfos
             slot.publish(envelope)
         }
     }
@@ -514,6 +541,12 @@ final class SessionCore {
         if let scenePalette = envelope.palette {
             palette = scenePalette
         }
+        // Reactive content (scene-embedded): the scene owns its bindings + LFO
+        // bank. Installed unconditionally (even when empty) so a scene is a
+        // self-contained preset — loading one replaces the previous scene's
+        // reactive behavior, like its warp stack and palette do.
+        bindingEngine.bindings = envelope.bindings
+        lfoEngine.lfos = envelope.lfos
         // Embedded DEs compile OFF this thread: the app shell runs
         // ExternalDELoader.load and follows the applyScene command with
         // setExternalDE. Until that lands, keep the current descriptor

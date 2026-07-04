@@ -10,7 +10,7 @@ struct ClampTests {
     func resolutionClamps() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", range: 0...1, default: 0.5)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .user, slot: slot, value: 100)
         clock.advance()
@@ -25,7 +25,7 @@ struct ClampTests {
     func writesAreStoredUnclamped() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", range: 0...1, default: 0.5)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         // User pushes way out of range…
         engine.write(lane: .user, slot: slot, value: 5)
@@ -52,9 +52,9 @@ struct ClampTests {
         #expect(engine.write(lane: .user, key: ParamKey("t.v"), values: [9, -9, 0.25]))
         clock.advance()
         let values = engine.resolve().values
-        #expect(values[16] == 1)     // 0.5 + 9 clamped high
-        #expect(values[17] == 0)     // 0.5 − 9 clamped low
-        #expect(values[18] == 0.75)  // in range, untouched
+        #expect(values[firstContentSlot] == 1)     // 0.5 + 9 clamped high
+        #expect(values[firstContentSlot + 1] == 0)     // 0.5 − 9 clamped low
+        #expect(values[firstContentSlot + 2] == 0.75)  // in range, untouched
     }
 
     @Test("Scene values are clamped at resolution too")
@@ -63,6 +63,6 @@ struct ClampTests {
         let engine = try makeEngine([spec("t.a", range: 0...1, default: 0.5)], clock: clock)
         engine.applyScene(values: [ParamKey("t.a"): [42]])
         clock.advance()
-        #expect(engine.resolve().values[16] == 1)
+        #expect(engine.resolve().values[firstContentSlot] == 1)
     }
 }

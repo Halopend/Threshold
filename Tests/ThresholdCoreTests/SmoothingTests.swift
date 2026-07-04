@@ -16,7 +16,7 @@ struct SmoothingTests {
         let engine = try makeEngine(
             [spec("t.a", default: 0, smoothing: Smoothing(gesture: tau))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .gesture, slot: slot, value: 1.0)
         var expected: Float = 0  // ramps in from the additive neutral
@@ -35,7 +35,7 @@ struct SmoothingTests {
         let engine = try makeEngine(
             [spec("t.a", default: 0, smoothing: Smoothing(gesture: 0.15))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .gesture, slot: slot, value: 2.0)
         for _ in 0..<180 {  // 3 s = 20 time constants
@@ -50,9 +50,9 @@ struct SmoothingTests {
     func instantJump() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
-        engine.write(lane: .user, slot: 16, value: 3)
+        engine.write(lane: .user, slot: firstContentSlot, value: 3)
         clock.advance()
-        #expect(engine.resolve().values[16] == 3)
+        #expect(engine.resolve().values[firstContentSlot] == 3)
     }
 
     @Test("Pause freezes mid-flight smoothing, music decay, and values")
@@ -61,7 +61,7 @@ struct SmoothingTests {
         let engine = try makeEngine(
             [spec("t.a", default: 0, smoothing: Smoothing(gesture: 0.15, music: 0.08))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         // Get a gesture mid-smooth and a music value mid-decay.
         engine.write(lane: .gesture, slot: slot, value: 1.0)
@@ -89,7 +89,7 @@ struct SmoothingTests {
         let engine = try makeEngine(
             [spec("t.a", default: 0, smoothing: Smoothing(gesture: 0.15))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .gesture, slot: slot, value: 1.0)
         clock.advance()
@@ -107,8 +107,8 @@ struct SmoothingTests {
         clock.paused = true
         clock.advance()
         // The user's slider (tau 0) must work while time is paused.
-        engine.write(lane: .user, slot: 16, value: 4)
-        #expect(engine.resolve().values[16] == 4)
+        engine.write(lane: .user, slot: firstContentSlot, value: 4)
+        #expect(engine.resolve().values[firstContentSlot] == 4)
     }
 
     @Test("Default smoothing: user/scene/system/animation instant, gesture 0.15, music 0.08")

@@ -213,7 +213,8 @@ struct MirrorCommandTests {
             Issue.record("expected .setBindings, got \(drained[2])")
             return
         }
-        guard case .applyScene(let sent) = drained[3], sent == scene else {
+        guard case .applyScene(let sent, let transition) = drained[3],
+              sent == scene, transition == .default else {
             Issue.record("expected .applyScene, got \(drained[3])")
             return
         }

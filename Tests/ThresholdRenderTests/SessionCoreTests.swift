@@ -120,7 +120,7 @@ struct SessionCoreTests {
                 ParamKey.de("mandelbox", "scale").rawValue: [2.5],
             ],
             warpStack: authored)
-        h.commands.publish(.applyScene(scene))
+        h.commands.publish(.applyScene(scene, transition: nil))
         let frame = h.step()
 
         #expect(frame.deKey == "mandelbox")
@@ -469,7 +469,7 @@ struct SessionCoreTests {
             version: SceneCodec.currentVersion, fractalTypeKey: "external")
         scene.embeddedDE = embedded
         scene.params["de.external.radius"] = [1.5]
-        h.commands.publish(.applyScene(scene))
+        h.commands.publish(.applyScene(scene, transition: nil))
         h.commands.publish(.setExternalDE(program))
 
         let frame = h.step()
@@ -483,10 +483,13 @@ struct SessionCoreTests {
         #expect(frame.request.params[Int(frame.request.uniforms.meta.w)] == 1.5)
 
         // A user edit on the arena slot lands in the slice, clamped to the
-        // declared range — same single-clamp-site behavior as built-ins.
+        // declared range — same single-clamp-site behavior as built-ins. The
+        // external DE param eases on the user lane (ADR-005: continuous feel),
+        // so converge the drag before checking it settled at the clamp (2).
         h.commands.publish(.userEdit(slot: entry.slot, targetResolved: 5))
-        let edited = h.step()
-        #expect(edited.request.params[Int(edited.request.uniforms.meta.w)] == 2)
+        var edited = h.step()
+        for _ in 0..<240 { edited = h.step() }  // 4 s = 20τ past the 0.2 s user tau
+        #expect(abs(edited.request.params[Int(edited.request.uniforms.meta.w)] - 2) < 1e-4)
 
         // Clearing the program recycles the arena…
         h.commands.publish(.setExternalDE(nil))
@@ -522,8 +525,9 @@ struct SessionCoreTests {
 
         // Scene apply writes only the scene lane — the gesture orbit SURVIVES
         // (Invariant 11).
-        h.commands.publish(.applyScene(SceneEnvelope(
-            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox")))
+        h.commands.publish(.applyScene(
+            SceneEnvelope(version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox"),
+            transition: nil))
         for _ in 0..<10 { h.step() }
         #expect(h.step().request.uniforms.camPosFov.z < 0)
     }
@@ -540,7 +544,7 @@ struct SessionCoreTests {
             GradientStop(position: 0, red: 1, green: 0, blue: 0),
             GradientStop(position: 1, red: 0, green: 0, blue: 1),
         ])
-        h.commands.publish(.applyScene(scene))
+        h.commands.publish(.applyScene(scene, transition: nil))
         h.step()
 
         // Transient lanes must NOT persist (Invariant 3): add a user edit.
@@ -726,8 +730,9 @@ struct SessionCoreTests {
         // the clear path — apply a builtin scene while external is nil).
         var h = Harness()
         h.step()
-        h.commands.publish(.applyScene(SceneEnvelope(
-            version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox")))
+        h.commands.publish(.applyScene(
+            SceneEnvelope(version: SceneCodec.currentVersion, fractalTypeKey: "mandelbox"),
+            transition: nil))
         let frame = h.step()
         #expect(frame.deKey == "mandelbox")
         #expect(frame.externalProgram == nil)

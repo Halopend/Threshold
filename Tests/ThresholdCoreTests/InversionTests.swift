@@ -30,9 +30,9 @@ struct InversionTests {
             let comp = [Composition.additive, .multiplicative, .replace][rng.int(in: 0...2)]
             let slot: Int
             switch comp {
-            case .additive: slot = 16
-            case .multiplicative: slot = 17
-            case .replace: slot = 18
+            case .additive: slot = firstContentSlot
+            case .multiplicative: slot = firstContentSlot + 1
+            case .replace: slot = firstContentSlot + 2
             }
 
             // Fresh lane state per iteration.
@@ -88,7 +88,7 @@ struct InversionTests {
         let engine = try makeEngine(
             [spec("t.m", range: -10...10, default: 1, composition: .multiplicative)],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .scene, slot: slot, value: 0)  // base 0 → not invertible
         clock.advance()
@@ -103,8 +103,8 @@ struct InversionTests {
         let engine = try makeEngine(
             [spec("t.r", range: 0...10, default: 2, composition: .replace)],
             clock: clock)
-        #expect(Inversion.userLaneValue(toAchieve: 7, slot: 16, in: engine) == 7)
-        #expect(Inversion.userLaneValue(toAchieve: 25, slot: 16, in: engine) == 10)  // clamped
+        #expect(Inversion.userLaneValue(toAchieve: 7, slot: firstContentSlot, in: engine) == 7)
+        #expect(Inversion.userLaneValue(toAchieve: 25, slot: firstContentSlot, in: engine) == 10)  // clamped
     }
 
     @Test("Additive inversion accounts for a nonzero system lane (ADR-003)")
@@ -113,7 +113,7 @@ struct InversionTests {
         let engine = try makeEngine(
             [spec("t.a", range: -10...10, default: 1, composition: .additive)],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .system, slot: slot, value: -0.5)
         clock.advance()

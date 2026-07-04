@@ -159,6 +159,14 @@ public struct SceneEnvelope: Sendable, Equatable {
     /// Scene palette (gradient stops). `nil` means "no authored palette" — the
     /// renderer falls back to its default palette (plan §5.5).
     public var palette: Palette?
+    /// Signal→param bindings this scene carries (music reactivity + LFO
+    /// routing). Scene-embedded so a scene is a self-contained audio-visual
+    /// preset; `apply` installs them into the BindingEngine. Empty for scenes
+    /// that predate the feature or carry no reactive behavior.
+    public var bindings: [Binding]
+    /// Procedural LFO bank this scene carries. Bindings reference an LFO by its
+    /// `lfo.*` slot; `apply` installs these into the LFOEngine.
+    public var lfos: [LFOSpec]
     /// Foreign top-level keys, preserved verbatim.
     public var unknown: [String: JSONValue]
 
@@ -176,6 +184,8 @@ public struct SceneEnvelope: Sendable, Equatable {
         warpStack: [WarpOpDTO] = [],
         camera: CameraDTO = .default,
         palette: Palette? = nil,
+        bindings: [Binding] = [],
+        lfos: [LFOSpec] = [],
         unknown: [String: JSONValue] = [:]
     ) {
         self.version = version
@@ -191,6 +201,8 @@ public struct SceneEnvelope: Sendable, Equatable {
         self.warpStack = warpStack
         self.camera = camera
         self.palette = palette
+        self.bindings = bindings
+        self.lfos = lfos
         self.unknown = unknown
     }
 }
@@ -212,7 +224,7 @@ extension SceneEnvelope: Codable {
     private static let knownKeys: Set<String> = [
         "version", "abiVersion", "name", "tags", "fractalTypeKey",
         "embeddedDE", "params", "integratorPhases", "scaleOctave",
-        "warpStack", "camera", "palette",
+        "warpStack", "camera", "palette", "bindings", "lfos",
     ]
 
     public init(from decoder: any Decoder) throws {
@@ -237,6 +249,8 @@ extension SceneEnvelope: Codable {
         warpStack = try c.decodeIfPresent([WarpOpDTO].self, forKey: key("warpStack")) ?? []
         camera = try c.decodeIfPresent(CameraDTO.self, forKey: key("camera")) ?? .default
         palette = try c.decodeIfPresent(Palette.self, forKey: key("palette"))
+        bindings = try c.decodeIfPresent([Binding].self, forKey: key("bindings")) ?? []
+        lfos = try c.decodeIfPresent([LFOSpec].self, forKey: key("lfos")) ?? []
 
         // Params: split numeric-shaped entries from foreign shapes, keeping
         // both (numeric values normalize to [Float]; bare numbers become
@@ -289,6 +303,8 @@ extension SceneEnvelope: Codable {
         try c.encode(warpStack, forKey: key("warpStack"))
         try c.encode(camera, forKey: key("camera"))
         try c.encodeIfPresent(palette, forKey: key("palette"))
+        if !bindings.isEmpty { try c.encode(bindings, forKey: key("bindings")) }
+        if !lfos.isEmpty { try c.encode(lfos, forKey: key("lfos")) }
 
         // Foreign top-level keys ride along; a collision with a known key
         // cannot arise from our own decode (they were filtered) — skip any

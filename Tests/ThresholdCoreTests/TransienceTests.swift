@@ -12,7 +12,7 @@ struct TransienceTests {
         let engine = try makeEngine(
             [spec("t.a", default: 1, smoothing: Smoothing(music: 0.08))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         // Written this frame → smooths toward the target (ramping in from 0).
         engine.write(lane: .music, slot: slot, value: 1.0)
@@ -41,7 +41,7 @@ struct TransienceTests {
             [spec("t.m", range: 0...100, default: 2, composition: .multiplicative,
                   smoothing: Smoothing(music: 0.08))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .music, slot: slot, value: 3.0)
         clock.advance()
@@ -63,7 +63,7 @@ struct TransienceTests {
         let engine = try makeEngine(
             [spec("t.a", default: 0, smoothing: Smoothing(music: 0.08))],
             clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         for _ in 0..<30 {
             engine.write(lane: .music, slot: slot, value: 0.5)
@@ -88,7 +88,7 @@ struct TransienceTests {
     func musicNeverTouchesScene() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.applyScene(values: [ParamKey("t.a"): [4]])
         clock.advance()
@@ -112,7 +112,7 @@ struct TransienceTests {
     func applySceneOnlyScene() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .user, slot: slot, value: 2)
         engine.write(lane: .gesture, slot: slot, value: 3)
@@ -134,7 +134,7 @@ struct TransienceTests {
     func gestureHoldsUntilCleared() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", default: 1)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.write(lane: .gesture, slot: slot, value: 0.5)
         // Many frames without re-writing: gesture must hold (unlike music).

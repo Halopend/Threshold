@@ -73,7 +73,7 @@ struct LaneMailboxTests {
     func drainIntoAppliesInOrder() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         // Latest-value-wins is a consequence of in-order application.
         engine.mailbox.publish(LaneWrite(lane: .user, slot: slot, value: 1))
@@ -87,7 +87,7 @@ struct LaneMailboxTests {
     func resolveDrains() throws {
         let clock = FixedStepClock(step: 0.05)
         let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
-        let slot = 16
+        let slot = firstContentSlot
 
         engine.mailbox.publish(LaneWrite(lane: .music, slot: slot, value: 1))
         clock.advance()
@@ -109,15 +109,15 @@ struct LaneMailboxTests {
         // the LAST write per slot carries the producer's final value.
         DispatchQueue.concurrentPerform(iterations: 4) { p in
             for i in 0...1_000 {
-                mailbox.publish(LaneWrite(lane: .user, slot: 16 + p, value: Float(i * (p + 1))))
+                mailbox.publish(LaneWrite(lane: .user, slot: firstContentSlot + p, value: Float(i * (p + 1))))
             }
         }
         clock.advance()
         let values = engine.resolve().values
-        #expect(values[16] == 1_000)
-        #expect(values[17] == 2_000)
-        #expect(values[18] == 3_000)
-        #expect(values[19] == 4_000)
+        #expect(values[firstContentSlot] == 1_000)
+        #expect(values[firstContentSlot + 1] == 2_000)
+        #expect(values[firstContentSlot + 2] == 3_000)
+        #expect(values[firstContentSlot + 3] == 4_000)
     }
 
     @Test("Growth beyond capacity keeps every write")
@@ -127,11 +127,11 @@ struct LaneMailboxTests {
         let engine = try makeEngine([spec("t.a", range: -1e9...1e9, default: 0)], clock: clock)
 
         for i in 0...100 {
-            mailbox.publish(LaneWrite(lane: .user, slot: 16, value: Float(i)))
+            mailbox.publish(LaneWrite(lane: .user, slot: firstContentSlot, value: Float(i)))
         }
         #expect(mailbox.didGrowBeyondInitialCapacity)
         mailbox.drainInto(engine)
         clock.advance()
-        #expect(engine.resolve().values[16] == 100)  // last write won, none lost
+        #expect(engine.resolve().values[firstContentSlot] == 100)  // last write won, none lost
     }
 }

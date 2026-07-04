@@ -65,6 +65,15 @@ public final class ParameterMirror {
     public private(set) var dynamicEntries: [CatalogEntry] = []
     /// Animation transport state — what the play/scrub UI displays.
     public private(set) var animation: AnimationPlaybackState = .idle
+    /// The active signal→param bindings (music reactivity + LFO routing) — the
+    /// Routes editor's source of truth. Mirror-OWNED (not snapshot-echoed): the
+    /// editor mutates these directly and republishes the whole set, so a
+    /// fine-grained edit never flickers against a stale snapshot. Seeded from a
+    /// scene on `applyScene`; captured back into the scene on Save (render side).
+    public private(set) var bindings: [ThresholdCore.Binding] = []
+    /// The active procedural LFO bank — the LFO editor's source of truth.
+    /// Mirror-owned, same contract as `bindings`.
+    public private(set) var lfos: [LFOSpec] = []
     /// Zoom-rebase counter from the latest snapshot (plan §6.3).
     public private(set) var scaleOctave: Int32 = 0
     /// Live encoder pipeline diagnostics (which pipeline, compile status,
@@ -277,7 +286,20 @@ public final class ParameterMirror {
     public func applyScene(
         _ scene: SceneEnvelope, transition: SceneTransition? = .default
     ) {
+        // Seed the editors from the loaded scene: the render side installs the
+        // same bindings/LFOs on apply, so the UI source of truth stays in sync
+        // with the engine (see the `bindings`/`lfos` docs).
+        bindings = scene.bindings
+        lfos = scene.lfos
         commands.publish(.applyScene(scene, transition: transition))
+    }
+
+    /// Seed the reactive editors without applying a scene (startup, when the
+    /// initial scene was handed to the session directly rather than through
+    /// `applyScene`). Does not publish — the render side already has these.
+    public func seedReactive(bindings: [ThresholdCore.Binding], lfos: [LFOSpec]) {
+        self.bindings = bindings
+        self.lfos = lfos
     }
 
     public func setPaused(_ paused: Bool) {
@@ -286,7 +308,58 @@ public final class ParameterMirror {
     }
 
     public func setBindings(_ bindings: [ThresholdCore.Binding]) {
+        self.bindings = bindings
         commands.publish(.setBindings(bindings))
+    }
+
+    /// Replace the procedural LFO bank. The LFOEngine publishes these as
+    /// `lfo.*` signals; Routes bind them like any audio band.
+    public func setLFOs(_ lfos: [LFOSpec]) {
+        self.lfos = lfos
+        commands.publish(.setLFOs(lfos))
+    }
+
+    // MARK: Routes / LFO editor mutators
+    //
+    // Each mutates the mirror-owned array and republishes the WHOLE set (the
+    // commands replace, not patch). Convenience over `setBindings`/`setLFOs`
+    // so editor rows don't each rebuild the array.
+
+    public func addBinding(_ binding: ThresholdCore.Binding) {
+        setBindings(bindings + [binding])
+    }
+
+    public func updateBinding(_ binding: ThresholdCore.Binding) {
+        guard let i = bindings.firstIndex(where: { $0.id == binding.id }) else { return }
+        var next = bindings
+        next[i] = binding
+        setBindings(next)
+    }
+
+    public func removeBinding(id: UUID) {
+        setBindings(bindings.filter { $0.id != id })
+    }
+
+    public func addLFO(_ lfo: LFOSpec) {
+        setLFOs(lfos + [lfo])
+    }
+
+    public func updateLFO(_ lfo: LFOSpec) {
+        guard let i = lfos.firstIndex(where: { $0.id == lfo.id }) else { return }
+        var next = lfos
+        next[i] = lfo
+        setLFOs(next)
+    }
+
+    public func removeLFO(id: UUID) {
+        setLFOs(lfos.filter { $0.id != id })
+    }
+
+    /// The `lfo.*` slots not yet claimed by a spec — what "add LFO" assigns
+    /// next (nil when the bank is full).
+    public var nextFreeLFOSlot: SignalID? {
+        let used = Set(lfos.map { $0.slot })
+        return SignalID.standardLFOs.first { !used.contains($0) }
     }
 
     /// Replace the gradient palette (scene content — plan §5.5). Optimistic

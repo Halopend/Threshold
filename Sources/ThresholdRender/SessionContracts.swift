@@ -325,6 +325,10 @@ public enum SessionCommand: Sendable {
     case setPaused(Bool)
     /// Replace the active binding set (bindings are data — plan §4.2).
     case setBindings([Binding])
+    /// Replace the active procedural LFO bank (LFO.swift). The LFOEngine
+    /// publishes these as `lfo.*` signals each frame; a `Binding` routes them
+    /// to params exactly like an audio band.
+    case setLFOs([LFOSpec])
     /// Replace the active gradient palette (scene content — plan §5.5).
     case setPalette(Palette)
     /// Load (or unload with nil) the animation clip. Loading leaves the

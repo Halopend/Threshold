@@ -24,7 +24,7 @@ struct IntegratorTests {
     func phaseAccumulates() throws {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeHueEngine(clock: clock)
-        let phaseSlot = 17
+        let phaseSlot = firstContentSlot + 1
 
         for frame in 1...5 {
             clock.advance()
@@ -39,16 +39,16 @@ struct IntegratorTests {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeHueEngine(clock: clock)
         // Music doubles the rate additively: rate = 1 + 1 = 2.
-        engine.write(lane: .music, slot: 16, value: 1)
+        engine.write(lane: .music, slot: firstContentSlot, value: 1)
         clock.advance()
-        #expect(abs(engine.resolve().values[17] - 0.2) < 1e-5)
+        #expect(abs(engine.resolve().values[firstContentSlot + 1] - 0.2) < 1e-5)
     }
 
     @Test("Phase wraps into the param's range")
     func phaseWraps() throws {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeHueEngine(clock: clock, rateDefault: 4)
-        let phaseSlot = 17
+        let phaseSlot = firstContentSlot + 1
 
         // 0.4 per frame: 0.4, 0.8, 1.2→0.2, 0.6, 1.0→0.0, …
         var expected: Float = 0
@@ -67,14 +67,14 @@ struct IntegratorTests {
         let engine = try makeHueEngine(clock: clock, rateDefault: -3)
         clock.advance()
         // 0 − 0.3 wraps to 0.7.
-        #expect(abs(engine.resolve().values[17] - 0.7) < 1e-5)
+        #expect(abs(engine.resolve().values[firstContentSlot + 1] - 0.7) < 1e-5)
     }
 
     @Test("Paused clock freezes the phase")
     func pauseFreezesPhase() throws {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeHueEngine(clock: clock)
-        let phaseSlot = 17
+        let phaseSlot = firstContentSlot + 1
 
         clock.advance()
         _ = engine.resolve()
@@ -94,14 +94,14 @@ struct IntegratorTests {
         let engine = try makeHueEngine(clock: clock)
         clock.advance()
         // phase += rate × dt × timeScale = 1 × 0.1 × 2.
-        #expect(abs(engine.resolve().values[17] - 0.2) < 1e-5)
+        #expect(abs(engine.resolve().values[firstContentSlot + 1] - 0.2) < 1e-5)
     }
 
     @Test("setIntegratorPhase/readIntegratorPhase round-trip with wrapping")
     func phaseSnapshotting() throws {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeHueEngine(clock: clock)
-        let phaseSlot = 17
+        let phaseSlot = firstContentSlot + 1
 
         engine.setIntegratorPhase(slot: phaseSlot, value: 0.25)
         #expect(engine.readIntegratorPhase(slot: phaseSlot) == 0.25)
@@ -110,9 +110,9 @@ struct IntegratorTests {
         #expect(abs(engine.readIntegratorPhase(slot: phaseSlot)! - 0.75) < 1e-5)
 
         // Non-integrator slots: read is nil, set is a no-op.
-        #expect(engine.readIntegratorPhase(slot: 16) == nil)
-        engine.setIntegratorPhase(slot: 16, value: 1)
-        #expect(engine.readIntegratorPhase(slot: 16) == nil)
+        #expect(engine.readIntegratorPhase(slot: firstContentSlot) == nil)
+        engine.setIntegratorPhase(slot: firstContentSlot, value: 1)
+        #expect(engine.readIntegratorPhase(slot: firstContentSlot) == nil)
 
         // The restored phase is where integration resumes.
         engine.setIntegratorPhase(slot: phaseSlot, value: 0.5)
@@ -124,8 +124,8 @@ struct IntegratorTests {
     func phaseSlotOwnedByEngine() throws {
         let clock = FixedStepClock(step: 0.1)
         let engine = try makeHueEngine(clock: clock)
-        engine.write(lane: .user, slot: 17, value: 0.9)  // engine owns the phase
+        engine.write(lane: .user, slot: firstContentSlot + 1, value: 0.9)  // engine owns the phase
         clock.advance()
-        #expect(abs(engine.resolve().values[17] - 0.1) < 1e-5)
+        #expect(abs(engine.resolve().values[firstContentSlot + 1] - 0.1) < 1e-5)
     }
 }

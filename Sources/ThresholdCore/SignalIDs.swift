@@ -44,6 +44,30 @@ extension SignalID {
         .handLeftPalm, .handRightPalm, .handLeftForearm, .handRightForearm,
     ]
 
+    // MARK: lfo.* (published by ThresholdCore.LFOEngine)
+
+    /// Procedural low-frequency oscillators — music-INDEPENDENT modulation
+    /// sources. Each is a fixed signal slot an `LFOSpec` publishes into and a
+    /// `Binding` routes to a param, exactly like an audio band. The slot count
+    /// is fixed here because `SignalTable` capacity freezes at init (publishing
+    /// an unregistered ID is dropped): reserve a generous bank up front —
+    /// unused slots cost one seqlock cell each and nothing per frame beyond a
+    /// snapshot copy.
+    public static let lfoA = SignalID("lfo.a")
+    public static let lfoB = SignalID("lfo.b")
+    public static let lfoC = SignalID("lfo.c")
+    public static let lfoD = SignalID("lfo.d")
+    public static let lfoE = SignalID("lfo.e")
+    public static let lfoF = SignalID("lfo.f")
+    public static let lfoG = SignalID("lfo.g")
+    public static let lfoH = SignalID("lfo.h")
+
+    /// The LFO signal slots every session registers (8). Bindings and the LFO
+    /// bank address these by identity.
+    public static let standardLFOs: [SignalID] = [
+        .lfoA, .lfoB, .lfoC, .lfoD, .lfoE, .lfoF, .lfoG, .lfoH,
+    ]
+
     // MARK: app.*
 
     public static let appTime = SignalID("app.time")
@@ -51,5 +75,5 @@ extension SignalID {
     /// Everything a default session registers today. Gesture/crown
     /// namespaces join this list in their build phases.
     public static let standardSession: [SignalID] =
-        standardAudio + standardHands + [.appTime]
+        standardAudio + standardHands + standardLFOs + [.appTime]
 }

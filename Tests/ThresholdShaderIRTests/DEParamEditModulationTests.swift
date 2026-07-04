@@ -58,7 +58,11 @@ struct DEParamEditModulationTests {
     }
 
     /// The live-drag path (before release): user-lane write of the inverted
-    /// target must also land the resolved value.
+    /// target must also land the resolved value. DE shape params now smooth on
+    /// the user lane (ADR-005 — the drag EASES toward the target rather than
+    /// snapping), so the resolved value converges over ~a time constant rather
+    /// than in a single resolve; the inversion is still exact (it is what the
+    /// smoother converges TO).
     @Test func mandelbulbPowerLiveUserEditMovesResolvedValue() throws {
         let (engine, layout, clock) = try makeEngine()
         let slot = try #require(layout.slot(for: .de("mandelbulb", "power")))
@@ -68,7 +72,13 @@ struct DEParamEditModulationTests {
         engine.write(
             lane: .user, slot: slot,
             value: Inversion.userLaneValue(toAchieve: 5.0, slot: slot, in: engine))
-        clock.advance()
+        // Advance well past the user time constant (0.2 s) so the eased drag
+        // settles under the 1e-4 bound. The gap is ~3 units (0 → −3 on the
+        // user lane), so it needs ~11τ to fall below 1e-4; 5 s = 25τ is ample.
+        for _ in 0..<300 {
+            clock.advance()
+            _ = engine.resolve()
+        }
         let after = engine.resolve().values[slot]
         #expect(abs(after - 5.0) < 1e-4,
                 "a live user edit to 5.0 should resolve to 5.0, got \(after)")

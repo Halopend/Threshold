@@ -16,7 +16,7 @@ struct CatalogTests {
         #expect(EngineSlot.iterations.rawValue == 3)
         #expect(EngineSlot.aoStrength.rawValue == 4)
         #expect(EngineSlot.shadowSoft.rawValue == 5)
-        #expect(EngineSlot.reservedCount == 16)
+        #expect(EngineSlot.reservedCount == 20)
     }
 
     @Test("withEngineDefaults registers the six engine params at fixed slots with march defaults")
@@ -44,11 +44,11 @@ struct CatalogTests {
         #expect(values[3] == 12 && values[4] == 0.5 && values[5] == 8)
     }
 
-    @Test("Normal registration starts at slot 16 even with no engine params")
-    func registrationStartsAt16() throws {
+    @Test("Normal registration starts at the first content slot even with no engine params")
+    func registrationStartsAtFirstContentSlot() throws {
         let catalog = Catalog()
         let slot = try catalog.register(spec("t.first"))
-        #expect(slot == 16)
+        #expect(slot == EngineSlot.reservedCount)
     }
 
     @Test("Slots are dense, in registration order; vectors span consecutive slots")
@@ -59,17 +59,18 @@ struct CatalogTests {
         let c = try catalog.register(spec("t.vec4", kind: .float4))
         let d = try catalog.register(spec("t.scalar2"))
 
-        // withEngineDefaults registers scale (16–17) + camera rig (18–20)
-        // params first.
-        #expect(a == 21)
-        #expect(b == 22)  // 22, 23, 24
-        #expect(c == 25)  // 25, 26, 27, 28
-        #expect(d == 29)
+        // withEngineDefaults registers scale (firstContentSlot..+1) + camera
+        // rig (firstContentSlot+2..+4) params first, so five content slots are
+        // taken before t.scalar1.
+        #expect(a == firstContentSlot + 5)
+        #expect(b == firstContentSlot + 6)  // +6, +7, +8
+        #expect(c == firstContentSlot + 9)  // +9, +10, +11, +12
+        #expect(d == firstContentSlot + 13)
 
         let layout = catalog.freeze(dynamicArenaSlots: 0)
-        #expect(layout.entry(for: ParamKey("t.vec3"))?.slotRange == 22..<25)
-        #expect(layout.entry(for: ParamKey("t.vec4"))?.slotRange == 25..<29)
-        #expect(layout.slotCount == 30)
+        #expect(layout.entry(for: ParamKey("t.vec3"))?.slotRange == (firstContentSlot + 6)..<(firstContentSlot + 9))
+        #expect(layout.entry(for: ParamKey("t.vec4"))?.slotRange == (firstContentSlot + 9)..<(firstContentSlot + 13))
+        #expect(layout.slotCount == firstContentSlot + 14)
     }
 
     @Test("freeze appends the dynamic arena after the static slots")
@@ -77,14 +78,15 @@ struct CatalogTests {
         let catalog = Catalog()
         try catalog.register(spec("t.a"))
         try catalog.register(spec("t.v", kind: .float3))
-        // Static slots: 16, 17..19 → static count 20.
+        // Static slots: firstContentSlot, firstContentSlot+1..+3 → static
+        // count firstContentSlot + 4.
         let layout = catalog.freeze(dynamicArenaSlots: 32)
-        #expect(layout.arenaRange == 20..<52)
-        #expect(layout.slotCount == 52)
+        #expect(layout.arenaRange == (firstContentSlot + 4)..<(firstContentSlot + 4 + 32))
+        #expect(layout.slotCount == firstContentSlot + 4 + 32)
 
         let defaultLayout = catalog.freeze()  // default arena is 256
         #expect(defaultLayout.arenaRange.count == 256)
-        #expect(defaultLayout.slotCount == 20 + 256)
+        #expect(defaultLayout.slotCount == firstContentSlot + 4 + 256)
     }
 
     @Test("Duplicate key registration throws")
@@ -118,9 +120,10 @@ struct CatalogTests {
         let catalog = Catalog.withEngineDefaults()
         try catalog.register(spec("t.x"))
         let layout = catalog.freeze()
-        // Scale (16–17) + camera rig (18–20) params occupy the front of the
-        // content range, so t.x lands at 21.
-        #expect(layout.slot(for: ParamKey("t.x")) == 21)
+        // Scale (firstContentSlot..+1) + camera rig (firstContentSlot+2..+4)
+        // params occupy the front of the content range, so t.x lands at
+        // firstContentSlot + 5.
+        #expect(layout.slot(for: ParamKey("t.x")) == firstContentSlot + 5)
         #expect(layout.slot(for: .engineStepSafety) == 2)
         #expect(layout.slot(for: ParamKey("t.missing")) == nil)
         #expect(layout.entry(for: ParamKey("t.x"))?.kind == .float)

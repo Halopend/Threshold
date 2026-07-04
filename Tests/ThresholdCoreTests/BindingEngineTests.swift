@@ -11,7 +11,7 @@ struct BindingEngineTests {
     static let sig = SignalID("test.level")
 
     /// One scalar param "b.a" (default 10, additive, instant smoothing) at
-    /// slot 16, plus the pieces around it.
+    /// the first content slot, plus the pieces around it.
     private func makeWorld(
         specs: [ParamSpec]? = nil,
         step: Double = 1.0 / 60.0
@@ -37,8 +37,8 @@ struct BindingEngineTests {
         clock.advance()
         let resolved = engine.resolve()
 
-        #expect(engine.currentValue(lane: .music, slot: 16) == 0.5)
-        #expect(abs(resolved.values[16] - 10.5) < 1e-6)  // base 10 + music 0.5
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == 0.5)
+        #expect(abs(resolved.values[firstContentSlot] - 10.5) < 1e-6)  // base 10 + music 0.5
         #expect(binder.lastSkippedCount == 0)
     }
 
@@ -54,8 +54,8 @@ struct BindingEngineTests {
         clock.advance()
         let resolved = engine.resolve()
 
-        #expect(engine.currentValue(lane: .music, slot: 16) == nil)
-        #expect(abs(resolved.values[16] - 10) < 1e-6)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == nil)
+        #expect(abs(resolved.values[firstContentSlot] - 10) < 1e-6)
     }
 
     // MARK: Mapping: scale, deadzone, curves
@@ -72,7 +72,7 @@ struct BindingEngineTests {
         clock.advance()
         _ = engine.resolve()
 
-        #expect(engine.currentValue(lane: .music, slot: 16) == 1.0)  // 0.5 mapped × 2
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == 1.0)  // 0.5 mapped × 2
     }
 
     @Test("Deadzone gates raw input below the floor to the mapping's zero")
@@ -88,15 +88,15 @@ struct BindingEngineTests {
         table.publish(id: Self.sig, value: SIMD4(0.1, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0)
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 10) < 1e-6)
-        #expect(engine.currentValue(lane: .music, slot: 16) == 0)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 10) < 1e-6)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == 0)
 
         // Above the deadzone → passes through.
         table.publish(id: Self.sig, value: SIMD4(0.6, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0)
         clock.advance()
         _ = engine.resolve()
-        #expect(engine.currentValue(lane: .music, slot: 16) == 0.6)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == 0.6)
     }
 
     @Test("Pulse curve gates at its threshold")
@@ -112,13 +112,13 @@ struct BindingEngineTests {
         binder.apply(signals: table, engine: engine, now: 0)
         clock.advance()
         _ = engine.resolve()
-        #expect(engine.currentValue(lane: .music, slot: 16) == 0)  // below threshold
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == 0)  // below threshold
 
         table.publish(id: Self.sig, value: SIMD4(0.7, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0)
         clock.advance()
         _ = engine.resolve()
-        #expect(engine.currentValue(lane: .music, slot: 16) == 1)  // gated on
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == 1)  // gated on
     }
 
     @Test("Non-finite mapped values are never written")
@@ -135,8 +135,8 @@ struct BindingEngineTests {
         clock.advance()
         let resolved = engine.resolve()
 
-        #expect(engine.currentValue(lane: .music, slot: 16) == nil)
-        #expect(resolved.values[16] == 10)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == nil)
+        #expect(resolved.values[firstContentSlot] == 10)
     }
 
     // MARK: Staleness policy
@@ -153,29 +153,29 @@ struct BindingEngineTests {
         table.publish(id: Self.sig, value: SIMD4(1, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0.1)  // fresh (0.1 <= 0.25)
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 11) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 11) < 1e-6)
 
         // Stale (0.5 s since publish > staleAfter 0.25): cleared.
         binder.apply(signals: table, engine: engine, now: 0.5)
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 10) < 1e-6)
-        #expect(engine.currentValue(lane: .gesture, slot: 16) == nil)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 10) < 1e-6)
+        #expect(engine.currentValue(lane: .gesture, slot: firstContentSlot) == nil)
 
         // The clear fires ONCE per stale episode: a later write to the same
         // slot by someone else survives further stale applies.
-        engine.write(lane: .gesture, slot: 16, value: 7)
+        engine.write(lane: .gesture, slot: firstContentSlot, value: 7)
         binder.apply(signals: table, engine: engine, now: 1.0)  // still stale
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 17) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 17) < 1e-6)
 
         // Fresh again re-arms the clear.
         table.publish(id: Self.sig, value: SIMD4(1, 0, 0, 0), confidence: 1, timestamp: 2.0)
         binder.apply(signals: table, engine: engine, now: 2.0)
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 11) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 11) < 1e-6)
         binder.apply(signals: table, engine: engine, now: 3.0)  // stale again
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 10) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 10) < 1e-6)
     }
 
     @Test("Latched holds the last written gesture value after the signal goes stale")
@@ -190,15 +190,15 @@ struct BindingEngineTests {
         table.publish(id: Self.sig, value: SIMD4(1, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0.1)
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 11) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 11) < 1e-6)
 
         // Long stale: the value holds until re-grabbed or cleared.
         for now in [0.5, 1.0, 5.0] {
             binder.apply(signals: table, engine: engine, now: now)
             clock.advance()
-            #expect(abs(engine.resolve().values[16] - 11) < 1e-6)
+            #expect(abs(engine.resolve().values[firstContentSlot] - 11) < 1e-6)
         }
-        #expect(engine.currentValue(lane: .gesture, slot: 16) == 1)
+        #expect(engine.currentValue(lane: .gesture, slot: firstContentSlot) == 1)
     }
 
     @Test("staleAfter is settable and respected")
@@ -214,11 +214,11 @@ struct BindingEngineTests {
         table.publish(id: Self.sig, value: SIMD4(1, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0.9)  // fresh under 1.0 s window
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 11) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 11) < 1e-6)
 
         binder.apply(signals: table, engine: engine, now: 1.5)  // now stale
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 10) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 10) < 1e-6)
     }
 
     // MARK: Lane restrictions & slot resolution
@@ -242,9 +242,9 @@ struct BindingEngineTests {
         let resolved = engine.resolve()
 
         // Only the music write landed; no other lane was touched.
-        #expect(abs(resolved.values[16] - 10.5) < 1e-6)
+        #expect(abs(resolved.values[firstContentSlot] - 10.5) < 1e-6)
         for lane in [Lane.scene, .animation, .system, .user, .gesture] {
-            #expect(engine.currentValue(lane: lane, slot: 16) == nil)
+            #expect(engine.currentValue(lane: lane, slot: firstContentSlot) == nil)
         }
     }
 
@@ -252,8 +252,8 @@ struct BindingEngineTests {
     func vectorComponentAddressing() throws {
         let (clock, engine, table, binder) = try makeWorld(
             specs: [spec("b.v", default: 0, kind: .float3)])
-        // b.v spans slots 16, 17, 18; component 1 → slot 17. Component 3 is
-        // out of range for a float3 → skipped.
+        // b.v spans the first three content slots; component 1 → the second.
+        // Component 3 is out of range for a float3 → skipped.
         binder.bindings = [
             Binding(signal: Self.sig, param: ParamKey("b.v"), component: 1, lane: .music),
             Binding(signal: Self.sig, param: ParamKey("b.v"), component: 3, lane: .music),
@@ -265,12 +265,12 @@ struct BindingEngineTests {
         clock.advance()
         let resolved = engine.resolve()
 
-        #expect(resolved.values[16] == 0)
-        #expect(abs(resolved.values[17] - 0.5) < 1e-6)
-        #expect(resolved.values[18] == 0)
-        #expect(engine.currentValue(lane: .music, slot: 16) == nil)
-        #expect(engine.currentValue(lane: .music, slot: 17) == 0.5)
-        #expect(engine.currentValue(lane: .music, slot: 18) == nil)
+        #expect(resolved.values[firstContentSlot] == 0)
+        #expect(abs(resolved.values[firstContentSlot + 1] - 0.5) < 1e-6)
+        #expect(resolved.values[firstContentSlot + 2] == 0)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot) == nil)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot + 1) == 0.5)
+        #expect(engine.currentValue(lane: .music, slot: firstContentSlot + 2) == nil)
     }
 
     @Test("Unknown ParamKey is skipped without crashing")
@@ -285,7 +285,7 @@ struct BindingEngineTests {
         table.publish(id: Self.sig, value: SIMD4(0.5, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0)  // must not crash
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 10.5) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 10.5) < 1e-6)
     }
 
     @Test("A signal missing from the table behaves as permanently stale")
@@ -300,8 +300,8 @@ struct BindingEngineTests {
 
         binder.apply(signals: table, engine: engine, now: 0)  // no crash, no write
         clock.advance()
-        #expect(engine.resolve().values[16] == 10)
-        #expect(engine.currentValue(lane: .gesture, slot: 16) == nil)
+        #expect(engine.resolve().values[firstContentSlot] == 10)
+        #expect(engine.currentValue(lane: .gesture, slot: firstContentSlot) == nil)
     }
 
     @Test("Replacing the bindings array rebuilds the cache")
@@ -320,6 +320,6 @@ struct BindingEngineTests {
         table.publish(id: Self.sig, value: SIMD4(0.25, 0, 0, 0), confidence: 1, timestamp: 0)
         binder.apply(signals: table, engine: engine, now: 0)
         clock.advance()
-        #expect(abs(engine.resolve().values[16] - 10.25) < 1e-6)
+        #expect(abs(engine.resolve().values[firstContentSlot] - 10.25) < 1e-6)
     }
 }
