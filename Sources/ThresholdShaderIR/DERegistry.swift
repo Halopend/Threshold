@@ -201,7 +201,14 @@ extension DEDescriptor {
             Param(name: "projRadius", default: 1.0, range: 0.2...12.0),
         ],
         defaultIterations: 12,
-        stepRelaxation: 1.6
+        // Step-safety 0.9 (conservative; NOT Mandelbox's over-relaxed 1.6).
+        // Used directly as stepSafety (main.swift). The baked projection makes
+        // the DE non-conformal, so over-relaxation oversteps → keep the safe
+        // default. NOTE: at high blend the projection has a genuine r→0
+        // singularity (the origin maps onto the whole shell); if the origin is
+        // in empty space in view, no step-safety value removes the caustic —
+        // that is inherent to the map, matching the legacy behaviour.
+        stepRelaxation: 0.9
     )
 
     /// Julia-mode Mandelbulb: the mandelbulb iteration with a fixed additive

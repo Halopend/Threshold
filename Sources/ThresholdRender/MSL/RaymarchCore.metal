@@ -525,13 +525,17 @@ static inline bool threshAOEnabled(float aoStrength) {
     const float radius = ctx.params[5];
 
     // Sphere projection domain warp (once). Identity when blend <= 0.
+    // `k` = the tangential stretch s(r) = (1-b) + b·R/r (the Jacobian's max
+    // singular value); `rInput` is the pre-projection radius, used below to cap
+    // the step away from the r→0 singularity.
     float k = 1.0f;
+    float rInput = 0.0f;
     if (blend > 0.0f) {
-        float r = length(p);
-        if (r > 1e-5f) {
+        rInput = length(p);
+        if (rInput > 1e-5f) {
             float b  = clamp(blend, 0.0f, 0.98f);
-            float rp = (1.0f - b) * r + b * radius;   // mix(r, radius, b)
-            k = rp / max(r, 1e-9f);
+            float rp = (1.0f - b) * rInput + b * radius;   // mix(rInput, radius, b)
+            k = rp / max(rInput, 1e-9f);
             p *= k;
         }
     }
@@ -560,7 +564,17 @@ static inline bool threshAOEnabled(float aoStrength) {
     }
     // Divide by the projection stretch (conservative bound) — matches the op's
     // dScale *= max(1,k) followed by mapScene's d = de.x / dScale.
-    return float2((length(z) / fabs(dr)) / max(1.0f, k), sqrt(trap2));
+    float dist = (length(z) / fabs(dr)) / max(1.0f, k);
+    // Step-cap against the r→0 projection singularity: the pointwise stretch k
+    // underestimates what a single step heading inward actually experiences
+    // (s(r) blows up as r→0), so cap the reported distance at half the distance
+    // to the origin. Under-reporting distance is always safe for sphere tracing
+    // (smaller steps), and this keeps the march from tunnelling through the
+    // tangentially-compressed shell at high blend. No cap when projection is off.
+    if (blend > 0.0f) {
+        dist = min(dist, 0.5f * rInput);
+    }
+    return float2(dist, sqrt(trap2));
 }
 
 // params: [power] + [iterations]. Classic triplex-power formulation

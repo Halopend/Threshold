@@ -86,19 +86,25 @@ public enum ReferenceDEs {
         // Sphere projection domain warp (once). Identity when blend <= 0.
         var pp = p
         var k: Float = 1
+        var rInput: Float = 0
         let blend = params[4]
         if blend > 0 {
-            let r = length(p)
-            if r > 1e-5 {
+            rInput = length(p)
+            if rInput > 1e-5 {
                 let b = min(max(blend, 0), 0.98)
-                let rp = (1 - b) * r + b * params[5]
-                k = rp / max(r, 1e-9)
+                let rp = (1 - b) * rInput + b * params[5]
+                k = rp / max(rInput, 1e-9)
                 pp = p * k
             }
         }
         let box = mandelbox(pp, params: params, iterations: iterations)
-        // Divide distance by the conservative stretch bound (matches the GPU DE).
-        return SIMD2(box.x / max(1, k), box.y)
+        // Divide by the conservative stretch bound, then cap the step against
+        // the r→0 projection singularity (both match the GPU DE).
+        var dist = box.x / max(1, k)
+        if blend > 0 {
+            dist = min(dist, 0.5 * rInput)
+        }
+        return SIMD2(dist, box.y)
     }
 
     /// Standard power-N Mandelbulb DE (triplex power formula).
