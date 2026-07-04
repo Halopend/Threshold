@@ -113,6 +113,47 @@ public struct Palette: Sendable, Equatable, Codable, Hashable {
         return (stops[n - 1].red, stops[n - 1].green, stops[n - 1].blue)
     }
 
+    /// Blend two palettes for a scene-transition crossfade (ADR-005).
+    ///
+    /// Stops are rebuilt at the UNION of both palettes' stop positions and
+    /// each sampled color mixed by `weight` (0 = `from`, 1 = `to`). With
+    /// linear segments (smoothing 0) a palette resampled at a superset of its
+    /// own knots reproduces it exactly, so the crossfade endpoints match the
+    /// originals; when the union exceeds the ABI stop cap, stops fall back to
+    /// `maxStops` uniform positions (a mid-flight approximation only — the
+    /// transition owner returns the exact target palette once it lands).
+    public static func crossfade(from: Palette, to: Palette, weight: Float) -> Palette {
+        let w = weight.isFinite ? min(max(weight, 0), 1) : 1
+        if w <= 0 { return from }
+        if w >= 1 { return to }
+
+        var positions = (from.stops.map(\.position) + to.stops.map(\.position))
+            .sorted()
+        // Dedup within a hair — coincident stops would waste cap slots.
+        var merged: [Float] = []
+        for p in positions where merged.last.map({ p - $0 > 1e-4 }) ?? true {
+            merged.append(p)
+        }
+        if merged.count > maxStops {
+            merged = (0..<maxStops).map { Float($0) / Float(maxStops - 1) }
+        }
+        positions = merged
+
+        let stops = positions.map { p -> GradientStop in
+            // sample() wraps t into [0,1), sending an exact 1.0 to the FIRST
+            // stop — back off a hair so a position-1.0 stop reads its own end.
+            let t = min(p, 1 - Float.ulpOfOne * 4)
+            let a = from.sample(t: t)
+            let b = to.sample(t: t)
+            return GradientStop(
+                position: p,
+                red: a.red + (b.red - a.red) * w,
+                green: a.green + (b.green - a.green) * w,
+                blue: a.blue + (b.blue - a.blue) * w)
+        }
+        return Palette(stops: stops)
+    }
+
     private static func sanitized(_ input: [GradientStop]) -> [GradientStop] {
         func clamp01(_ v: Float) -> Float { v.isFinite ? min(max(v, 0), 1) : 0 }
         let cleaned = input.map {

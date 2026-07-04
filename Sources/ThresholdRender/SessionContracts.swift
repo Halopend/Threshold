@@ -293,7 +293,11 @@ public final class ImageCaptureSlot: Sendable {
 /// through the lane mailbox (or `userEdit`, which needs engine state).
 public enum SessionCommand: Sendable {
     /// Authoritative scene apply: scene lane + warp stack + DE + camera.
-    case applyScene(SceneEnvelope)
+    /// With a transition (ADR-005), continuous params, the camera pose, and
+    /// the palette EASE toward the new scene over the transition window;
+    /// discrete params, the warp-stack structure, the DE, and the zoom
+    /// octave snap. `nil` snaps everything (startup/harness behavior).
+    case applyScene(SceneEnvelope, transition: SceneTransition?)
     /// Switch the active DE; params keep their lane state (plan §2.1:
     /// scene switching never loses values). Clears any active external DE.
     case setDE(key: String)

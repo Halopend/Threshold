@@ -139,6 +139,25 @@ public final class LaneMailbox: Sendable {
     }
 }
 
+// MARK: - SceneTransition
+
+/// How a scene apply reaches the screen (ADR-005). `nil` at the call sites
+/// means SNAP — the harness/tests/startup default, byte-identical to the
+/// pre-transition behavior. A duration means the legacy "Same Scene
+/// Transition Time" tween: continuous params ease from their current smoothed
+/// values toward the new scene over `duration` seconds, then land exactly.
+public struct SceneTransition: Sendable, Equatable, Hashable {
+    /// Seconds from apply to landing. Non-positive durations mean snap.
+    public var duration: Double
+
+    public init(duration: Double) {
+        self.duration = duration
+    }
+
+    /// The legacy default scene-transition time (0.5 s).
+    public static let `default` = SceneTransition(duration: 0.5)
+}
+
 // MARK: - ResolvedParams
 
 /// The immutable per-frame output of `resolve()`. `values` is the dense float
@@ -179,6 +198,11 @@ public final class ModulationEngine {
     private var defaults: [Float]
     /// `tauByLane[lane.rawValue][slot]`, seconds; 0 = instant.
     private var tauByLane: [[Double]]
+    /// Scene transitions may tween this slot (ADR-005): float-kind AND not
+    /// flagged `.snapOnSceneTransition`. Bool/enum kinds are always false —
+    /// and additionally have every lane tau forced to 0 at registration
+    /// (a lerped enum index is a garbage frame, no matter the lane).
+    private var tweenable: [Bool]
 
     // Per-lane state: written targets, smoothed currents, explicit-value bits.
     private var target: [[Float]]
@@ -187,6 +211,23 @@ public final class ModulationEngine {
     /// Music-lane slots written since the last resolve; anything set-but-not-
     /// written decays toward neutral (plan §3.2: music is ALWAYS transient).
     private var musicWritten: Bitset
+    /// Per-lane slots in graceful release (ADR-005): the lane value decays
+    /// toward its composition neutral at the lane's tau and the slot is
+    /// CLEARED on arrival — the smooth counterpart of `clearLane`. Used by
+    /// slider release (user) and momentary binding release (gesture). A fresh
+    /// write to a releasing slot cancels the release (re-grab). Music has its
+    /// own always-on decay and never enters this set.
+    private var releasing: [Bitset]
+
+    // Scene transition state (ADR-005). While `sceneTransitionRemaining > 0`,
+    // tweenable slots smooth scene-lane writes with `sceneTransitionTau`
+    // instead of their spec tau; when the window closes they land EXACTLY
+    // (current = target) and deferred clears release.
+    private var sceneTransitionRemaining: Double = 0
+    private var sceneTransitionTau: Double = 0
+    /// Slots owed a scene-lane clear when the transition lands (authoritative
+    /// apply of a scene that lacks the param: ramp to default, then release).
+    private var pendingSceneClears: Bitset
 
     // Integrator state (Invariant 17: every stateful resolved value is a
     // declared integrator entry; the engine owns NO other state).
@@ -219,10 +260,12 @@ public final class ModulationEngine {
         var hi = [Float](repeating: 0, count: n)
         var defaults = [Float](repeating: 0, count: n)
         var taus = [[Double]](repeating: [Double](repeating: 0, count: n), count: Lane.allCases.count)
+        var tweenable = [Bool](repeating: false, count: n)
         var integrators: [Integrator] = []
         var integratorIndex: [Int: Int] = [:]
 
         for entry in layout.entries {
+            let smoothableKind = Self.isSmoothableKind(entry.spec.kind)
             for (component, slot) in entry.slotRange.enumerated() {
                 precondition(slot < n, "entry \(entry.key) slot \(slot) out of layout bounds")
                 precondition(!registered[slot], "slot \(slot) doubly assigned (catalog bug)")
@@ -232,8 +275,13 @@ public final class ModulationEngine {
                 hi[slot] = entry.spec.range.upperBound
                 defaults[slot] = entry.spec.defaultValue[component]
                 for lane in Lane.allCases {
-                    taus[lane.rawValue][slot] = entry.spec.smoothing.tau(for: lane)
+                    // Bool/enum kinds are forced instant on EVERY lane — a
+                    // fractional enum index is a garbage frame (ADR-005).
+                    taus[lane.rawValue][slot] =
+                        smoothableKind ? entry.spec.smoothing.tau(for: lane) : 0
                 }
+                tweenable[slot] = smoothableKind
+                    && !entry.spec.capabilities.contains(.snapOnSceneTransition)
             }
             if let rateKey = entry.spec.integratorRateKey {
                 guard let rateSlot = layout.slot(for: rateKey) else {
@@ -256,6 +304,7 @@ public final class ModulationEngine {
         self.rangeHi = hi
         self.defaults = defaults
         self.tauByLane = taus
+        self.tweenable = tweenable
         self.integrators = integrators
         self.integratorIndexByPhaseSlot = integratorIndex
 
@@ -264,6 +313,17 @@ public final class ModulationEngine {
         self.current = [[Float]](repeating: [Float](repeating: 0, count: n), count: laneCount)
         self.hasValue = [Bitset](repeating: Bitset(bitCount: n), count: laneCount)
         self.musicWritten = Bitset(bitCount: n)
+        self.releasing = [Bitset](repeating: Bitset(bitCount: n), count: laneCount)
+        self.pendingSceneClears = Bitset(bitCount: n)
+    }
+
+    /// Kinds whose values interpolate meaningfully (ADR-005): floats and
+    /// float vectors. Bools and enum indices do not.
+    private static func isSmoothableKind(_ kind: ParamKind) -> Bool {
+        switch kind {
+        case .float, .float3, .float4: return true
+        case .bool, .enumeration: return false
+        }
     }
 
     // MARK: Writes
@@ -291,18 +351,74 @@ public final class ModulationEngine {
             current[li][slot] = seedValue(lane: lane, slot: slot, written: value)
         }
         target[li][slot] = value
+        // A fresh write re-grabs a releasing slot (ADR-005) and, on the scene
+        // lane, supersedes any clear a transition still owes this slot.
+        releasing[li].remove(slot)
+        if lane == .scene { pendingSceneClears.remove(slot) }
         if lane == .music { musicWritten.insert(slot) }
+    }
+
+    /// `write` that bypasses smoothing: current jumps WITH the target. For
+    /// writes that must not animate — non-transition scene applies (the
+    /// harness/startup path) and commit-on-release rebasing, where the
+    /// resolved value is already at the written position (ADR-005).
+    public func snapWrite(lane: Lane, slot: Int, value: Float) {
+        write(lane: lane, slot: slot, value: value)
+        guard value.isFinite else { return }
+        current[lane.rawValue][slot] = value
+    }
+
+    /// Smooth counterpart of `clearLane(_:slot:)` (ADR-005): the lane value
+    /// decays toward its composition neutral at the lane's tau, and the slot
+    /// clears on arrival. Replace-composition and instant (tau 0) slots clear
+    /// immediately — there is nothing to glide through. Music is excluded
+    /// (its always-on decay IS this mechanism).
+    public func releaseLane(_ lane: Lane, slot: Int) {
+        precondition(slot >= 0 && slot < layout.slotCount)
+        precondition(lane != .music, "music decays on its own (plan §3.2)")
+        let li = lane.rawValue
+        guard hasValue[li].contains(slot) else { return }
+        guard registered[slot], tauByLane[li][slot] > 0,
+              compositionBySlot[slot] != .replace,
+              current[li][slot].isFinite
+        else {
+            clearLane(lane, slot: slot)
+            return
+        }
+        releasing[li].insert(slot)
+    }
+
+    /// Commit a momentary user edit into the authored scene lane with full
+    /// visual continuity (ADR-005): the scene base snaps to the value that
+    /// makes the RELEASED resolved value equal `clamp(target)`, the user lane
+    /// is re-anchored so this frame's resolved value does not move, and then
+    /// released — it glides to neutral at the user tau, landing the resolved
+    /// value on the committed target. With user tau 0 this degrades to
+    /// exactly the old snap behavior.
+    public func commitUserEdit(slot: Int, target: Float) {
+        precondition(slot >= 0 && slot < layout.slotCount)
+        let visual = resolvedValue(slot: slot)
+        snapWrite(lane: .scene, slot: slot,
+                  value: Inversion.sceneLaneValue(toAchieve: target, slot: slot, in: self))
+        snapWrite(lane: .user, slot: slot,
+                  value: Inversion.userLaneValue(toAchieve: visual, slot: slot, in: self))
+        releaseLane(.user, slot: slot)
     }
 
     /// Convenience: write all components of a param by key. Returns false if
     /// the key is unregistered or the component count mismatches.
+    /// `snap: true` routes through `snapWrite` (no smoothing).
     @discardableResult
-    public func write(lane: Lane, key: ParamKey, values: [Float]) -> Bool {
+    public func write(lane: Lane, key: ParamKey, values: [Float], snap: Bool = false) -> Bool {
         guard let entry = layout.entry(for: key), values.count == entry.kind.slotWidth else {
             return false
         }
         for (i, v) in values.enumerated() {
-            write(lane: lane, slot: entry.slot + i, value: v)
+            if snap {
+                snapWrite(lane: lane, slot: entry.slot + i, value: v)
+            } else {
+                write(lane: lane, slot: entry.slot + i, value: v)
+            }
         }
         return true
     }
@@ -327,18 +443,59 @@ public final class ModulationEngine {
         }
     }
 
+    // MARK: Scene transitions (ADR-005)
+
+    /// True while a scene-transition window is open.
+    public var sceneTransitionActive: Bool { sceneTransitionRemaining > 0 }
+
+    /// Open a scene-transition window: for the next `duration` seconds of
+    /// CONTENT time (AppClock — pausing freezes the window), scene-lane
+    /// smoothing on tweenable slots uses τ = duration/4 (≈ 98% of the way by
+    /// the deadline) instead of the spec tau; when the window closes those
+    /// slots land EXACTLY on their targets and deferred clears release.
+    /// Call BEFORE the apply's scene-lane writes. Non-positive/non-finite
+    /// durations are ignored (the apply snaps, as without a transition).
+    /// A second transition beginning mid-flight simply re-aims: exponential
+    /// smoothing is memoryless, values glide from wherever they are.
+    public func beginSceneTransition(duration: Double) {
+        guard duration > 0, duration.isFinite else { return }
+        sceneTransitionRemaining = duration
+        sceneTransitionTau = duration / 4
+    }
+
+    /// Authoritative-apply clear for a param the incoming scene does not
+    /// carry. Inside a transition window, tweenable slots RAMP to the catalog
+    /// default and release when the window closes (a snap-to-default next to
+    /// tweening neighbors reads as a glitch); otherwise — and for
+    /// non-tweenable slots — this is an immediate `clearLane`.
+    public func scheduleSceneClear(slot: Int) {
+        precondition(slot >= 0 && slot < layout.slotCount)
+        guard sceneTransitionActive, registered[slot], tweenable[slot],
+              hasValue[Lane.scene.rawValue].contains(slot)
+        else {
+            clearLane(.scene, slot: slot)
+            return
+        }
+        write(lane: .scene, slot: slot, value: defaults[slot])
+        pendingSceneClears.insert(slot)
+    }
+
     /// Clear every explicit value in a lane (binding policy: e.g. a
     /// `momentary` gesture binding clears on release; `latched` holds).
     public func clearLane(_ lane: Lane) {
         hasValue[lane.rawValue].removeAll()
+        releasing[lane.rawValue].removeAll()
         if lane == .music { musicWritten.removeAll() }
+        if lane == .scene { pendingSceneClears.removeAll() }
     }
 
     /// Clear one slot in a lane.
     public func clearLane(_ lane: Lane, slot: Int) {
         precondition(slot >= 0 && slot < layout.slotCount)
         hasValue[lane.rawValue].remove(slot)
+        releasing[lane.rawValue].remove(slot)
         if lane == .music { musicWritten.remove(slot) }
+        if lane == .scene { pendingSceneClears.remove(slot) }
     }
 
     // MARK: Dynamic arena registration
@@ -353,6 +510,7 @@ public final class ModulationEngine {
     public func registerDynamic(_ spec: ParamSpec, atSlot slot: Int) {
         precondition(spec.integratorRateKey == nil,
                      "dynamic param \(spec.key) cannot declare an integrator")
+        let smoothableKind = Self.isSmoothableKind(spec.kind)
         for (component, s) in (slot..<(slot + spec.kind.slotWidth)).enumerated() {
             precondition(layout.arenaRange.contains(s),
                          "dynamic slot \(s) outside arena \(layout.arenaRange)")
@@ -363,8 +521,11 @@ public final class ModulationEngine {
             rangeHi[s] = spec.range.upperBound
             defaults[s] = spec.defaultValue[component]
             for lane in Lane.allCases {
-                tauByLane[lane.rawValue][s] = spec.smoothing.tau(for: lane)
+                tauByLane[lane.rawValue][s] =
+                    smoothableKind ? spec.smoothing.tau(for: lane) : 0
             }
+            tweenable[s] = smoothableKind
+                && !spec.capabilities.contains(.snapOnSceneTransition)
         }
     }
 
@@ -377,10 +538,13 @@ public final class ModulationEngine {
             precondition(layout.arenaRange.contains(s),
                          "cannot unregister non-arena slot \(s)")
             registered[s] = false
+            tweenable[s] = false
             for lane in Lane.allCases {
                 hasValue[lane.rawValue].remove(s)
+                releasing[lane.rawValue].remove(s)
             }
             musicWritten.remove(s)
+            pendingSceneClears.remove(s)
         }
     }
 
@@ -392,6 +556,28 @@ public final class ModulationEngine {
         precondition(slot >= 0 && slot < layout.slotCount)
         let li = lane.rawValue
         return hasValue[li].contains(slot) ? current[li][slot] : nil
+    }
+
+    /// What `resolve()` would produce for one slot RIGHT NOW from the current
+    /// smoothed lane state: compose in lane order, clamp. Integrator phase
+    /// slots are NOT overridden here (this is the lane view, used by
+    /// commit-on-release continuity — phases are not user-editable anyway).
+    public func resolvedValue(slot: Int) -> Float {
+        precondition(slot >= 0 && slot < layout.slotCount)
+        guard registered[slot] else { return 0 }
+        var acc = baseValue(slot: slot)
+        let comp = compositionBySlot[slot]
+        for li in (Lane.scene.rawValue + 1)...Lane.music.rawValue
+        where hasValue[li].contains(slot) {
+            switch comp {
+            case .additive: acc += current[li][slot]
+            case .multiplicative: acc *= current[li][slot]
+            case .replace: acc = current[li][slot]
+            }
+        }
+        return acc.isFinite
+            ? min(max(acc, rangeLo[slot]), rangeHi[slot])
+            : defaults[slot]
     }
 
     // MARK: Integrator phase access (scene snapshotting)
@@ -426,18 +612,79 @@ public final class ModulationEngine {
 
         // 1. Smoothing: move each explicit lane value toward its target by
         //    alpha = 1 - exp(-dt/tau); tau == 0 jumps. Music slots NOT written
-        //    this frame are skipped here — the decay pass owns them.
+        //    this frame are skipped here — the decay pass owns them; releasing
+        //    slots are skipped too — the release pass owns them (ADR-005).
+        //    An open scene-transition window overrides the scene tau on
+        //    tweenable slots (never downward: an already-slower spec tau wins).
+        let sceneLaneIndex = Lane.scene.rawValue
+        let transitionTau = sceneTransitionRemaining > 0 ? sceneTransitionTau : 0
         for lane in Lane.allCases {
             let li = lane.rawValue
             hasValue[li].forEachSetBit { slot in
                 if li == musicLane && !musicWritten.contains(slot) { return }
-                let tau = tauByLane[li][slot]
+                if releasing[li].contains(slot) { return }
+                var tau = tauByLane[li][slot]
+                if li == sceneLaneIndex && tweenable[slot] {
+                    tau = max(tau, transitionTau)
+                }
                 if tau <= 0 {
                     current[li][slot] = target[li][slot]
                 } else if dt > 0 {
                     let alpha = Float(1 - exp(-dt / tau))
                     current[li][slot] += (target[li][slot] - current[li][slot]) * alpha
                 }
+            }
+        }
+
+        // 1b. Release pass (ADR-005): releasing slots decay toward their
+        //     composition neutral at the lane tau and CLEAR on arrival — the
+        //     smooth `clearLane`. Same shape as music decay below; music
+        //     itself never enters `releasing`.
+        if dt > 0 {
+            for lane in Lane.allCases where lane != .music {
+                let li = lane.rawValue
+                var landed: [Int] = []
+                releasing[li].forEachSetBit { slot in
+                    let neutral: Float
+                    switch compositionBySlot[slot] {
+                    case .additive: neutral = 0
+                    case .multiplicative: neutral = 1
+                    case .replace:
+                        landed.append(slot)
+                        return
+                    }
+                    let tau = tauByLane[li][slot]
+                    guard tau > 0, current[li][slot].isFinite else {
+                        landed.append(slot)
+                        return
+                    }
+                    let alpha = Float(1 - exp(-dt / tau))
+                    current[li][slot] += (neutral - current[li][slot]) * alpha
+                    if abs(current[li][slot] - neutral) < 1e-6 {
+                        landed.append(slot)
+                    }
+                }
+                for slot in landed { clearLane(lane, slot: slot) }
+            }
+        }
+
+        // 1c. Scene-transition close (ADR-005): the window is CONTENT time,
+        //     frozen with the clock. On close, tweenable scene slots land
+        //     exactly (τ = D/4 leaves ≈ 2%) and deferred clears release —
+        //     their currents already sit on the defaults they ramped to, so
+        //     the handoff to defaults-as-base is seamless.
+        if sceneTransitionRemaining > 0 && dt > 0 {
+            sceneTransitionRemaining -= dt
+            if sceneTransitionRemaining <= 0 {
+                sceneTransitionRemaining = 0
+                hasValue[sceneLaneIndex].forEachSetBit { slot in
+                    if tweenable[slot] {
+                        current[sceneLaneIndex][slot] = target[sceneLaneIndex][slot]
+                    }
+                }
+                var owed: [Int] = []
+                pendingSceneClears.forEachSetBit { owed.append($0) }
+                for slot in owed { clearLane(.scene, slot: slot) }
             }
         }
 

@@ -136,6 +136,12 @@ public struct EngineParams: Sendable {
     public var brightness: Float = 1
     public var gamma: Float = 1
     public var tonemap: Float = 0
+    // Safety bubble (legacy "safe space"): off by default so authored scenes
+    // are untouched. Carved around the camera; see THRESH_SLOT_BUBBLE_*.
+    public var bubbleEnabled: Float = 0
+    public var bubbleRadius: Float = 1.8
+    public var bubbleShape: Float = 0
+    public var bubbleBlend: Float = 0.25
 
     public init() {}
 
@@ -159,6 +165,10 @@ public struct EngineParams: Sendable {
         table[Int(THRESH_SLOT_BRIGHTNESS)] = brightness
         table[Int(THRESH_SLOT_GAMMA)] = gamma
         table[Int(THRESH_SLOT_TONEMAP)] = tonemap
+        table[Int(THRESH_SLOT_BUBBLE_ENABLED)] = bubbleEnabled
+        table[Int(THRESH_SLOT_BUBBLE_RADIUS)] = bubbleRadius
+        table[Int(THRESH_SLOT_BUBBLE_SHAPE)] = bubbleShape
+        table[Int(THRESH_SLOT_BUBBLE_BLEND)] = bubbleBlend
         return table
     }
 }

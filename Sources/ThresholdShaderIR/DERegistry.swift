@@ -280,6 +280,7 @@ extension DEDescriptor {
                 range: param.range,
                 default: param.default,
                 composition: .additive,
+                smoothing: .continuous,  // shape morphs ease (ADR-005)
                 persistence: .scene,
                 capabilities: capabilities,
                 group: group

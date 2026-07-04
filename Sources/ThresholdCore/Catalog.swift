@@ -35,10 +35,16 @@ public enum EngineSlot: Int, CaseIterable, Sendable, Codable, Hashable {
     case brightness = 13     // THRESH_SLOT_BRIGHTNESS
     case gamma = 14          // THRESH_SLOT_GAMMA
     case tonemap = 15        // THRESH_SLOT_TONEMAP
+    // Safety bubble (legacy "safe space") — must match THRESH_SLOT_BUBBLE_* in
+    // the ABI header. Off by default so authored scenes are untouched.
+    case bubbleEnabled = 16  // THRESH_SLOT_BUBBLE_ENABLED
+    case bubbleRadius = 17   // THRESH_SLOT_BUBBLE_RADIUS
+    case bubbleShape = 18    // THRESH_SLOT_BUBBLE_SHAPE
+    case bubbleBlend = 19    // THRESH_SLOT_BUBBLE_BLEND
 
     /// Slots `0..<reservedCount` are engine-reserved; normal registration
     /// starts at `reservedCount`. Mirrors `THRESH_SLOT_ENGINE_COUNT`.
-    public static let reservedCount = 16
+    public static let reservedCount = 20
 }
 
 // MARK: - Engine param keys
@@ -51,6 +57,11 @@ extension ParamKey {
     public static let engineIterations = ParamKey("engine.iterations")
     public static let engineAOStrength = ParamKey("engine.aoStrength")
     public static let engineShadowSoft = ParamKey("engine.shadowSoft")
+    // Safety bubble (legacy "safe space") — carved around the camera.
+    public static let engineBubbleEnabled = ParamKey("engine.bubble.enabled")
+    public static let engineBubbleRadius = ParamKey("engine.bubble.radius")
+    public static let engineBubbleShape = ParamKey("engine.bubble.shape")
+    public static let engineBubbleBlend = ParamKey("engine.bubble.blend")
     // Color pipeline scalars (plan §5.5).
     public static let colorGradientRepeat = ParamKey("color.gradient.repeat")
     public static let colorGradientOffset = ParamKey("color.gradient.offset")
@@ -151,16 +162,22 @@ public final class Catalog {
         let catalog = Catalog()
         // Safe by construction: fresh catalog, six distinct keys/slots.
         // swiftlint:disable force_try
+        // March-quality params are `.snapOnSceneTransition` (ADR-005): a
+        // tweened iteration/step count sweeps every integer in between,
+        // popping the fractal's shape frame by frame — legacy snapped these
+        // on scene loads for the same reason.
         try! catalog.registerEngine(
             ParamSpec(key: .engineMaxSteps, label: "Max March Steps",
                       range: 1...4096, default: 256,
                       composition: .multiplicative, persistence: .deviceLocal,
+                      capabilities: [.snapOnSceneTransition],
                       group: .performance),
             atSlot: EngineSlot.maxSteps.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .engineMaxDist, label: "Max March Distance",
                       range: 0.1...4096, default: 64.0,
                       composition: .replace, persistence: .scene,
+                      capabilities: [.snapOnSceneTransition],
                       group: .performance),
             atSlot: EngineSlot.maxDist.rawValue)
         // Doubles as the over-relaxation factor ω (enhanced sphere tracing):
@@ -171,26 +188,64 @@ public final class Catalog {
             ParamSpec(key: .engineStepSafety, label: "Step Multiplier (ω)",
                       range: 0.5...2.0, default: 0.9,
                       composition: .replace, persistence: .deviceLocal,
+                      capabilities: [.snapOnSceneTransition],
                       group: .performance),
             atSlot: EngineSlot.stepSafety.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .engineIterations, label: "DE Iterations",
                       range: 1...256, default: 12,
                       composition: .multiplicative, persistence: .scene,
+                      capabilities: [.snapOnSceneTransition],
                       group: .performance),
             atSlot: EngineSlot.iterations.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .engineAOStrength, label: "AO Strength",
                       range: 0...2, default: 0.5,
-                      composition: .replace, persistence: .scene,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene,
                       group: .performance),
             atSlot: EngineSlot.aoStrength.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .engineShadowSoft, label: "Shadow Softness",
                       range: 1...64, default: 8.0,
-                      composition: .replace, persistence: .scene,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene,
                       group: .performance),
             atSlot: EngineSlot.shadowSoft.rawValue)
+
+        // Safety bubble (legacy "safe space"): a shape CSG-subtracted around the
+        // camera so scenes can't bury the viewer inside geometry. Off by default
+        // so authored/golden scenes are byte-identical; the legacy migration
+        // turns it on for scenes that saved it. `blend` is the legacy strength
+        // slider (0 = no carve, 1 = full). Shape/radius/enabled are structural,
+        // so `.replace`; blend is music/animation bindable like the color lanes.
+        try! catalog.registerEngine(
+            ParamSpec(key: .engineBubbleEnabled, label: "Safety Bubble",
+                      kind: .enumeration(caseCount: 2), range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .performance),
+            atSlot: EngineSlot.bubbleEnabled.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .engineBubbleRadius, label: "Bubble Radius",
+                      range: 0.05...2.5, default: 1.8,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .performance),
+            atSlot: EngineSlot.bubbleRadius.rawValue)
+        // Shape is an enum stored as a float index — snap, never sweep the
+        // shapes in between (ADR-005).
+        try! catalog.registerEngine(
+            ParamSpec(key: .engineBubbleShape, label: "Bubble Shape",
+                      range: 0...6, default: 0,
+                      composition: .replace, smoothing: .instant,
+                      persistence: .scene,
+                      capabilities: [.snapOnSceneTransition],
+                      group: .performance),
+            atSlot: EngineSlot.bubbleShape.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .engineBubbleBlend, label: "Bubble Blend",
+                      range: 0...1, default: 0.25,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .performance),
+            atSlot: EngineSlot.bubbleBlend.rawValue)
 
         // Color pipeline (plan §5.5). Grading + palette-sampling controls;
         // the palette STOPS are scene content in the envelope, not here.
@@ -199,17 +254,20 @@ public final class Catalog {
         try! catalog.registerEngine(
             ParamSpec(key: .colorGradientRepeat, label: "Gradient Repeat",
                       range: 1...16, default: 1,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.gradRepeat.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorGradientOffset, label: "Color Offset",
                       range: 0...1, default: 0,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.gradOffset.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorGradientSmoothing, label: "Gradient Smoothing",
                       range: 0...1, default: 0,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.gradSmoothing.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorMapMode, label: "Color Mapping",
@@ -219,32 +277,38 @@ public final class Catalog {
         try! catalog.registerEngine(
             ParamSpec(key: .colorSaturation, label: "Saturation",
                       range: 0...2, default: 1,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.saturation.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorContrast, label: "Contrast",
                       range: 0...2, default: 1,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.contrast.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorVibrance, label: "Vibrance",
                       range: 0...1, default: 0,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.vibrance.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorBrightness, label: "Brightness",
                       range: 0...2, default: 1,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.brightness.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorGamma, label: "Gamma",
                       range: 0.1...4, default: 1,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.gamma.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorTonemap, label: "Filmic Tonemap",
                       range: 0...1, default: 0,
-                      composition: .replace, persistence: .scene, group: .color),
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
             atSlot: EngineSlot.tonemap.rawValue)
         // Zoom (plan §6.3): rate + integrator phase feeding ScaleContext.
         try! catalog.registerScaleParams()

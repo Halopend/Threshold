@@ -96,9 +96,12 @@ extension InteractiveSession {
     /// off the render thread — before both commands are published together.
     /// Throws (scene not applied at all) when the embedded DE is rejected,
     /// so a bad file can never half-apply.
-    public func applyScene(_ envelope: SceneEnvelope, loader: ExternalDELoader) throws {
+    public func applyScene(
+        _ envelope: SceneEnvelope, loader: ExternalDELoader,
+        transition: SceneTransition? = .default
+    ) throws {
         let program = try envelope.embeddedDE.map { try loader.load($0) }
-        commands.publish(.applyScene(envelope))
+        commands.publish(.applyScene(envelope, transition: transition))
         commands.publish(.setExternalDE(program))
     }
 }

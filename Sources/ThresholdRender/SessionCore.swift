@@ -79,6 +79,40 @@ final class SessionCore {
     /// Active gradient palette (scene content). Defaults to the renderer's
     /// built-in stops until a scene or `setPalette` command replaces it.
     private(set) var palette = Palette(stops: PaletteWire.defaultStops)
+
+    /// Scene-transition camera tween (ADR-005): `camera` above is always the
+    /// AUTHORED target (what captureScene saves); while a tween is in flight
+    /// this carries the displayed pose, easing toward the target with the
+    /// same exponential the engine uses on the scene lane, landing exactly
+    /// when the window closes.
+    private struct CameraTween {
+        var current: CameraDTO
+        var remaining: Double
+        var tau: Double
+    }
+    private var cameraTween: CameraTween?
+
+    /// Scene-transition palette crossfade (ADR-005): `palette` above is the
+    /// authored target; the GPU sees `Palette.crossfade(from:to:)` until the
+    /// window closes.
+    private struct PaletteTween {
+        var from: Palette
+        var elapsed: Double
+        var duration: Double
+        var tau: Double
+    }
+    private var paletteTween: PaletteTween?
+
+    /// The pose the GPU renders this frame — the tween's pose mid-flight,
+    /// the authored camera otherwise.
+    private var displayedCamera: CameraDTO { cameraTween?.current ?? camera }
+
+    /// The palette the GPU renders this frame.
+    private var displayedPalette: Palette {
+        guard let tween = paletteTween else { return palette }
+        let w = 1 - exp(-tween.elapsed / tween.tau)
+        return Palette.crossfade(from: tween.from, to: palette, weight: Float(w))
+    }
     private var frameIndex: UInt64 = 0
     /// Latched image-export request (captureImage command). The shell's frame
     /// loop consumes it via `takePendingImageCapture` right after building a
@@ -141,6 +175,10 @@ final class SessionCore {
                 engine.setIntegratorPhase(slot: zoomSlot, value: phase - Float(k))
                 let worldScale = exp2(-Float(k))
                 camera.position = camera.position.map { $0 * worldScale }
+                // A mid-flight camera tween lives in the same world — rebase
+                // its displayed pose too, or the glide would jump an octave.
+                cameraTween?.current.position =
+                    cameraTween!.current.position.map { $0 * worldScale }
                 octave &+= k
             }
         }
@@ -169,6 +207,10 @@ final class SessionCore {
         }
 
         clock.update(now: timestamp)
+
+        // Scene-transition tweens (ADR-005) advance on CONTENT time, exactly
+        // like the engine's smoothing — pausing freezes them mid-flight.
+        advanceTweens(dt: clock.paused ? 0 : max(0, clock.delta))
 
         signals.publish(
             id: .appTime,
@@ -204,6 +246,10 @@ final class SessionCore {
         engineParams.brightness = resolved.values[Int(THRESH_SLOT_BRIGHTNESS)]
         engineParams.gamma = resolved.values[Int(THRESH_SLOT_GAMMA)]
         engineParams.tonemap = resolved.values[Int(THRESH_SLOT_TONEMAP)]
+        engineParams.bubbleEnabled = resolved.values[Int(THRESH_SLOT_BUBBLE_ENABLED)]
+        engineParams.bubbleRadius = resolved.values[Int(THRESH_SLOT_BUBBLE_RADIUS)]
+        engineParams.bubbleShape = resolved.values[Int(THRESH_SLOT_BUBBLE_SHAPE)]
+        engineParams.bubbleBlend = resolved.values[Int(THRESH_SLOT_BUBBLE_BLEND)]
         let deValues: [Float]
         if externalProgram != nil, externalParamSlots.count == descriptor.paramLayout.count {
             // External DE: params live in the dynamic arena (setExternal).
@@ -223,17 +269,19 @@ final class SessionCore {
 
         // Camera: the scene's base pose + resolved rig offsets (plan §8.3 —
         // gesture orbit, sliders, animation, and music drift are all just
-        // lane values on camera.* params).
+        // lane values on camera.* params). Mid scene-transition the base is
+        // the tween's displayed pose (ADR-005); rig offsets ride on top.
         var uniforms = ThreshFrameUniforms()
         func rigValue(_ key: ParamKey, _ fallback: Float) -> Float {
             layout.slot(for: key).map { resolved.values[$0] } ?? fallback
         }
+        let baseCamera = displayedCamera
         let pose = CameraRig.pose(
-            base: camera,
+            base: baseCamera,
             yaw: rigValue(.cameraOrbitYaw, 0),
             pitch: rigValue(.cameraOrbitPitch, 0),
             dolly: rigValue(.cameraDolly, 1))
-        uniforms.camPosFov = SIMD4(pose.position, tan(camera.fovYRadians * 0.5))
+        uniforms.camPosFov = SIMD4(pose.position, tan(baseCamera.fovYRadians * 0.5))
         uniforms.camQuat = pose.orientation
         // Zoom (plan §6.3): resolved scale.zoom (integrator phase driven by
         // scale.zoomSpeed) → ScaleContext, THE scale derivation site.
@@ -250,7 +298,10 @@ final class SessionCore {
         return SessionFrame(
             request: RenderRequest(
                 uniforms: uniforms, params: params, ops: gpuOps,
-                palette: palette.stops, width: width, height: height,
+                // The GPU sees the crossfaded palette mid-transition; the
+                // frame's `palette` below stays the AUTHORED one (what the
+                // gradient editor shows and captureScene saves).
+                palette: displayedPalette.stops, width: width, height: height,
                 renderScale: renderScale, tuning: tuning),
             resolved: resolved,
             frameIndex: frameIndex,
@@ -275,8 +326,8 @@ final class SessionCore {
 
     private func handle(_ command: SessionCommand) {
         switch command {
-        case .applyScene(let envelope):
-            apply(scene: envelope)
+        case .applyScene(let envelope, let transition):
+            apply(scene: envelope, transition: transition)
 
         case .setDE(let key):
             // Swap the descriptor ONLY — lane state persists (plan §2.1:
@@ -303,19 +354,21 @@ final class SessionCore {
                 value: Inversion.userLaneValue(toAchieve: target, slot: slot, in: engine))
 
         case .clearUserEdit(let slot):
+            // Graceful discard (ADR-005): the user offset glides back to the
+            // base at the user tau instead of jumping (instant for tau-0 /
+            // discrete params).
             guard slot >= 0 && slot < layout.slotCount else { return }
-            engine.clearLane(.user, slot: slot)
+            engine.releaseLane(.user, slot: slot)
 
         case .commitUserEdit(let slot, let target):
-            // Persist the edit into the authored scene lane (the only lane Save
-            // captures — SceneCodec.snapshot), then release the momentary user
-            // override. sceneLaneValue keeps the resolved value at `target`
-            // given the other transient lanes, so nothing jumps on release.
+            // Persist the edit into the authored scene lane (the only lane
+            // Save captures — SceneCodec.snapshot), then gracefully release
+            // the momentary user override: the engine snaps the base, re-
+            // anchors the user lane so this frame's resolved value holds, and
+            // glides the remainder at the user tau (ADR-005). Degrades to the
+            // old snap for tau-0 params.
             guard slot >= 0 && slot < layout.slotCount else { return }
-            engine.write(
-                lane: .scene, slot: slot,
-                value: Inversion.sceneLaneValue(toAchieve: target, slot: slot, in: engine))
-            engine.clearLane(.user, slot: slot)
+            engine.commitUserEdit(slot: slot, target: target)
 
         case .clearLane(let lane):
             engine.clearLane(lane)
@@ -406,6 +459,7 @@ final class SessionCore {
                 range: param.range,
                 default: param.default,
                 composition: .additive,
+                smoothing: .continuous,  // same feel as built-ins (ADR-005)
                 persistence: .scene,
                 capabilities: [.musicBindable, .animatable],
                 group: .shape)
@@ -421,10 +475,37 @@ final class SessionCore {
         externalParamSlots = slots
     }
 
-    private func apply(scene envelope: SceneEnvelope) {
+    private func apply(scene envelope: SceneEnvelope, transition: SceneTransition? = nil) {
         // Authoritative apply: scene lane only; user/gesture/music offsets
         // survive (Invariant 11).
-        SceneCodec.apply(envelope, layout: layout, engine: engine)
+        //
+        // With a transition (ADR-005) the continuous params ease inside the
+        // engine, and the two pieces of scene content the lanes don't carry —
+        // the camera pose and the palette — tween HERE, on the same clock and
+        // the same exponential. Everything structural (warp stack, DE, zoom
+        // octave, discrete params) snaps, as the legacy app did.
+        let tweening = transition.map { $0.duration > 0 && $0.duration.isFinite } ?? false
+        if tweening, let transition {
+            // Ease FROM whatever is displayed right now — mid-flight applies
+            // re-aim rather than restart.
+            cameraTween = CameraTween(
+                current: displayedCamera,
+                remaining: transition.duration,
+                tau: transition.duration / 4)
+            if let scenePalette = envelope.palette, scenePalette != palette {
+                paletteTween = PaletteTween(
+                    from: displayedPalette,
+                    elapsed: 0,
+                    duration: transition.duration,
+                    tau: transition.duration / 4)
+            } else {
+                paletteTween = nil
+            }
+        } else {
+            cameraTween = nil
+            paletteTween = nil
+        }
+        SceneCodec.apply(envelope, layout: layout, engine: engine, transition: transition)
         setWarpStack(envelope.warpStack)
         camera = envelope.camera
         octave = envelope.scaleOctave
@@ -444,6 +525,60 @@ final class SessionCore {
             lastBuiltinDescriptor = sceneDE
             setExternal(nil)
         }
+    }
+
+    /// Advance the scene-transition camera/palette tweens by one frame of
+    /// content time (ADR-005). Same shape as the engine's scene-lane
+    /// smoothing: exponential glide at τ = duration/4, exact landing when the
+    /// window closes. `dt == 0` (paused) freezes mid-flight.
+    private func advanceTweens(dt: Double) {
+        if var tween = cameraTween {
+            if dt > 0 {
+                tween.remaining -= dt
+                if tween.remaining <= 0 {
+                    cameraTween = nil  // landed: displayedCamera == camera
+                } else {
+                    let alpha = Float(1 - exp(-dt / tween.tau))
+                    tween.current = Self.eased(
+                        from: tween.current, toward: camera, alpha: alpha)
+                    cameraTween = tween
+                }
+            }
+        }
+        if var tween = paletteTween, dt > 0 {
+            tween.elapsed += dt
+            paletteTween = tween.elapsed >= tween.duration ? nil : tween
+        }
+    }
+
+    /// One exponential step of a camera pose toward a target: position and
+    /// fov lerp by `alpha`, orientation slerps by `alpha` along the shortest
+    /// arc. Degenerate quaternions fall back to the target (same
+    /// normalize-or-identity policy as CameraRig).
+    private static func eased(
+        from: CameraDTO, toward target: CameraDTO, alpha: Float
+    ) -> CameraDTO {
+        let p = zip(from.position, target.position).map { $0 + ($1 - $0) * alpha }
+        let fov = from.fovYRadians + (target.fovYRadians - from.fovYRadians) * alpha
+
+        func unitQuat(_ raw: [Float]) -> simd_quatf? {
+            let v = SIMD4(raw[0], raw[1], raw[2], raw[3])
+            let len = (v * v).sum().squareRoot()
+            guard len > 1e-6, len.isFinite else { return nil }
+            return simd_quatf(vector: v / len)
+        }
+        let orientation: [Float]
+        if let q0 = unitQuat(from.orientation), var q1 = unitQuat(target.orientation) {
+            // Shortest arc: q and -q are the same rotation; pick the near side.
+            if simd_dot(q0.vector, q1.vector) < 0 {
+                q1 = simd_quatf(vector: -q1.vector)
+            }
+            orientation = { let q = simd_slerp(q0, q1, alpha)
+                            return [q.vector.x, q.vector.y, q.vector.z, q.vector.w] }()
+        } else {
+            orientation = target.orientation
+        }
+        return CameraDTO(position: p, orientation: orientation, fovYRadians: fov)
     }
 
     private func setWarpStack(_ stack: [WarpOpDTO]) {

@@ -322,7 +322,7 @@ final class AppModel {
         Task.detached(priority: .userInitiated) {
             do {
                 let program = try envelope.embeddedDE.map { try loader.load($0) }
-                commands.publish(.applyScene(envelope))
+                commands.publish(.applyScene(envelope, transition: .default))
                 commands.publish(.setExternalDE(program))
             } catch {
                 let message = "\(filename): \(error)"
@@ -596,7 +596,7 @@ final class VisionAppModel {
                 Task.detached(priority: .userInitiated) {
                     do {
                         let program = try envelope.embeddedDE.map { try loader.load($0) }
-                        commands.publish(.applyScene(envelope))
+                        commands.publish(.applyScene(envelope, transition: .default))
                         commands.publish(.setExternalDE(program))
                     } catch {
                         let message = "\(filename): \(error)"

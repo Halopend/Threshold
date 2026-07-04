@@ -530,38 +530,23 @@ static inline bool threshAOEnabled(float aoStrength) {
 
 // params: [scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]
 //         + [iterations]
-// Mandelbox with a built-in sphere projection: the sample point is projected
-// radially toward the shell ONCE (p·((1−b)+b·R/|p|), identical to the
-// ThreshWarpKindSphereProject op) before the standard fold loop runs. The
-// projection's tangential stretch k is divided back out of the returned
-// distance (max(1,k), the op's Lipschitz-conservative bound) so a march stays
-// safe — self-contained, so no warp-stack entry is needed. Reproduces the
-// original app's dedicated "mandelboxSphereProjection" type (good luck / mono).
+// Mandelbox with the shipping app's per-fold sphere projection (Shaders.metal
+// MAP_ITERATION_PROJ): after the sphere fold each iteration, the folded point
+// is blended toward a sphere of radius projR — mix(z, projR·z/|z|, b) — BEFORE
+// the scale+offset. This is NOT the once-before-the-loop domain warp used for
+// non-mandelbox fractals; the original applies it every fold, which is what
+// gives Mono / Good Luck their radiating shells. The projection touches only
+// the point (not the running derivative dr), exactly as the app leaves p.w
+// untouched. Migration seeds minRadius = sphereRadius, fixedRadius ≡ 1,
+// scale = fractalScale, foldLimit = foldingLimit (see LegacyMigration).
 [[visible]] float2 de_mandelboxSphereProjection(float3 p, thread const ThreshDEContext& ctx)
 {
-    const float blend  = ctx.params[4];
-    const float radius = ctx.params[5];
-
-    // Sphere projection domain warp (once). Identity when blend <= 0.
-    // `k` = the tangential stretch s(r) = (1-b) + b·R/r (the Jacobian's max
-    // singular value); `rInput` is the pre-projection radius, used below to cap
-    // the step away from the r→0 singularity.
-    float k = 1.0f;
-    float rInput = 0.0f;
-    if (blend > 0.0f) {
-        rInput = length(p);
-        if (rInput > 1e-5f) {
-            float b  = clamp(blend, 0.0f, 0.98f);
-            float rp = (1.0f - b) * rInput + b * radius;   // mix(rInput, radius, b)
-            k = rp / max(rInput, 1e-9f);
-            p *= k;
-        }
-    }
-
     const float scale = ctx.params[0];
     const float minR  = ctx.params[1];
     const float fixR  = ctx.params[2];
     const float limit = ctx.params[3];
+    const float blend = clamp(ctx.params[4], 0.0f, 0.98f);
+    const float projR = ctx.params[5];
     const int iterations = threshDEIterations(ctx);
     const float mR2 = minR * minR;
     const float fR2 = fixR * fixR;
@@ -570,28 +555,30 @@ static inline bool threshAOEnabled(float aoStrength) {
     float dr = 1.0f;
     float trap2 = dot(z, z);
     for (int i = 0; i < iterations; ++i) {
-        z = clamp(z, -limit, limit) * 2.0f - z;
-        float r2 = dot(z, z);
+        z = clamp(z, -limit, limit) * 2.0f - z;               // box fold
+        float r2 = dot(z, z);                                 // sphere fold
         if (r2 < mR2)      { float f = fR2 / mR2; z *= f; dr *= f; }
         else if (r2 < fR2) { float f = fR2 / r2;  z *= f; dr *= f; }
+        if (blend > 0.0f) {                                   // per-fold projection
+            float len = length(z);
+            float3 proj = (len > 1e-6f) ? z * (projR / len)
+                                        : float3(projR, 0.0f, 0.0f);
+            z = mix(z, proj, blend);
+        }
         z = z * scale + p;
         dr = dr * fabs(scale) + 1.0f;
         float zz = dot(z, z);
         trap2 = min(trap2, zz);
         if (zz > 1e8f) { break; }
     }
-    // Divide by the projection stretch (conservative bound) — matches the op's
-    // dScale *= max(1,k) followed by mapScene's d = de.x / dScale.
-    float dist = (length(z) / fabs(dr)) / max(1.0f, k);
-    // Step-cap against the r→0 projection singularity: the pointwise stretch k
-    // underestimates what a single step heading inward actually experiences
-    // (s(r) blows up as r→0), so cap the reported distance at half the distance
-    // to the origin. Under-reporting distance is always safe for sphere tracing
-    // (smaller steps), and this keeps the march from tunnelling through the
-    // tangentially-compressed shell at high blend. No cap when projection is off.
-    if (blend > 0.0f) {
-        dist = min(dist, 0.5f * rInput);
-    }
+    // Full Rrmin mandelbox DE (Shaders.metal Map): the (|scale|-1) and
+    // |scale|^(1-iter) correction terms drive the estimate NEGATIVE inside the
+    // surface where the per-fold projection explodes dr, so the surface still
+    // registers a hit. The plain length(z)/dr estimate stays tiny-positive and
+    // the march crawls without ever hitting — why projection scenes went black.
+    const float absScale = fabs(scale);
+    const float dist = (length(z) - (absScale - 1.0f)) / dr
+                     - pow(absScale, float(1 - iterations));
     return float2(dist, sqrt(trap2));
 }
 
@@ -928,6 +915,91 @@ static float cheapAO(float3 pos, float3 n, float aoStrength, float featureScale,
     return clamp(1.0f - 1.5f * aoStrength * occ, 0.0f, 1.0f);
 }
 
+// ============================ safety bubble =================================
+//
+// Legacy "safe space": a shape CSG-subtracted from the fractal around the
+// camera so no scene can bury the viewer inside geometry. This is the fix for
+// the mandelboxSphereProjection family (Mono, Good Luck, …): their r→0
+// projection singularity otherwise wraps the origin onto the whole shell and
+// fills the frame black. Ported 1:1 from the shipping app's Shaders.metal
+// (safetyBubbleDistance / applySafetyBubble); fade is baked to the app defaults
+// (fadeEnabled = true, fadeWidth = 0.1) since those were never scene-persisted.
+
+static inline float bubbleCube(float3 p, float r) {
+    float3 d = abs(p) - float3(r);
+    return length(max(d, 0.0f)) + min(max(d.x, max(d.y, d.z)), 0.0f);
+}
+
+// Signed distance to the carve shape, centred at the camera. shape 0..1 morphs
+// sphere→cube; 2..6 select platonic solids (tetra / neg-cube / octa / icosa /
+// dodeca), matching the legacy discrete presets.
+static inline float bubbleDistance(float3 pos, float3 center, float r, float shape) {
+    float3 p = pos - center;
+    float sphereDist = length(p) - r;
+    float cubeDist = bubbleCube(p, r);
+    if (shape <= 1.0f) {
+        return mix(sphereDist, cubeDist, clamp(shape, 0.0f, 1.0f));
+    }
+    constexpr float invSqrt3 = 0.5773502691896258f;
+    constexpr float phi = 1.618033988749895f;
+    constexpr float invPhiLen = 0.5257311121191336f;
+    constexpr float axisScale = 0.85065080835204f;
+    float3 q = abs(p);
+    switch (int(clamp(shape + 0.5f, 2.0f, 6.0f))) {
+        case 2: {   // tetrahedron
+            float faceOffset = r * invSqrt3;
+            float d1 = dot(p, float3( invSqrt3,  invSqrt3,  invSqrt3));
+            float d2 = dot(p, float3( invSqrt3, -invSqrt3, -invSqrt3));
+            float d3 = dot(p, float3(-invSqrt3,  invSqrt3, -invSqrt3));
+            float d4 = dot(p, float3(-invSqrt3, -invSqrt3,  invSqrt3));
+            return max(max(d1, d2), max(d3, d4)) - faceOffset;
+        }
+        case 3: {   // rounded ("negative") cube via superquadric
+            constexpr float exponent = 0.65f;
+            float3 s = q / max(r, 1e-4f);
+            float sd = pow(pow(s.x, exponent) + pow(s.y, exponent) + pow(s.z, exponent), 1.0f / exponent);
+            return (sd - 1.0f) * r;
+        }
+        case 4:     // octahedron
+            return (q.x + q.y + q.z - r) * invSqrt3;
+        case 5: {   // icosahedron
+            float d1 = dot(q, float3(1.0f, 1.0f, 1.0f) * invSqrt3);
+            float d2 = dot(q, float3(0.0f, 1.0f, phi) * invPhiLen);
+            float d3 = dot(q, float3(1.0f, phi, 0.0f) * invPhiLen);
+            float d4 = dot(q, float3(phi, 0.0f, 1.0f) * invPhiLen);
+            return max(max(d1, d2), max(d3, d4)) - r * axisScale;
+        }
+        case 6: {   // dodecahedron
+            float d1 = dot(q, float3(phi, 1.0f, 0.0f) * invPhiLen);
+            float d2 = dot(q, float3(1.0f, 0.0f, phi) * invPhiLen);
+            float d3 = dot(q, float3(0.0f, phi, 1.0f) * invPhiLen);
+            return max(d1, max(d2, d3)) - r * axisScale;
+        }
+        default:
+            return cubeDist;
+    }
+}
+
+// Carve the bubble out of distance `d` at world point `pos` (camera = center).
+// Identity when disabled or blend≈0, so scenes without a bubble are untouched.
+// The carve only raises `d` INSIDE the bubble, and surfaces are only ever hit
+// outside it, so applying this to the march distance alone (not through the
+// normal/AO taps) is shading-identical to the legacy per-Map application.
+static inline float applySafetyBubble(float d, float3 pos, float3 center,
+                                      device const float* params) {
+    if (params[THRESH_SLOT_BUBBLE_ENABLED] < 0.5f) { return d; }
+    const float blend = params[THRESH_SLOT_BUBBLE_BLEND];
+    if (blend < 0.001f) { return d; }
+    const float bd = bubbleDistance(pos, center,
+                                    params[THRESH_SLOT_BUBBLE_RADIUS],
+                                    params[THRESH_SLOT_BUBBLE_SHAPE]);
+    // Smooth polynomial max — smax(d, -bd, k) — with the legacy fade width 0.1.
+    const float a = d, b = -bd, k = 0.1f;
+    const float h = clamp(0.5f + 0.5f * (b - a) / k, 0.0f, 1.0f);
+    const float dBubbled = mix(a, b, h) + k * h * (1.0f - h);
+    return blend >= 1.0f ? dBubbled : mix(d, dBubbled, blend);
+}
+
 // ============================== march kernel ================================
 //
 // One thread per pixel. Ray generation per docs/op-semantics.md "March
@@ -1008,6 +1080,7 @@ static inline ThreshMarchResult marchShade(
             iterScale = min(1.0f, (effIter + 0.5f) / lodIterN);
         }
         float2 dm = mapScene(pos, U, params, ops, deTable, iterScale);
+        dm.x = applySafetyBubble(dm.x, pos, ro, params);
         steps += 1;
         // Non-finite guard by BIT PATTERN (exponent all-ones ⇒ Inf/NaN):
         // isnan/isinf fold to false under -ffinite-math-only (mathMode
@@ -1265,7 +1338,8 @@ kernel void march_cone_prepass(
     const float epsBase = U.scaleCtx.y;
     float t = 0.0f;
     for (int i = 0; i < 48; ++i) {
-        float d = mapScene(ro + rdC * t, U, params, ops, deTable).x;
+        float3 pp = ro + rdC * t;
+        float d = applySafetyBubble(mapScene(pp, U, params, ops, deTable).x, pp, ro, params);
         // Bit-pattern non-finite test — survives mathMode .fast (see march).
         if ((as_type<uint>(d) & 0x7F800000u) == 0x7F800000u) {
             t = 0.0f; break;                             // fall back: no skip
@@ -1527,7 +1601,8 @@ kernel void march_cone_prepass_view(
     const float epsBase = U.scaleCtx.y;
     float t = 0.0f;
     for (int i = 0; i < 48; ++i) {
-        float d = mapScene(ro + rdC * t, U, params, ops, deTable).x;
+        float3 pp = ro + rdC * t;
+        float d = applySafetyBubble(mapScene(pp, U, params, ops, deTable).x, pp, ro, params);
         if ((as_type<uint>(d) & 0x7F800000u) == 0x7F800000u) {
             t = 0.0f; break;                             // non-finite: no skip
         }

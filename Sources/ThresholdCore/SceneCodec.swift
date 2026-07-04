@@ -202,15 +202,35 @@ public enum SceneCodec {
     ///
     /// Render-thread only (the engine is thread-confined); route through the
     /// command mailbox from elsewhere.
+    ///
+    /// With a `transition` (ADR-005), continuous params EASE from their
+    /// current smoothed values toward the new scene over the transition
+    /// window (`ModulationEngine.beginSceneTransition`); discrete and
+    /// `.snapOnSceneTransition` params snap immediately, and authoritative
+    /// clears ramp to the catalog default before releasing. `nil` (the
+    /// default) snaps everything — byte-identical to the pre-transition
+    /// behavior, which keeps the harness and goldens deterministic.
     @discardableResult
     public static func apply(
         _ envelope: SceneEnvelope,
         layout: CatalogLayout,
         engine: ModulationEngine,
-        authoritative: Bool = true
+        authoritative: Bool = true,
+        transition: SceneTransition? = nil
     ) -> SceneApplyReport {
         var report = SceneApplyReport()
         report.foreignParams = envelope.foreignParams.keys.sorted()
+
+        // Whether THIS apply tweens. A leftover window from a previous apply
+        // must not smear a snap apply — snap writes bypass smoothing anyway,
+        // and clears go straight to clearLane.
+        let transitioning: Bool
+        if let transition, transition.duration > 0, transition.duration.isFinite {
+            engine.beginSceneTransition(duration: transition.duration)
+            transitioning = true
+        } else {
+            transitioning = false
+        }
 
         var written = Set<ParamKey>()
 
@@ -228,7 +248,7 @@ public enum SceneCodec {
                 report.componentMismatches.append(keyString)
                 continue
             }
-            engine.write(lane: .scene, key: key, values: components)
+            engine.write(lane: .scene, key: key, values: components, snap: !transitioning)
             written.insert(key)
             report.appliedCount += 1
         }
@@ -237,7 +257,11 @@ public enum SceneCodec {
             for entry in layout.entries
             where entry.spec.persistence == .scene && !written.contains(entry.key) {
                 for slot in entry.slotRange {
-                    engine.clearLane(.scene, slot: slot)
+                    if transitioning {
+                        engine.scheduleSceneClear(slot: slot)
+                    } else {
+                        engine.clearLane(.scene, slot: slot)
+                    }
                 }
             }
         }

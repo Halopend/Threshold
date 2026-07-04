@@ -33,7 +33,7 @@ extension Catalog {
             key: .cameraOrbitYaw, label: "Orbit Yaw",
             range: -25.13...25.13,  // ±4 turns; clamp is the spin stop
             default: 0,
-            composition: .additive, smoothing: .default,
+            composition: .additive, smoothing: .continuous,
             persistence: .scene,
             capabilities: [.musicBindable, .gestureBindable, .animatable],
             group: .camera))
@@ -41,14 +41,14 @@ extension Catalog {
             key: .cameraOrbitPitch, label: "Orbit Pitch",
             range: -1.53...1.53,  // just short of the poles
             default: 0,
-            composition: .additive, smoothing: .default,
+            composition: .additive, smoothing: .continuous,
             persistence: .scene,
             capabilities: [.musicBindable, .gestureBindable, .animatable],
             group: .camera))
         try register(ParamSpec(
             key: .cameraDolly, label: "Dolly",
             range: 0.05...20, default: 1,
-            composition: .multiplicative, smoothing: .default,
+            composition: .multiplicative, smoothing: .continuous,
             persistence: .scene,
             capabilities: [.musicBindable, .gestureBindable, .animatable],
             group: .camera))

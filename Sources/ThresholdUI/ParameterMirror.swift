@@ -271,8 +271,13 @@ public final class ParameterMirror {
         commands.publish(.setDE(key: key))
     }
 
-    public func applyScene(_ scene: SceneEnvelope) {
-        commands.publish(.applyScene(scene))
+    /// Apply a scene. UI-triggered loads TWEEN by default (ADR-005, the
+    /// legacy "Same Scene Transition Time" feel); pass `transition: nil` to
+    /// snap (e.g. restoring state at launch).
+    public func applyScene(
+        _ scene: SceneEnvelope, transition: SceneTransition? = .default
+    ) {
+        commands.publish(.applyScene(scene, transition: transition))
     }
 
     public func setPaused(_ paused: Bool) {

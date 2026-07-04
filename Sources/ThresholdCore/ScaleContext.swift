@@ -108,7 +108,7 @@ extension Catalog {
         try register(ParamSpec(
             key: .scaleZoomSpeed, label: "Zoom Speed",
             range: -2...2, default: 0,
-            composition: .additive, smoothing: .instant,
+            composition: .additive, smoothing: .continuous,
             persistence: .scene,
             capabilities: [.musicBindable, .animatable],
             group: .camera))

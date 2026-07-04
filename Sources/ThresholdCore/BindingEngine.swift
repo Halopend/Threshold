@@ -146,7 +146,15 @@ public final class BindingEngine {
                 switch b.policy {
                 case .momentary:
                     if !cache[i].clearedWhileStale {
-                        engine.clearLane(b.lane, slot: b.slot)
+                        // Graceful release (ADR-005): glide to the lane
+                        // neutral at the lane tau, THEN clear — the smooth
+                        // counterpart of the old instant clear. Music decays
+                        // on its own; releaseLane excludes it.
+                        if b.lane == .music {
+                            engine.clearLane(b.lane, slot: b.slot)
+                        } else {
+                            engine.releaseLane(b.lane, slot: b.slot)
+                        }
                         cache[i].clearedWhileStale = true
                     }
                 case .latched:

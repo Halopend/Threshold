@@ -203,30 +203,55 @@ public enum LegacyScene {
         }
 
         // --- mandelboxSphereProjection DE params ---------------------------
-        // The dedicated legacy MSP type stored its Mandelbox SHAPE in
-        // formulaParamValues[0..3] (minDistance=minRadius², foldingLimit,
-        // sphereRadius, scale) and the sphere-projection blend/radius in
-        // [4]/[5] — the top-level minDistance/foldingLimit/sphereRadius/
-        // fractalScale fields stayed at catalog defaults and were never the
-        // real shape (FractalPreset.init, original app). Seed the new DE's
-        // layout [scale, minRadius, fixedRadius, foldLimit, projBlend,
-        // projRadius] from those. (Faithful only when minDistance ≥ 0 — base
-        // Mandelbox forces the DE denominator positive.)
-        if case .string("mandelboxSphereProjection")? = tree["fractalType"],
-           case .array(let formula)? = tree["formulaParamValues"], formula.count >= 6 {
-            func f(_ i: Int) -> Double? {
-                if case .number(let n) = formula[i] { return n }
-                return nil
-            }
+        // Verified against the shipping app (Shaders.metal MAP_ITERATION_PROJ /
+        // ProgressiveShaders.metal mandelboxSDF_exact): a legacy
+        // `mandelboxSphereProjection` scene is a PLAIN mandelbox + a per-fold
+        // sphere projection, NOT a distinct formula. Its Mandelbox shape lives
+        // in the SAME top-level fields as any mandelbox — `fractalScale` (scale),
+        // `foldingLimit`, `sphereRadius` — and the old fold is one-radius:
+        // `t = clamp(1/max(r², sphereRadius²), 1, 1/sphereRadius²)`, i.e.
+        // minRadius = sphereRadius and fixedRadius ≡ 1. Only the projection
+        // blend/radius come from formulaParamValues[4]/[5]. (The earlier
+        // formula[0..3] reading produced a degenerate box — Mono rendered black
+        // where the app shows a bright radiating structure.)
+        if case .string("mandelboxSphereProjection")? = tree["fractalType"] {
             let key = "mandelboxSphereProjection"
-            if let scale = f(3) { params["de.\(key).scale"] = .array([.number(scale)]) }
-            if let mr2 = f(0), mr2 > 0 {
-                params["de.\(key).minRadius"] = .array([.number(mr2.squareRoot())])
+            copyParam("fractalScale", to: .de(key, "scale"))
+            copyParam("foldingLimit", to: .de(key, "foldLimit"))
+            if let sphereR = number("sphereRadius") {
+                params["de.\(key).minRadius"] = .array([.number(sphereR)])
             }
-            if let fixedR = f(2) { params["de.\(key).fixedRadius"] = .array([.number(fixedR)]) }
-            if let foldLimit = f(1) { params["de.\(key).foldLimit"] = .array([.number(foldLimit)]) }
-            if let blend = f(4) { params["de.\(key).projBlend"] = .array([.number(blend)]) }
-            if let radius = f(5) { params["de.\(key).projRadius"] = .array([.number(radius)]) }
+            // Old app hardcodes the sphere-fold fixed radius to 1.0.
+            params["de.\(key).fixedRadius"] = .array([.number(1.0)])
+            if case .array(let formula)? = tree["formulaParamValues"], formula.count >= 6 {
+                func f(_ i: Int) -> Double? {
+                    if case .number(let n) = formula[i] { return n }
+                    return nil
+                }
+                if let blend = f(4) { params["de.\(key).projBlend"] = .array([.number(blend)]) }
+                if let radius = f(5) { params["de.\(key).projRadius"] = .array([.number(radius)]) }
+            }
+        }
+
+        // --- safety bubble (legacy "safe space") ---------------------------
+        // The shipping app carved a shape out of the fractal around the camera
+        // so scenes could never bury the viewer — and, crucially, the escape
+        // hatch for the mandelboxSphereProjection family whose r→0 singularity
+        // otherwise fills the frame. The scene persisted enabled/radius/shape
+        // and `safetyBubbleBlend` (the strength slider); fade width/enabled were
+        // device-local app defaults and are baked into the shader. Only migrate
+        // when the scene actually turned it on, so nothing else is disturbed.
+        if case .bool(true)? = tree["safetyBubbleEnabled"] {
+            params[ParamKey.engineBubbleEnabled.rawValue] = .array([.number(1)])
+            if let r = number("safetyBubbleRadius") {
+                params[ParamKey.engineBubbleRadius.rawValue] = .array([.number(r)])
+            }
+            if let s = number("safetyBubbleShape") {
+                params[ParamKey.engineBubbleShape.rawValue] = .array([.number(s)])
+            }
+            // `safetyBubbleBlend` → strength; default matches SafetyBubbleConfig.
+            params[ParamKey.engineBubbleBlend.rawValue] =
+                .array([.number(number("safetyBubbleBlend") ?? 0.25)])
         }
 
         // --- zoom (plan §6.3) ----------------------------------------------

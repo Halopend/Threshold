@@ -72,8 +72,12 @@ public enum ReferenceDEs {
         return SIMD2(length(z) / abs(dr), trap)
     }
 
-    /// Mandelbox with a built-in sphere projection applied ONCE to the sample
-    /// point before the fold loop — the CPU oracle for `de_mandelboxSphereProjection`.
+    /// Mandelbox with the shipping app's PER-FOLD sphere projection — the CPU
+    /// oracle for `de_mandelboxSphereProjection`. Each iteration, after the
+    /// sphere fold, the folded point is blended toward a sphere of radius
+    /// `projRadius`: `z ← mix(z, projRadius·z/|z|, blend)` before the
+    /// scale+offset (Shaders.metal MAP_ITERATION_PROJ). The projection does not
+    /// touch the running derivative, matching the app.
     ///
     /// - Parameter params: `[scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]`.
     public static func mandelboxSphereProjection(
@@ -83,28 +87,35 @@ public enum ReferenceDEs {
     ) -> SIMD2<Float> {
         precondition(params.count >= 6,
                      "mandelboxSphereProjection params = [scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]")
-        // Sphere projection domain warp (once). Identity when blend <= 0.
-        var pp = p
-        var k: Float = 1
-        var rInput: Float = 0
-        let blend = params[4]
-        if blend > 0 {
-            rInput = length(p)
-            if rInput > 1e-5 {
-                let b = min(max(blend, 0), 0.98)
-                let rp = (1 - b) * rInput + b * params[5]
-                k = rp / max(rInput, 1e-9)
-                pp = p * k
+        let scale = params[0]
+        let minR2 = params[1] * params[1]
+        let fixedR2 = params[2] * params[2]
+        let limit = SIMD3<Float>(repeating: params[3])
+        let blend = min(max(params[4], 0), 0.98)
+        let projR = params[5]
+
+        var z = p
+        var dr: Float = 1
+        var trap = length(p)
+        for _ in 0..<max(0, iterations) {
+            z = simd_clamp(z, -limit, limit) * 2 - z          // box fold
+            let r2 = dot(z, z)                                 // sphere fold
+            if r2 < minR2 {
+                let f = fixedR2 / minR2; z *= f; dr *= f
+            } else if r2 < fixedR2 {
+                let f = fixedR2 / r2; z *= f; dr *= f
             }
+            if blend > 0 {                                     // per-fold projection
+                let len = length(z)
+                let proj = len > 1e-6 ? z * (projR / len) : SIMD3<Float>(projR, 0, 0)
+                z = simd_mix(z, proj, SIMD3<Float>(repeating: blend))
+            }
+            z = z * scale + p
+            dr = dr * abs(scale) + 1
+            trap = min(trap, length(z))
+            if dot(z, z) > 1e8 { break }
         }
-        let box = mandelbox(pp, params: params, iterations: iterations)
-        // Divide by the conservative stretch bound, then cap the step against
-        // the r→0 projection singularity (both match the GPU DE).
-        var dist = box.x / max(1, k)
-        if blend > 0 {
-            dist = min(dist, 0.5 * rInput)
-        }
-        return SIMD2(dist, box.y)
+        return SIMD2(length(z) / abs(dr), trap)
     }
 
     /// Standard power-N Mandelbulb DE (triplex power formula).

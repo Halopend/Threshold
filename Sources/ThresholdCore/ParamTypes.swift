@@ -99,6 +99,12 @@ public struct Capabilities: OptionSet, Sendable, Codable, Hashable {
     /// Exposed only after an explicit user opt-in (e.g. photosensitivity-risk
     /// or custom-content params).
     public static let requiresOptIn = Capabilities(rawValue: 1 << 3)
+    /// Scene transitions snap this param instead of tweening it (ADR-005).
+    /// For continuous-kind params whose intermediate values are visually wrong
+    /// or wasteful — the march-quality four (iterations/maxSteps sweep through
+    /// every integer, popping) and enum-like floats. Bool/enumeration KINDS
+    /// never tween regardless of this flag (the engine forces them instant).
+    public static let snapOnSceneTransition = Capabilities(rawValue: 1 << 4)
 }
 
 // MARK: - ResponseCurve
@@ -147,6 +153,14 @@ public struct Smoothing: Sendable, Codable, Hashable {
     /// The standard feel: user/scene/system/animation instant,
     /// gesture 0.15 s, music 0.08 s.
     public static let `default` = Smoothing(gesture: 0.15, music: 0.08)
+
+    /// Continuous-content feel (ADR-005, legacy parity): user edits ease over
+    /// ~0.2 s — the exponential match for the original app's 0.35 s
+    /// critically-damped `smoothDamp` on every geometry change. Scene stays 0:
+    /// scene applies snap unless an explicit `SceneTransition` overrides the
+    /// lane for its window (`ModulationEngine.beginSceneTransition`), so the
+    /// harness and tests stay deterministic by default.
+    public static let continuous = Smoothing(user: 0.2, gesture: 0.15, music: 0.08)
 
     /// All lanes instant. Useful for tests and discrete params.
     public static let instant = Smoothing()

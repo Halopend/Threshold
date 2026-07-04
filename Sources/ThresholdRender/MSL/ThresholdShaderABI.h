@@ -136,7 +136,16 @@ typedef struct ThreshFrameUniforms {
 #define THRESH_SLOT_BRIGHTNESS    13  // linear gain, 1 = identity
 #define THRESH_SLOT_GAMMA         14  // output gamma exponent, 1 = identity
 #define THRESH_SLOT_TONEMAP       15  // ACES filmic blend 0..1, 0 = plain clamp (default)
-#define THRESH_SLOT_ENGINE_COUNT  16
+// Safety bubble (legacy "safe space"): a CSG-subtracted shape carved around the
+// camera so scenes can never bury the viewer inside geometry — the fix for the
+// mandelboxSphereProjection family whose r→0 projection singularity otherwise
+// fills the frame. Applied to the final march distance at the camera center.
+// Disabled by default (BUBBLE_ENABLED = 0) so authored scenes are untouched.
+#define THRESH_SLOT_BUBBLE_ENABLED 16  // 1 = carve the bubble, 0 = identity
+#define THRESH_SLOT_BUBBLE_RADIUS  17  // carve radius in fractal units
+#define THRESH_SLOT_BUBBLE_SHAPE   18  // 0..1 sphere→cube morph; 2..6 platonic solids
+#define THRESH_SLOT_BUBBLE_BLEND   19  // strength / temporal blend 0..1 (legacy "blend")
+#define THRESH_SLOT_ENGINE_COUNT  20
 
 // Color mapping mode: how the palette coordinate t in [0,1] is derived per
 // pixel (plan §5.5 stage 1). Values persist in scenes — never renumber.
