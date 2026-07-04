@@ -333,7 +333,12 @@ if opts.specialize, program == nil {
             // Cone stop margin (shimmer↔speed): THRESHOLD_CONE_MARGIN=<int>,
             // default nil → the shader's 3× (block-9 baseline preserved).
             coneMargin: on("THRESHOLD_SPEC_CONE")
-                ? flags["THRESHOLD_CONE_MARGIN"].flatMap(Int.init) : nil)
+                ? flags["THRESHOLD_CONE_MARGIN"].flatMap(Int.init) : nil,
+            // Distance-LOD falloff (iterations shed across the depth range):
+            // THRESHOLD_LOD_FALLOFF=<int>, default off — an approximation
+            // lever, so it is opt-in even on the perf pipeline until the
+            // A/B (perf block 15) settles a default.
+            lodFalloff: flags["THRESHOLD_LOD_FALLOFF"].flatMap(Int.init))
         specialized = try context.makeSpecializedMarch(
             deFunctionName: descriptor.mslFunctionName, spec: spec)
         if !opts.quiet {

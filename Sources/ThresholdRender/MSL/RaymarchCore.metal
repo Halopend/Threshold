@@ -353,6 +353,7 @@ constant int thresh_ao_enabled    [[function_constant(5)]];
 constant int thresh_has_dist_ops  [[function_constant(6)]];
 constant int thresh_stats_enabled [[function_constant(7)]];
 constant int thresh_cone_margin   [[function_constant(9)]];
+constant int thresh_lod_falloff   [[function_constant(10)]];
 #endif
 
 // Cone-prepass stop margin (function_constant 9): the prepass stops when the
@@ -368,6 +369,23 @@ static inline float threshConeMargin() {
     return (thresh_cone_margin > 0) ? float(thresh_cone_margin) : 3.0f;
 #else
     return 3.0f;
+#endif
+}
+
+// Distance-LOD iteration falloff (function_constant 10): fold iterations shed
+// per MODEL unit of ray distance, in sixteenths — the primary march evaluates
+// mapScene at effIter = max(2, n − t·modelScale·F/16), so distant samples run
+// fewer fold iterations (legacy distanceLODFalloff port, audit item 8).
+// Model units (t·modelScale) make one discrete level zoom-invariant; F=16
+// sheds one iteration per model unit. Applies ONLY to the stepping map:
+// normals/AO keep their own reduced scales at the hit point, and the cone
+// prepass stays full-iteration (conservative start depths). ≤ 0 / absent →
+// off, bit-identical.
+static inline int threshLODFalloff() {
+#ifdef THRESH_SPEC_DE
+    return (thresh_lod_falloff > 0) ? thresh_lod_falloff : 0;
+#else
+    return 0;
 #endif
 }
 
@@ -971,11 +989,25 @@ static inline ThreshMarchResult marchShade(
     float prevRadius = 0.0f;
     float stepLength = 0.0f;
 
+    // Distance-LOD falloff (function_constant 10): shed lodF/16 fold
+    // iterations per model unit of t. lodF is a compile-time constant, so
+    // the whole computation folds away in variants that don't bake it.
+    const int lodF = threshLODFalloff();
+    const float lodIterN = max(params[THRESH_SLOT_ITERATIONS], 1.0f);
+    const float lodPerT = float(lodF) * (1.0f / 16.0f) * U.scaleCtx.z;
+
     for (int i = 0; i < maxSteps; ++i) {
         if (t > maxDist) { break; }   // loop-top: a prepass start at/near the
                                       // far plane must MISS, not sample there
         float3 pos = ro + rd * t;
-        float2 dm = mapScene(pos, U, params, ops, deTable);
+        float iterScale = 1.0f;
+        if (lodF > 0) {
+            // +0.5 so int(n·scale) in threshDEIterations lands ON effIter
+            // (plain truncation of the reconstructed ratio can drop one).
+            float effIter = max(2.0f, lodIterN - t * lodPerT);
+            iterScale = min(1.0f, (effIter + 0.5f) / lodIterN);
+        }
+        float2 dm = mapScene(pos, U, params, ops, deTable, iterScale);
         steps += 1;
         // Non-finite guard by BIT PATTERN (exponent all-ones ⇒ Inf/NaN):
         // isnan/isinf fold to false under -ffinite-math-only (mathMode

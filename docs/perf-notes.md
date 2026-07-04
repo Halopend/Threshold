@@ -581,3 +581,43 @@ slider (the ADR-003 ceiling) + a live "now N%" effective-quality readout, with
 the caption switching between ceiling/exact-scale wording based on the Auto
 Quality state. Pipeline card stays the shader-internals surface (bakes, cone
 controls, pipeline readout).
+
+## Distance-LOD iteration falloff — REFUTED — 2026-07-03 (perf block 15)
+
+Audit item 8 (the last unclaimed "Medium impact / High confidence" ALU lever
+from docs/perf-port-audit.md) ported and MEASURED AS A PESSIMIZATION on this
+kernel. The port: function_constant 10 (`thresh_lod_falloff`, MarchSpec
+`lodFalloff`, A/B seam `THRESHOLD_LOD_FALLOFF=<int>`) sheds F/16 fold
+iterations per MODEL unit of ray distance in the primary march's mapScene
+only (effIter = max(2, n − t·modelScale·F/16)) via the existing lodScale
+seam — normals/AO keep their own reduced scales, cone prepass stays
+full-iteration.
+
+Measured, 1024² bench-mandelbox (iters 9, maxSteps 120, specialized+cone,
+median of 30):
+
+    off   4.01 ms   1.72 M march steps (512² stats run)
+    F=16  4.09 ms   1.72 M   (visible t too shallow to shed 1 iter)
+    F=32  4.46 ms   1.83 M
+    F=64  6.05 ms   2.54 M
+
+Monotone LOSS. Why legacy's win doesn't transfer: (1) the fold loop is
+already unrolled at a baked count — shortening the runtime trip count saves
+some unrolled-body ALU but re-introduces the dynamic bound the bake existed
+to remove; (2) the march is over-relaxed (mandelbox ω=1.6) — a t-varying
+iteration count makes the DE value jump between adjacent samples, so the
+sphere-overlap check (radius+prevRadius < stepLength) fails spuriously and
+the retreat drops ω to 1 for the rest of the ray: step counts EXPLODE
+(+47% at F=64) faster than per-step cost falls. Legacy marched at fixed
+ω-caps with a plain conservative fallback, and its fold loop was
+runtime-bounded anyway — different trade surface.
+
+Disposition: the seam stays (default OFF — the -1 sentinel folds the whole
+computation out at pipeline-specialization time; off-state re-verified
+bit-identical and bench-neutral), as a cheap re-test hook for future heavy
+DEs where iteration cost dominates and ω is already 1 (Bulatov-class). Do
+NOT wire it into RenderTuning/UI. With this, every confirmed item of the
+original 3x audit is either PORTED (1,2,3,5,7,9,10 + fast-math), REFUTED
+(8), or REMAINS by design (4: redundant with the cone prepass's empty-space
+skip; 6/11: sub-ms hit-shading tail, revisit only if a scene shows a
+shading-bound profile; 12–14: launch-latency, not steady-state ms).

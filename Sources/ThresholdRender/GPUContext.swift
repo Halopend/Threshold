@@ -227,6 +227,7 @@ public final class GPUContext: @unchecked Sendable {
             setInt(spec.hasDistanceOps.map { $0 ? 1 : 0 } ?? -1, 6)
             setInt(spec.statsEnabled.map { $0 ? 1 : 0 } ?? -1, 7)
             setInt(spec.coneMargin ?? -1, 9)   // 8 is the aux-style bool below
+            setInt(spec.lodFalloff ?? -1, 10)
         }
         if let cone = spec?.coneMarch {
             var v = cone

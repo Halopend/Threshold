@@ -106,6 +106,13 @@ public struct MarchSpec: Sendable, Hashable {
     /// Only meaningful with `coneMarch` set. A small discrete set (each a
     /// cached variant) — the "Cone Stability" UI lever.
     public var coneMargin: Int?
+    /// Distance-LOD iteration falloff (function_constant 10): total fold
+    /// iterations shed linearly across [0, maxDist] in the PRIMARY march's
+    /// mapScene (effIter = max(2, n − (t/maxDist)·F)). Distant samples run
+    /// fewer fold iterations — a deliberate approximation (audit item 8 /
+    /// legacy distanceLODFalloff), so the generic/golden library never bakes
+    /// it. nil / ≤0 → off, bit-identical.
+    public var lodFalloff: Int?
     /// Tile cone-march prepass (function_constant 8): true → a separate
     /// coarse dispatch (march_cone_prepass, one thread per 8×8 tile) writes
     /// each tile's safe start depth to an r32float texture the march kernel
@@ -121,7 +128,7 @@ public struct MarchSpec: Sendable, Hashable {
                 hasWarpOps: Bool? = nil, colorMapMode: Int? = nil,
                 aoEnabled: Bool? = nil, hasDistanceOps: Bool? = nil,
                 statsEnabled: Bool? = nil, coneMarch: Bool? = nil,
-                coneMargin: Int? = nil) {
+                coneMargin: Int? = nil, lodFalloff: Int? = nil) {
         self.iterations = iterations
         self.maxSteps = maxSteps
         self.hasWarpOps = hasWarpOps
@@ -131,6 +138,7 @@ public struct MarchSpec: Sendable, Hashable {
         self.statsEnabled = statsEnabled
         self.coneMarch = coneMarch
         self.coneMargin = coneMargin
+        self.lodFalloff = lodFalloff
     }
 
     /// Translate live tuning + the resolved param table into the constants to
@@ -161,13 +169,14 @@ public struct MarchSpec: Sendable, Hashable {
         iterations == nil && maxSteps == nil && hasWarpOps == nil
             && colorMapMode == nil && aoEnabled == nil && hasDistanceOps == nil
             && statsEnabled == nil && coneMarch == nil && coneMargin == nil
+            && lodFalloff == nil
     }
 
     /// Stable cache-key fragment.
     var keyFragment: String {
         func i(_ v: Int?) -> String { v.map(String.init) ?? "-" }
         func b(_ v: Bool?) -> String { v.map { $0 ? "1" : "0" } ?? "-" }
-        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))m\(i(coneMargin))"
+        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))m\(i(coneMargin))l\(i(lodFalloff))"
     }
 
     /// Human-readable summary of what's baked (for the diagnostics readout).
@@ -182,6 +191,7 @@ public struct MarchSpec: Sendable, Hashable {
         if let statsEnabled { parts.append(statsEnabled ? "stats" : "no-stats") }
         if let coneMarch { parts.append(coneMarch ? "cone" : "no-cone") }
         if let coneMargin { parts.append("cone-margin=\(coneMargin)") }
+        if let lodFalloff { parts.append("lod-falloff=\(lodFalloff)") }
         return parts.joined(separator: ", ")
     }
 }
