@@ -59,10 +59,51 @@ public enum ReferenceOps {
             case .forearmCarve:
                 d = forearmCarve(worldP, d, op)
             case .bounding:
-                break // reserved — not implemented in Phase 2
+                // Only FIXED bounds (OPTION_B) are world-space distance ops;
+                // in-stack bounds are captured during the point walk (see
+                // `mapBounds`). Skip in-stack bounds here to avoid double apply.
+                if op.warpFlags.contains(.optionB) {
+                    d = boundingFixed(worldP, d, op)
+                }
             default:
                 break
             }
+        }
+        return d
+    }
+
+    /// CPU oracle for the IN-STACK Bounding fold (§66). Replays the point-op
+    /// walk (modelScale = 1, dScale seeded 1) to capture each in-stack bound's
+    /// world-space distance in its transformed frame — `sdSolid(p)/dScale`,
+    /// the same conversion as `d = de.x/dScale` — then folds them into
+    /// `baseDistance` in stack order. Mirrors the GPU `eval_bounds` kernel and
+    /// the in-stack path of `mapScene`. FIXED bounds (OPTION_B) are skipped
+    /// here — they are world-space distance ops (`applyDistanceOps`).
+    public static func mapBounds(
+        _ worldP: SIMD3<Float>,
+        baseDistance: Float,
+        ops: [ThreshWarpOp]
+    ) -> Float {
+        var p = worldP
+        var dScale: Float = 1
+        var captures: [(bw: Float, soft: Float, strength: Float, subtract: Bool)] = []
+        for op in ops {
+            guard let kind = op.warpKind else { continue }
+            if kind == .bounding {
+                if !op.warpFlags.contains(.optionB) {
+                    let bw = sdSolid(p, op.a.y, op.a.x) / dScale
+                    captures.append((bw, max(op.a.z, 1e-4), op.strength,
+                                     op.warpFlags.contains(.optionA)))
+                }
+                continue
+            }
+            guard kind.isPointOp else { continue }
+            p = applyPointOp(kind, op, p, &dScale)
+        }
+        var d = baseDistance
+        for c in captures {
+            let csg = smax(d, c.subtract ? -c.bw : c.bw, c.soft)
+            d = lerpScalar(d, csg, c.strength)
         }
         return d
     }
@@ -293,6 +334,79 @@ public enum ReferenceOps {
         let h = simd_clamp(dot(pa, ba) / max(dot(ba, ba), 1e-9), 0, 1)
         let cap = length(pa - ba * h) - op.a.w
         return lerpScalar(d, smax(d, -cap, max(op.b.w, 1e-4)), abs(op.strength))
+    }
+
+    /// FIXED (world-space) Bounding op: CSG the fractal against a solid at
+    /// `b.xyz`. `a.x` shape, `a.y` scale, `a.z` softness; OPTION_A = subtract
+    /// (carve out) vs intersect (keep inside). `strength` blends identity→full.
+    /// Mirrors the MSL `ThreshWarpKindBounding` case in `applyDistanceOps`.
+    static func boundingFixed(_ p: SIMD3<Float>, _ d: Float, _ op: ThreshWarpOp) -> Float {
+        let bw = sdSolid(p - op.b.xyz, op.a.y, op.a.x)
+        let k = max(op.a.z, 1e-4)
+        let s = op.strength
+        if op.warpFlags.contains(.optionA) {
+            return lerpScalar(d, smax(d, -bw, k), s)   // subtract
+        } else {
+            return lerpScalar(d, smax(d,  bw, k), s)   // intersect
+        }
+    }
+
+    // MARK: - Bounding solid SDF (docs/op-semantics.md §66)
+
+    /// Signed distance to an axis-aligned cube of half-extent `r` (IQ box SDF).
+    /// Mirrors the MSL `bubbleCube`.
+    static func boxSDF(_ p: SIMD3<Float>, _ r: Float) -> Float {
+        let d = abs(p) - SIMD3<Float>(repeating: r)
+        let outside = SIMD3<Float>(max(d.x, 0), max(d.y, 0), max(d.z, 0))
+        return length(outside) + min(max(d.x, max(d.y, d.z)), 0)
+    }
+
+    /// Signed distance to a shape centred at the origin, half-extent `r`.
+    /// Mirrors the MSL `sdSolid` EXACTLY (same constants + `int(clamp(shape +
+    /// 0.5, 2, 6))` dispatch) — the CPU oracle for the Bounding warp op and the
+    /// safety bubble. `shape` 0..1 morphs sphere→cube; 2..6 select platonic
+    /// solids (tetra / rounded-cube / octa / icosa / dodeca).
+    static func sdSolid(_ p: SIMD3<Float>, _ r: Float, _ shape: Float) -> Float {
+        let sphereDist = length(p) - r
+        let cubeDist = boxSDF(p, r)
+        if shape <= 1 {
+            return lerpScalar(sphereDist, cubeDist, simd_clamp(shape, 0, 1))
+        }
+        let invSqrt3: Float = 0.5773502691896258
+        let phi: Float = 1.618033988749895
+        let invPhiLen: Float = 0.5257311121191336
+        let axisScale: Float = 0.85065080835204
+        let q = abs(p)
+        switch Int(simd_clamp(shape + 0.5, 2, 6)) {
+        case 2:   // tetrahedron
+            let faceOffset = r * invSqrt3
+            let d1 = dot(p, SIMD3<Float>( invSqrt3,  invSqrt3,  invSqrt3))
+            let d2 = dot(p, SIMD3<Float>( invSqrt3, -invSqrt3, -invSqrt3))
+            let d3 = dot(p, SIMD3<Float>(-invSqrt3,  invSqrt3, -invSqrt3))
+            let d4 = dot(p, SIMD3<Float>(-invSqrt3, -invSqrt3,  invSqrt3))
+            return max(max(d1, d2), max(d3, d4)) - faceOffset
+        case 3:   // rounded ("negative") cube via superquadric
+            let exponent: Float = 0.65
+            let s = q / max(r, 1e-4)
+            let sd = powf(powf(s.x, exponent) + powf(s.y, exponent) + powf(s.z, exponent),
+                          1 / exponent)
+            return (sd - 1) * r
+        case 4:   // octahedron
+            return (q.x + q.y + q.z - r) * invSqrt3
+        case 5:   // icosahedron
+            let d1 = dot(q, SIMD3<Float>(1, 1, 1) * invSqrt3)
+            let d2 = dot(q, SIMD3<Float>(0, 1, phi) * invPhiLen)
+            let d3 = dot(q, SIMD3<Float>(1, phi, 0) * invPhiLen)
+            let d4 = dot(q, SIMD3<Float>(phi, 0, 1) * invPhiLen)
+            return max(max(d1, d2), max(d3, d4)) - r * axisScale
+        case 6:   // dodecahedron
+            let d1 = dot(q, SIMD3<Float>(phi, 1, 0) * invPhiLen)
+            let d2 = dot(q, SIMD3<Float>(1, 0, phi) * invPhiLen)
+            let d3 = dot(q, SIMD3<Float>(0, phi, 1) * invPhiLen)
+            return max(d1, max(d2, d3)) - r * axisScale
+        default:
+            return cubeDist
+        }
     }
 
     // MARK: - Common helpers (docs/op-semantics.md "Common helpers")

@@ -55,6 +55,22 @@ public final class OpsEvaluator: @unchecked Sendable {
         return output
     }
 
+    /// GPU in-stack Bounding fold (§66): captures in-stack bounds during the
+    /// point walk (modelScale = 1, dScale seeded 1) and folds them into each
+    /// base distance. Mirrors `ReferenceOps.mapBounds`.
+    public func applyBounds(points: [SIMD3<Float>],
+                            baseDistances: [Float],
+                            ops: [ThreshWarpOp]) throws -> [Float] {
+        guard points.count == baseDistances.count else {
+            throw RenderError.badRequest("points/baseDistances count mismatch")
+        }
+        guard !points.isEmpty else { return [] }
+        let input = zip(points, baseDistances).map { SIMD4<Float>($0, $1) }
+        let output: [Float] = try runOpsKernel(
+            pipeline: context.evalBoundsPipeline, input: input, ops: ops)
+        return output
+    }
+
     private func runOpsKernel<Out>(pipeline: MTLComputePipelineState,
                                    input: [SIMD4<Float>],
                                    ops: [ThreshWarpOp]) throws -> [Out] {

@@ -29,6 +29,21 @@ final class TemporalUpscaler: Sendable {
     /// Inputs with a shorter edge than this are rejected by MetalFX.
     static let minimumInputEdge = 32
 
+    /// The smallest input size MetalFX will accept for a given output — the
+    /// combined 3×-ratio and 32px-edge floors. Marching at this size (or
+    /// larger) keeps the temporal scaler engaged; a request BELOW it fails
+    /// `prepare`'s guards and forces a full-resolution fallback (the Render
+    /// Quality < ~33% footgun). Callers clamp their reduced-res input UP to
+    /// this so low quality stays cheap. `.up` rounding guarantees
+    /// `floor × maxScaleFactor ≥ output` exactly (no off-by-one back into the
+    /// dead zone).
+    static func minimumInputSize(
+        forOutputWidth width: Int, height: Int
+    ) -> (width: Int, height: Int) {
+        (max(Int((Float(width) / maxScaleFactor).rounded(.up)), minimumInputEdge),
+         max(Int((Float(height) / maxScaleFactor).rounded(.up)), minimumInputEdge))
+    }
+
     static let depthFormat: MTLPixelFormat = .r32Float
     static let motionFormat: MTLPixelFormat = .rg16Float
 

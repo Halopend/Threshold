@@ -69,7 +69,8 @@ func makeSnapshot(
     warpStack: [WarpOpDTO] = [],
     paused: Bool = false,
     palette: Palette = Palette(stops: []),
-    animation: AnimationPlaybackState = .idle
+    animation: AnimationPlaybackState = .idle,
+    audioLevels: AudioLevels = .zero
 ) -> RenderSnapshot {
     RenderSnapshot(
         resolved: ResolvedParams(values: values, generation: generation),
@@ -81,7 +82,8 @@ func makeSnapshot(
         warpStack: warpStack,
         paused: paused,
         palette: palette,
-        animation: animation)
+        animation: animation,
+        audioLevels: audioLevels)
 }
 
 /// A warp DTO with recognizable payloads for list-edit assertions.

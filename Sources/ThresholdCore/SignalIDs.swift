@@ -12,11 +12,14 @@ extension SignalID {
     public static let audioBandMid = SignalID("audio.band.mid")
     public static let audioBandHigh = SignalID("audio.band.high")
     public static let audioCentroid = SignalID("audio.centroid")
+    /// The user's tunable Focus Band (AudioFocusBand): a low/high-Hz window the
+    /// mic DSP publishes here when enabled, routable like any other audio band.
+    public static let audioBandUser = SignalID("audio.band.user")
 
     /// The audio signals every session registers.
     public static let standardAudio: [SignalID] = [
         .audioRMS, .audioOnset, .audioBandLow, .audioBandMid, .audioBandHigh,
-        .audioCentroid,
+        .audioCentroid, .audioBandUser,
     ]
 
     // MARK: hand.* (published by ThresholdInputs.HandTracker on visionOS)

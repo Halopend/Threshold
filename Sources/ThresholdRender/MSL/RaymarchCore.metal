@@ -63,6 +63,43 @@ static inline float3 readAxis(float3 raw) {
     return (dot(raw, raw) < 1e-12f) ? float3(0.0f, 1.0f, 0.0f) : normalize(raw);
 }
 
+// Forward declaration — the platonic/sphere/cube shape SDF is defined in the
+// "safety bubble" section below, but the Bounding warp op (docs/op-semantics.md
+// §66) calls it from both the point-op and distance-op passes above it.
+static inline float sdSolid(float3 p, float r, float shape);
+
+// In-stack Bounding capture (docs/op-semantics.md §66). Thread-local scratch —
+// it never crosses the CPU↔GPU boundary, so it lives here, NOT in the ABI
+// header. An in-stack bound clips the space AS TRANSFORMED at its slot: during
+// the point-op walk we record the solid's world-space distance at that frame,
+// then fold it into the resolved distance after the DE. A stack can hold at
+// most THRESH_MAX_BOUND_OPS in-stack bounds; extras are silently dropped (a
+// documented soft cap — real stacks carry at most a handful).
+#define THRESH_MAX_BOUND_OPS 8
+struct ThreshBoundCapture {
+    float bw[THRESH_MAX_BOUND_OPS];        // world-space signed distance to the solid
+    float soft[THRESH_MAX_BOUND_OPS];      // CSG blend softness k (floored 1e-4)
+    float strength[THRESH_MAX_BOUND_OPS];  // blend amount, identity→full clip
+    uint  flags[THRESH_MAX_BOUND_OPS];     // OPTION_A = subtract vs intersect
+    uint  count;
+};
+
+// Fold the captured in-stack bounds into distance `d` in stack order. A no-op
+// (identity) when nothing was captured, so it is safe to call unconditionally.
+static inline float applyBoundCaptures(float d, thread const ThreshBoundCapture& bounds) {
+    for (uint i = 0; i < bounds.count; ++i) {
+        const float bw = bounds.bw[i];
+        const float k = bounds.soft[i];
+        const float s = bounds.strength[i];
+        if (bounds.flags[i] & THRESH_WARP_FLAG_OPTION_A) {
+            d = mix(d, smaxIQ(d, -bw, k), s);          // subtract (carve out)
+        } else {
+            d = mix(d, smaxIQ(d,  bw, k), s);          // intersect (keep inside)
+        }
+    }
+    return d;
+}
+
 // ============================ point ops (kind < 64) =========================
 //
 // Transforms the sample point before the DE runs, accumulating the distance
@@ -70,10 +107,26 @@ static inline float3 readAxis(float3 raw) {
 // Lipschitz-bounded ops; conformal ops multiply the EXACT factor, unclamped.
 
 static float3 applyPointOps(float3 p, device const ThreshWarpOp* ops, uint count,
-                            thread float& dScale)
+                            thread float& dScale, thread ThreshBoundCapture& bounds)
 {
     for (uint i = 0; i < count; ++i) {
         const ThreshWarpOp op = ops[i];
+        // In-stack Bounding op: capture the solid's distance in the CURRENT
+        // (transformed) frame — sdSolid(p)/dScale converts the frame-local
+        // distance to world units, the same reasoning as d = de.x/dScale.
+        // FIXED bounds (OPTION_B) are world-space distance ops folded later in
+        // applyDistanceOps, so they are NOT captured here.
+        if (op.kind == ThreshWarpKindBounding) {
+            if (!(op.flags & THRESH_WARP_FLAG_OPTION_B) &&
+                bounds.count < THRESH_MAX_BOUND_OPS) {
+                const uint j = bounds.count++;
+                bounds.bw[j]       = sdSolid(p, op.a.y, op.a.x) / dScale;
+                bounds.soft[j]     = max(op.a.z, 1e-4f);
+                bounds.strength[j] = op.strength;
+                bounds.flags[j]    = op.flags;
+            }
+            continue;
+        }
         if (op.kind == ThreshWarpKindNone ||
             op.kind >= THRESH_WARP_KIND_DISTANCE_OP_BASE) {
             continue;
@@ -311,7 +364,23 @@ static float applyDistanceOps(float3 worldP, float d, device const ThreshWarpOp*
             break;
         }
 
-        case ThreshWarpKindBounding:                   // reserved — passthrough
+        case ThreshWarpKindBounding: {
+            // a.x shape, a.y scale, a.z softness; b.xyz world center.
+            // OPTION_A = subtract (carve out) vs intersect (keep inside).
+            // OPTION_B = FIXED (world-space) — handled here. IN-STACK bounds
+            // (OPTION_B clear) are captured in applyPointOps and folded inside
+            // mapScene, so skip them here to avoid double application.
+            if (!(op.flags & THRESH_WARP_FLAG_OPTION_B)) { break; }
+            float bw = sdSolid(worldP - op.b.xyz, op.a.y, op.a.x);
+            float k = max(op.a.z, 1e-4f);
+            if (op.flags & THRESH_WARP_FLAG_OPTION_A) {
+                d = mix(d, smaxIQ(d, -bw, k), s);      // subtract
+            } else {
+                d = mix(d, smaxIQ(d,  bw, k), s);      // intersect
+            }
+            break;
+        }
+
         default:
             break;
         }
@@ -776,9 +845,12 @@ static float2 mapScene(float3 worldP,
     // unchanged (the generic path evaluates the same runtime condition).
     const bool hasOps = threshHasOps(U.meta.x);
     float dScale = modelScale;
+    ThreshBoundCapture bounds;
+    bounds.count = 0;                        // in-stack Bounding ops (§66) are
+                                             // captured during the point walk
     float3 q;
     if (hasOps) {
-        q = applyPointOps(worldP * modelScale, ops, U.meta.x, dScale);
+        q = applyPointOps(worldP * modelScale, ops, U.meta.x, dScale, bounds);
     } else {
         q = worldP * modelScale;
     }
@@ -801,6 +873,9 @@ static float2 mapScene(float3 worldP,
     float2 de = deTable[U.meta.y](q, ctx);
 #endif
     float d = de.x / dScale;
+    // In-stack bounds clip the transformed frame first (identity when none was
+    // captured); FIXED bounds + hand/world carves fold after in applyDistanceOps.
+    d = applyBoundCaptures(d, bounds);
     if (hasOps && threshHasDistOps(U.meta.x)) {
         d = applyDistanceOps(worldP, d, ops, U.meta.x);
     }
@@ -940,11 +1015,12 @@ static inline float bubbleCube(float3 p, float r) {
     return length(max(d, 0.0f)) + min(max(d.x, max(d.y, d.z)), 0.0f);
 }
 
-// Signed distance to the carve shape, centred at the camera. shape 0..1 morphs
-// sphere→cube; 2..6 select platonic solids (tetra / neg-cube / octa / icosa /
-// dodeca), matching the legacy discrete presets.
-static inline float bubbleDistance(float3 pos, float3 center, float r, float shape) {
-    float3 p = pos - center;
+// Signed distance to a shape centred at the ORIGIN, half-extent r. shape 0..1
+// morphs sphere→cube; 2..6 select platonic solids (tetra / rounded-cube / octa
+// / icosa / dodeca), matching the legacy discrete presets. Shared by the safety
+// bubble AND the Bounding warp op (docs/op-semantics.md §66) — one definition,
+// so CPU/GPU parity (ReferenceOps.sdSolid) covers both.
+static inline float sdSolid(float3 p, float r, float shape) {
     float sphereDist = length(p) - r;
     float cubeDist = bubbleCube(p, r);
     if (shape <= 1.0f) {
@@ -988,6 +1064,12 @@ static inline float bubbleDistance(float3 pos, float3 center, float r, float sha
         default:
             return cubeDist;
     }
+}
+
+// Signed distance to the carve shape, centred at `center` (legacy safety
+// bubble). Thin wrapper over sdSolid so the bubble is behaviorally unchanged.
+static inline float bubbleDistance(float3 pos, float3 center, float r, float shape) {
+    return sdSolid(pos - center, r, shape);
 }
 
 // Carve the bubble out of distance `d` at world point `pos` (camera = center).
@@ -1643,7 +1725,8 @@ kernel void eval_ops(
 {
     if (gid >= pointCount) { return; }
     float dScale = 1.0f;
-    float3 q = applyPointOps(inPoints[gid].xyz, ops, opCount, dScale);
+    ThreshBoundCapture bounds; bounds.count = 0;   // discarded here
+    float3 q = applyPointOps(inPoints[gid].xyz, ops, opCount, dScale, bounds);
     outPoints[gid] = float4(q, dScale);
 }
 
@@ -1660,6 +1743,28 @@ kernel void eval_dist(
     if (gid >= pointCount) { return; }
     const float4 v = inPoints[gid];
     outDist[gid] = applyDistanceOps(v.xyz, v.w, ops, opCount);
+}
+
+// in: float4 per point (xyz = WORLD point, w = base distance d before bounds)
+// out: float per point (d' after IN-STACK Bounding ops, §66)
+// modelScale is fixed at 1 (dScale seeded 1) — this exercises the in-stack
+// capture (sdSolid in the transformed frame / dScale) and the CSG fold; the
+// DE and zoom are covered by other harnesses.
+kernel void eval_bounds(
+    device const float4* inPoints  [[buffer(0)]],
+    device float* outDist          [[buffer(1)]],
+    device const ThreshWarpOp* ops [[buffer(2)]],
+    constant uint& opCount         [[buffer(3)]],
+    constant uint& pointCount      [[buffer(4)]],
+    uint gid                       [[thread_position_in_grid]])
+{
+    if (gid >= pointCount) { return; }
+    const float4 v = inPoints[gid];
+    float dScale = 1.0f;
+    ThreshBoundCapture bounds; bounds.count = 0;
+    float3 q = applyPointOps(v.xyz, ops, opCount, dScale, bounds);   // capture; q unused
+    (void)q;
+    outDist[gid] = applyBoundCaptures(v.w, bounds);
 }
 
 // in: float4 per point (xyz = point, w unused)

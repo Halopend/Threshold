@@ -113,5 +113,6 @@ struct ABILayoutTests {
     func distanceOpBaseAndFlags() {
         #expect(WarpKind.distanceOpBase == THRESH_WARP_KIND_DISTANCE_OP_BASE)
         #expect(WarpFlags.optionA.rawValue == THRESH_WARP_FLAG_OPTION_A)
+        #expect(WarpFlags.optionB.rawValue == THRESH_WARP_FLAG_OPTION_B)
     }
 }

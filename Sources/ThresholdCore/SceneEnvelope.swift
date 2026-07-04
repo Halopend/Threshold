@@ -167,6 +167,10 @@ public struct SceneEnvelope: Sendable, Equatable {
     /// Procedural LFO bank this scene carries. Bindings reference an LFO by its
     /// `lfo.*` slot; `apply` installs these into the LFOEngine.
     public var lfos: [LFOSpec]
+    /// The tunable Focus Band this scene carries (music's "LFO equivalent").
+    /// `nil` = the scene predates the feature / carries none; the app shell
+    /// pushes it to the mic DSP on load (it is not render-session state).
+    public var focusBand: AudioFocusBand?
     /// Foreign top-level keys, preserved verbatim.
     public var unknown: [String: JSONValue]
 
@@ -186,6 +190,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         palette: Palette? = nil,
         bindings: [Binding] = [],
         lfos: [LFOSpec] = [],
+        focusBand: AudioFocusBand? = nil,
         unknown: [String: JSONValue] = [:]
     ) {
         self.version = version
@@ -203,6 +208,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         self.palette = palette
         self.bindings = bindings
         self.lfos = lfos
+        self.focusBand = focusBand
         self.unknown = unknown
     }
 }
@@ -224,7 +230,7 @@ extension SceneEnvelope: Codable {
     private static let knownKeys: Set<String> = [
         "version", "abiVersion", "name", "tags", "fractalTypeKey",
         "embeddedDE", "params", "integratorPhases", "scaleOctave",
-        "warpStack", "camera", "palette", "bindings", "lfos",
+        "warpStack", "camera", "palette", "bindings", "lfos", "focusBand",
     ]
 
     public init(from decoder: any Decoder) throws {
@@ -251,6 +257,7 @@ extension SceneEnvelope: Codable {
         palette = try c.decodeIfPresent(Palette.self, forKey: key("palette"))
         bindings = try c.decodeIfPresent([Binding].self, forKey: key("bindings")) ?? []
         lfos = try c.decodeIfPresent([LFOSpec].self, forKey: key("lfos")) ?? []
+        focusBand = try c.decodeIfPresent(AudioFocusBand.self, forKey: key("focusBand"))
 
         // Params: split numeric-shaped entries from foreign shapes, keeping
         // both (numeric values normalize to [Float]; bare numbers become
@@ -305,6 +312,7 @@ extension SceneEnvelope: Codable {
         try c.encodeIfPresent(palette, forKey: key("palette"))
         if !bindings.isEmpty { try c.encode(bindings, forKey: key("bindings")) }
         if !lfos.isEmpty { try c.encode(lfos, forKey: key("lfos")) }
+        try c.encodeIfPresent(focusBand, forKey: key("focusBand"))
 
         // Foreign top-level keys ride along; a collision with a known key
         // cannot arise from our own decode (they were filtered) — skip any

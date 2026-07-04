@@ -71,6 +71,8 @@ public struct HandConstellationPanel: View {
     let store: GestureBindingStore
 
     @State private var selected: GestureSource?
+    @State private var showingSavePreset = false
+    @State private var newPresetName = ""
 
     public init(params: BindableParams, fractal: String, store: GestureBindingStore) {
         self.params = params
@@ -82,9 +84,54 @@ public struct HandConstellationPanel: View {
 
     public var body: some View {
         VStack(spacing: DS.Spacing.sm) {
+            presetBar
             stageCard
             editorOrHint
         }
+        .alert("Save gesture preset", isPresented: $showingSavePreset) {
+            TextField("Preset name", text: $newPresetName)
+            Button("Save") {
+                store.saveCurrentAsPreset(named: newPresetName)
+                newPresetName = ""
+            }
+            Button("Cancel", role: .cancel) { newPresetName = "" }
+        } message: {
+            Text("Captures every gesture binding — global and per-fractal.")
+        }
+    }
+
+    // MARK: Presets
+
+    private var presetBar: some View {
+        HStack(spacing: DS.Spacing.sm) {
+            Label("Gesture Presets", systemImage: "hand.point.up.left")
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Spacer()
+            Menu {
+                if store.presets.isEmpty {
+                    Text("No presets saved")
+                } else {
+                    Section("Apply") {
+                        ForEach(store.presets) { preset in
+                            Button(preset.name) { store.applyPreset(named: preset.name) }
+                        }
+                    }
+                    Menu("Delete") {
+                        ForEach(store.presets) { preset in
+                            Button(preset.name, role: .destructive) {
+                                store.deletePreset(named: preset.name)
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button("Save Current…", systemImage: "plus") { showingSavePreset = true }
+            } label: {
+                Label("Presets", systemImage: "tray.full")
+                    .font(.caption)
+            }
+        }
+        .padding(.horizontal, DS.Spacing.xs)
     }
 
     // MARK: Stage

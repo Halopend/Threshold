@@ -109,13 +109,39 @@ struct WarpOpsTests {
         #expect(carve.flags == 0) // no sign/flag field, structurally
     }
 
+    @Test("Bounding constructor packs shape/scale/softness + mode/placement flags")
+    func boundingConstructor() {
+        // Defaults: intersect + in-stack → no flags; strength 1 (survives the
+        // simplifier's strength==0 drop).
+        let inStack = ThreshWarpOp.bounding(shape: .octahedron, scale: 1.5)
+        #expect(inStack.kind == WarpKind.bounding.rawValue)
+        #expect(inStack.a == SIMD4<Float>(BoundingShape.octahedron.shapeCode, 1.5, 0.05, 0))
+        #expect(inStack.flags == 0)
+        #expect(inStack.strength == 1)
+
+        // Subtract + fixed sets both option bits.
+        let fixed = ThreshWarpOp.bounding(
+            shape: .icosahedron, scale: 0.8, mode: .subtract,
+            placement: .fixed, softness: 0.1, strength: 0.6)
+        #expect(fixed.a == SIMD4<Float>(BoundingShape.icosahedron.shapeCode, 0.8, 0.1, 0))
+        #expect(fixed.warpFlags.contains(.optionA)) // subtract
+        #expect(fixed.warpFlags.contains(.optionB)) // fixed
+        #expect(fixed.strength == 0.6)
+
+        // Shape code round-trips through the a.x storage.
+        for shape in BoundingShape.allCases {
+            let op = ThreshWarpOp.bounding(shape: shape, scale: 1)
+            #expect(BoundingShape(code: op.a.x) == shape)
+        }
+    }
+
     @Test("Payload field catalog covers every kind consistently")
     func payloadCatalog() {
         for kind in WarpKind.allCases {
             let fields = kind.payloadFields
-            // None and the reserved Bounding expose nothing; every real kind
+            // Only None exposes nothing; every real kind (Bounding included)
             // leads with the universally bindable strength.
-            if kind == .none || kind == .bounding {
+            if kind == .none {
                 #expect(fields.isEmpty)
                 continue
             }
@@ -154,6 +180,8 @@ struct WarpOpsTests {
         #expect(paths(.forearmCarve)["end"] == .b(.xyz))
         #expect(paths(.forearmCarve)["radius"] == .a(.w))
         #expect(paths(.forearmCarve)["softness"] == .b(.w))
+        #expect(paths(.bounding)["scale"] == .a(.y))
+        #expect(paths(.bounding)["softness"] == .a(.z))
     }
 
     @Test("Payload fields mint warp.slotN.field keys via the sanctioned factory")

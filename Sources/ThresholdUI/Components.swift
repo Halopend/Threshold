@@ -171,7 +171,15 @@ public struct EffectSliderRow: View {
                 .disabled(!enabled)
             switch trailing {
             case .value:
-                RowValueText(text: ValueFormatting.format(Float(value)))
+                EditableNumberText(
+                    display: ValueFormatting.format(Float(value)),
+                    value: value,
+                    range: range,
+                    commit: { newValue in
+                        onEditingChanged(true)
+                        value = newValue
+                        onEditingChanged(false)
+                    })
             case .toggle(let binding):
                 Toggle("", isOn: binding)
                     .labelsHidden()
@@ -231,6 +239,128 @@ struct RowValueText: View {
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
             .frame(width: RowMetrics.trailingWidth, alignment: .trailing)
+    }
+}
+
+/// A numeric readout that becomes an inline text field on double-click
+/// (double-tap on touch), so an exact value can be typed instead of dragged
+/// the slider to it. Commit with Return or by clicking away; Escape cancels
+/// and restores the previous value. The typed value is parsed and clamped to
+/// `range` before it reaches `commit`.
+///
+/// Appearance defaults to `RowValueText`'s geometry so it drops into the
+/// standard slider row; the modulation panels' smaller labels override
+/// `font`/`foreground`/`width`.
+struct EditableNumberText: View {
+    /// Formatted text shown when not editing (owns its own units, e.g. "%").
+    let display: String
+    /// Current numeric value, used to seed the editable draft.
+    let value: Double
+    /// Clamp applied to the parsed value on commit (nil = no clamp).
+    var range: ClosedRange<Double>? = nil
+    /// Called with the committed, clamped value.
+    let commit: (Double) -> Void
+
+    // Appearance — defaults match RowValueText (the common case).
+    var font: Font = .caption.monospacedDigit()
+    var foreground: AnyShapeStyle = AnyShapeStyle(.secondary)
+    /// Fixed cell width, or nil to size to content (modulation labels).
+    var width: CGFloat? = RowMetrics.trailingWidth
+    var alignment: Alignment = .trailing
+
+    @State private var isEditing = false
+    @State private var draft = ""
+    /// Set when Escape is pressed so the focus-loss handler skips committing.
+    @State private var cancelled = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Group {
+            if isEditing {
+                TextField("", text: $draft)
+                    .font(font)
+                    .foregroundStyle(foreground)
+                    .multilineTextAlignment(textAlignment)
+                    .textFieldStyle(.plain)
+                    .fixedSize(horizontal: width == nil, vertical: false)
+                    .focused($focused)
+                    .onSubmit(commitDraft)
+                    #if os(macOS)
+                    .onExitCommand(perform: cancelDraft)
+                    #endif
+                    .onChange(of: focused) { _, nowFocused in
+                        if !nowFocused { endedByFocusLoss() }
+                    }
+                    .onAppear {
+                        // Focus on the next runloop tick — setting it in the
+                        // same pass the field appears is unreliable.
+                        DispatchQueue.main.async { focused = true }
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.Radius.xs)
+                            .fill(Color.primary.opacity(0.08)))
+            } else {
+                Text(display)
+                    .font(font)
+                    .foregroundStyle(foreground)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2, perform: beginEditing)
+                    .help("Double-click to type a value")
+            }
+        }
+        .frame(width: width, alignment: alignment)
+    }
+
+    private var textAlignment: TextAlignment {
+        switch alignment {
+        case .leading, .leadingLastTextBaseline, .topLeading, .bottomLeading:
+            return .leading
+        case .trailing, .trailingLastTextBaseline, .topTrailing, .bottomTrailing:
+            return .trailing
+        default:
+            return .center
+        }
+    }
+
+    private func beginEditing() {
+        draft = Self.editText(value)
+        cancelled = false
+        isEditing = true
+    }
+
+    private func commitDraft() {
+        defer { isEditing = false }
+        guard let parsed = Double(draft.trimmingCharacters(in: .whitespaces)) else { return }
+        let clamped = range.map { min(max(parsed, $0.lowerBound), $0.upperBound) } ?? parsed
+        commit(clamped)
+    }
+
+    private func cancelDraft() {
+        cancelled = true
+        isEditing = false
+    }
+
+    /// The field lost focus (clicked away). Commit unless Escape cancelled it.
+    private func endedByFocusLoss() {
+        if cancelled {
+            cancelled = false
+            return
+        }
+        if isEditing { commitDraft() }
+    }
+
+    /// A clean, plain seed for the text field: an integer when the value is
+    /// whole, otherwise up to four decimals with trailing zeros trimmed. No
+    /// adaptive rounding or unit suffix — the user edits the raw number.
+    static func editText(_ v: Double) -> String {
+        if v == 0 { return "0" }
+        if v == v.rounded() && abs(v) < 1e12 { return String(format: "%.0f", v) }
+        var s = String(format: "%.4f", v)
+        if s.contains(".") {
+            while s.hasSuffix("0") { s.removeLast() }
+            if s.hasSuffix(".") { s.removeLast() }
+        }
+        return s
     }
 }
 
@@ -294,6 +424,7 @@ public enum DisplayIcons {
         case "Self-Similar Repeats": return "square.grid.3x3"
         case "Space Projection": return "globe"
         case "Hand & Distance": return "hand.raised"
+        case "Bounding": return "cube.transparent"
         default: return "square.stack.3d.up"
         }
     }

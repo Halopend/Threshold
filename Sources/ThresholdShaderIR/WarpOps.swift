@@ -103,13 +103,17 @@ public struct WarpFlags: OptionSet, Sendable, Hashable, Codable {
     public init(rawValue: UInt32) { self.rawValue = rawValue }
 
     /// `THRESH_WARP_FLAG_OPTION_A` — BoxFold: Hall of Mirrors;
-    /// HandAttract: pocket enabled.
+    /// HandAttract: pocket enabled; Bounding: subtract (carve solid out) vs
+    /// intersect (keep inside).
     public static let optionA = WarpFlags(rawValue: 1 << 0)
     /// `THRESH_WARP_FLAG_DRIVE_RIGHT` — geometry fields stamped from the
     /// RIGHT hand each frame (plan §4.3 spatial path; HandOpStamper).
     public static let driveRightHand = WarpFlags(rawValue: 1 << 1)
     /// `THRESH_WARP_FLAG_DRIVE_LEFT` — stamped from the LEFT hand.
     public static let driveLeftHand = WarpFlags(rawValue: 1 << 2)
+    /// `THRESH_WARP_FLAG_OPTION_B` — Bounding: fixed world-space placement
+    /// (clear = in-stack, clips the transformed frame at this slot).
+    public static let optionB = WarpFlags(rawValue: 1 << 3)
 }
 
 // MARK: - Payload field catalog
@@ -168,8 +172,14 @@ extension WarpKind {
     public var payloadFields: [WarpPayloadField] {
         let strength = WarpPayloadField("strength", .strength)
         switch self {
-        case .none, .bounding:
-            return [] // no-op / reserved — nothing to register
+        case .none:
+            return [] // no-op — nothing to register
+        case .bounding:
+            // Shape (a.x) + the mode/placement flags are structural (not
+            // smoothly modulated); scale, softness and strength are bindable.
+            return [strength,
+                    WarpPayloadField("scale", .a(.y)),
+                    WarpPayloadField("softness", .a(.z))]
         case .twist:
             return [strength, WarpPayloadField("axis", .a(.xyz))]
         case .bend:
@@ -237,6 +247,55 @@ extension WarpKind {
                     WarpPayloadField("softness", .b(.w))]
         }
     }
+}
+
+// MARK: - Bounding op configuration (§66)
+
+/// Shape choices for the Bounding warp op. Raw value is the `sdSolid` shape
+/// code stored in `ThreshWarpOp.a.x`; codes match the safety-bubble discrete
+/// presets (sphere 0, cube 1, tetra 2, octa 4, icosa 5, dodeca 6). The
+/// superquadric "rounded cube" (code 3) is deliberately not exposed.
+public enum BoundingShape: UInt32, CaseIterable, Sendable, Codable, Hashable {
+    case sphere = 0
+    case tetrahedron = 2
+    case cube = 1
+    case octahedron = 4
+    case dodecahedron = 6
+    case icosahedron = 5
+
+    /// The `sdSolid` shape code stored in `ThreshWarpOp.a.x`.
+    public var shapeCode: Float { Float(rawValue) }
+
+    /// Nearest shape for a stored `a.x` code (rounds; unknown → sphere).
+    public init(code: Float) {
+        let rounded = code.rounded()
+        let raw = rounded >= 0 ? UInt32(rounded) : 0
+        self = BoundingShape(rawValue: raw) ?? .sphere
+    }
+
+    /// Editor-facing name.
+    public var uiName: String {
+        switch self {
+        case .sphere: return "Sphere"
+        case .tetrahedron: return "Tetrahedron"
+        case .cube: return "Cube"
+        case .octahedron: return "Octahedron"
+        case .dodecahedron: return "Dodecahedron"
+        case .icosahedron: return "Icosahedron"
+        }
+    }
+}
+
+/// The CSG operation a bound performs against the fractal.
+public enum BoundingMode: Sendable, Hashable {
+    case intersect   // keep the fractal INSIDE the solid (default)
+    case subtract    // carve the solid OUT of the fractal
+}
+
+/// Where a bound clips: the transformed frame at its slot, or world space.
+public enum BoundingPlacement: Sendable, Hashable {
+    case inStack     // clip space AS TRANSFORMED at this slot (default)
+    case fixed       // clip in world space (the UI keeps fixed ops at the end)
 }
 
 // MARK: - Typed constructors
@@ -410,8 +469,29 @@ extension ThreshWarpOp {
              b: SIMD4(to, softness))
     }
 
-    // NOTE: WarpKind.bounding (66) is reserved (clip/fog op; not implemented
-    // in Phase 2) — deliberately no constructor.
+    /// 66 — clip the fractal to a platonic solid (docs/op-semantics.md §66).
+    /// `mode` intersect (keep inside) vs subtract (carve out); `placement`
+    /// in-stack (clips the transformed frame at this slot) vs fixed (world
+    /// space; the UI keeps fixed ops at the stack end). `scale` is the solid
+    /// half-extent, `softness` the CSG blend width, `strength` blends
+    /// identity→full clip. `strength` defaults to 1 so the simplifier's
+    /// strength==0 drop rule does not delete a freshly added bound.
+    public static func bounding(
+        shape: BoundingShape,
+        scale: Float,
+        mode: BoundingMode = .intersect,
+        placement: BoundingPlacement = .inStack,
+        softness: Float = 0.05,
+        strength: Float = 1
+    ) -> ThreshWarpOp {
+        var flags: WarpFlags = []
+        if mode == .subtract { flags.insert(.optionA) }
+        if placement == .fixed { flags.insert(.optionB) }
+        return make(.bounding,
+                    flags: flags,
+                    strength: strength,
+                    a: SIMD4(shape.shapeCode, scale, softness, 0))
+    }
 }
 
 // MARK: - Internal swizzle helper

@@ -76,6 +76,9 @@ public final class GPUContext: @unchecked Sendable {
     let marchAuxPipeline: MTLComputePipelineState
     let evalOpsPipeline: MTLComputePipelineState
     let evalDistPipeline: MTLComputePipelineState
+    /// In-stack Bounding fold (§66): captures during the point walk, folds into
+    /// a base distance. Matches OpsEvaluator.applyBounds / the CPU mapBounds.
+    let evalBoundsPipeline: MTLComputePipelineState
     let evalDEPipeline: MTLComputePipelineState
 
     /// DE table for `march_offscreen`: index 0 = mandelbox, 1 = mandelbulb.
@@ -179,6 +182,9 @@ public final class GPUContext: @unchecked Sendable {
             deFunctions: deFunctions)
         self.evalDistPipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "eval_dist",
+            deFunctions: deFunctions)
+        self.evalBoundsPipeline = try Self.makeLinkedPipeline(
+            device: device, library: library, kernelName: "eval_bounds",
             deFunctions: deFunctions)
         self.evalDEPipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "eval_de",

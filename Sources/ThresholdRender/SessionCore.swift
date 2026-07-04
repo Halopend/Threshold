@@ -230,6 +230,20 @@ final class SessionCore {
 
         bindingEngine.apply(signals: signals, engine: engine, now: clock.now)
 
+        // Live audio levels for the Music-pane meter. Read here on the render
+        // thread (the SignalTable's read path is render-thread-confined — the
+        // same thread the resolver reads on) and shipped out on the snapshot;
+        // the UI never touches the table. Cheap: seven seqlock reads.
+        func audioLevel(_ id: SignalID) -> Float { signals.read(id: id)?.value.x ?? 0 }
+        let audioLevels = AudioLevels(
+            rms: audioLevel(.audioRMS),
+            bandLow: audioLevel(.audioBandLow),
+            bandMid: audioLevel(.audioBandMid),
+            bandHigh: audioLevel(.audioBandHigh),
+            centroid: audioLevel(.audioCentroid),
+            onset: audioLevel(.audioOnset),
+            bandUser: audioLevel(.audioBandUser))
+
         // Animation lane writes (plan §3.2). Content time: delta is already 0
         // while paused; timeScale scales playback like integrators.
         animationPlayer.step(engine: engine, scaledDelta: clock.delta * clock.timeScale)
@@ -323,7 +337,8 @@ final class SessionCore {
             animation: animationPlayer.playbackState,
             dynamicEntries: dynamicEntries,
             scaleOctave: octave,
-            externalProgram: externalProgram)
+            externalProgram: externalProgram,
+            audioLevels: audioLevels)
     }
 
     /// Removes and returns the latched image-export request, if any.

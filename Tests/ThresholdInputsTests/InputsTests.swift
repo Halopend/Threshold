@@ -96,6 +96,45 @@ struct AudioDSPFeatureTests {
         AudioDSP(sampleRate: sampleRate, fftSize: fftSize).process(sine(frequency)).centroid
     }
 
+    // MARK: - Focus Band (arbitrary-window bandLevel)
+
+    @Test("bandLevel: full-scale sine reads ≈1 inside its window, ≈0 outside")
+    func focusBandPlacement() {
+        let dsp = AudioDSP(sampleRate: sampleRate, fftSize: fftSize)
+        _ = dsp.process(sine(440))  // populates the retained spectrum
+
+        // 440 Hz sits inside 300–600 Hz and outside 2–4 kHz.
+        let inBand = dsp.bandLevel(lowHz: 300, highHz: 600)
+        let outBand = dsp.bandLevel(lowHz: 2000, highHz: 4000)
+        #expect(inBand > 0.8 && inBand < 1.1)
+        #expect(outBand < 0.05)
+        #expect(inBand > outBand * 10)
+    }
+
+    @Test("bandLevel: inverted and degenerate ranges are safe")
+    func focusBandGuards() {
+        let dsp = AudioDSP(sampleRate: sampleRate, fftSize: fftSize)
+        _ = dsp.process(sine(440))
+
+        // Inverted edges are swapped, not skipped — same result as ordered.
+        let ordered = dsp.bandLevel(lowHz: 300, highHz: 600)
+        let inverted = dsp.bandLevel(lowHz: 600, highHz: 300)
+        #expect(abs(ordered - inverted) < 1e-6)
+        // low == high collapses to the single bin CONTAINING that frequency
+        // (you can't resolve finer than one FFT bin) — finite and ≥ 0, never a
+        // crash. At 440 Hz that bin holds the tone, so it reads its energy.
+        let point = dsp.bandLevel(lowHz: 440, highHz: 440)
+        #expect(point.isFinite && point >= 0)
+        // A degenerate window at 0 Hz (DC, always excluded) reads 0.
+        #expect(dsp.bandLevel(lowHz: 0, highHz: 0) == 0)
+    }
+
+    @Test("bandLevel before any process is zero")
+    func focusBandBeforeProcess() {
+        let dsp = AudioDSP(sampleRate: sampleRate, fftSize: fftSize)
+        #expect(dsp.bandLevel(lowHz: 100, highHz: 8000) == 0)
+    }
+
     @Test("Silence: every feature is zero")
     func silenceIsZero() {
         let dsp = AudioDSP(sampleRate: sampleRate, fftSize: fftSize)

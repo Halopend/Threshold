@@ -36,6 +36,19 @@ private func randomForearmCarve(_ rng: inout SplitMix64, sign: Float) -> ThreshW
                   b: SIMD4(end, rng.float(in: 0.05...0.4)))
 }
 
+/// A FIXED (world-space) Bounding op — a real distance op. a.x shape,
+/// a.y scale, a.z softness; b.xyz world center; OPTION_A subtract, OPTION_B set.
+private func randomFixedBound(_ rng: inout SplitMix64, subtract: Bool) -> ThreshWarpOp {
+    let shapes: [Float] = [0, 1, 2, 4, 5, 6]  // sphere, cube, tetra, octa, icosa, dodeca
+    let shape = shapes[rng.int(in: 0...(shapes.count - 1))]
+    let center = rng.point(in: -0.6...0.6)
+    return makeOp(WK.bounding,
+                  s: rng.float(in: 0.2...1.0),
+                  a: SIMD4(shape, rng.float(in: 0.4...1.5), rng.float(in: 0.03...0.2), 0),
+                  b: SIMD4(center, 0),
+                  flags: WK.flagOptionB | (subtract ? WK.flagOptionA : 0))
+}
+
 @Suite("Distance-op CPU/GPU equivalence", .serialized)
 struct DistanceOpsEquivalenceTests {
 
@@ -116,24 +129,49 @@ struct DistanceOpsEquivalenceTests {
             stacks.append(("distance stack #\(index)", ops))
         }
         // Point ops interleaved in the march stack must be invisible to the
-        // distance pipeline; Bounding (66) is reserved passthrough.
-        stacks.append(("mixed with point ops + bounding", [
+        // distance pipeline. An IN-STACK Bounding op (no OPTION_B) is likewise
+        // invisible HERE: it is captured during the point walk and folded in
+        // mapScene, not in applyDistanceOps (see BoundingInStackEquivalence).
+        stacks.append(("mixed with point ops + in-stack bounding", [
             makeOp(WK.twist, s: 0.8, a: SIMD4(0, 1, 0, 0)),
             randomHandAttract(&rng, sign: 1, pocket: true),
-            makeOp(WK.bounding, s: 1, a: SIMD4(1, 2, 3, 4)),
+            makeOp(WK.bounding, s: 1, a: SIMD4(1, 2, 0.05, 0)),
             randomForearmCarve(&rng, sign: -1),
             makeOp(WK.mirror, s: 1),
         ]))
         try compare(stacks, rng: &rng, evaluator: evaluator)
 
-        // Bounding alone is exact passthrough on both sides.
+        // An in-stack bound (no OPTION_B) passes distances through the distance
+        // pass untouched on both sides (its clip lives in mapScene). Fixed
+        // bounds do real CSG — see boundingFixedVariants.
         let points = (0..<4).map { _ in rng.point() }
         let distances = (0..<4).map { _ in rng.float(in: -1...1) }
         let gpu = try evaluator.applyDistanceOps(
             points: points, distances: distances,
-            ops: [makeOp(WK.bounding, s: 0.7, a: SIMD4(1, 1, 1, 1))])
+            ops: [makeOp(WK.bounding, s: 0.7, a: SIMD4(1, 1, 0.05, 0))])
         for i in points.indices {
-            #expect(gpu[i] == distances[i], "Bounding must pass distances through untouched")
+            #expect(gpu[i] == distances[i],
+                    "In-stack Bounding must pass distances through applyDistanceOps untouched")
         }
+    }
+
+    @Test(.enabled(if: GPU.available))
+    func boundingFixedVariants() throws {
+        let ctx = try GPU.ctx()
+        let evaluator = try OpsEvaluator(context: ctx)
+        var rng = SplitMix64(seed: 0xD157_0004)
+
+        var stacks: [(name: String, ops: [ThreshWarpOp])] = []
+        for index in 0..<8 {
+            stacks.append(("fixed intersect #\(index)", [randomFixedBound(&rng, subtract: false)]))
+            stacks.append(("fixed subtract #\(index)", [randomFixedBound(&rng, subtract: true)]))
+        }
+        // A fixed bound composed with a hand carve — the distance pass applies
+        // them in stack order; GPU and CPU must agree.
+        stacks.append(("fixed bound + carve", [
+            randomFixedBound(&rng, subtract: false),
+            randomForearmCarve(&rng, sign: 1),
+        ]))
+        try compare(stacks, rng: &rng, evaluator: evaluator)
     }
 }

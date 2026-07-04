@@ -776,9 +776,17 @@ public struct StatsSection: View {
                 HStack {
                     Text("Render Quality")
                     Slider(value: renderQuality, in: 0.1...1.0)
-                    Text(String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100))
-                        .monospacedDigit().foregroundStyle(.secondary)
-                        .frame(minWidth: 44, alignment: .trailing)
+                    EditableNumberText(
+                        display: String(format: "%.0f%%", mirror.renderTuning.manualRenderScale * 100),
+                        value: Double(mirror.renderTuning.manualRenderScale * 100),
+                        range: 10...100,
+                        commit: { pct in
+                            var next = mirror.renderTuning
+                            next.manualRenderScale = Float(pct / 100)
+                            mirror.setRenderTuning(next)
+                        },
+                        font: .body.monospacedDigit(),
+                        width: 44)
                 }
                 HStack {
                     Text(autoQuality
@@ -936,6 +944,47 @@ public enum WarpStackEdit {
         edited.insert(op, at: destination)
         return edited
     }
+
+    /// Set component `comp` (0=x, 1=y, 2=z, 3=w) of payload `a` for the op at
+    /// `index`. Backs the Bounding op's shape (a.x) / scale (a.y) / softness
+    /// (a.z) editors. Out-of-range index or component returns the stack as-is.
+    public static func settingA(
+        _ stack: [WarpOpDTO], at index: Int, component comp: Int, to value: Float
+    ) -> [WarpOpDTO] {
+        guard stack.indices.contains(index), stack[index].a.indices.contains(comp) else {
+            return stack
+        }
+        var edited = stack
+        edited[index].a[comp] = value
+        return edited
+    }
+
+    /// Set or clear a single `flags` bit for the op at `index` (e.g. Bounding's
+    /// subtract bit, `WarpFlags.optionA`).
+    public static func settingFlag(
+        _ stack: [WarpOpDTO], at index: Int, bit: UInt32, on: Bool
+    ) -> [WarpOpDTO] {
+        guard stack.indices.contains(index) else { return stack }
+        var edited = stack
+        if on { edited[index].flags |= bit } else { edited[index].flags &= ~bit }
+        return edited
+    }
+
+    /// Toggle a Bounding op's FIXED placement (`WarpFlags.optionB`). Turning
+    /// FIXED on also moves the op to the END of the stack: a fixed bound clips
+    /// in world space, so its slot no longer matters and the render path folds
+    /// it after all in-stack bounds. Turning it off leaves the op in place.
+    public static func settingBoundFixed(
+        _ stack: [WarpOpDTO], at index: Int, fixed: Bool
+    ) -> [WarpOpDTO] {
+        guard stack.indices.contains(index) else { return stack }
+        var edited = settingFlag(stack, at: index, bit: WarpFlags.optionB.rawValue, on: fixed)
+        if fixed, index != edited.count - 1 {
+            let op = edited.remove(at: index)
+            edited.append(op)
+        }
+        return edited
+    }
 }
 
 // MARK: - Warp op display metadata
@@ -975,7 +1024,7 @@ extension WarpKind {
 /// The add-menu structure: constructible op kinds grouped by family, each
 /// with a default-payload builder that goes through the IR's typed
 /// constructors (WarpOps.swift) and back through `WarpOpDTO(op:)`.
-/// `none` and `bounding` are excluded — no constructor exists (reserved).
+/// Only `none` is excluded — it has no constructor (identity/no-op).
 public enum WarpMenu {
     public struct Item: Identifiable, Sendable {
         public let name: String
@@ -1003,7 +1052,7 @@ public enum WarpMenu {
     }
 
     /// The family a constructible op kind belongs to (display metadata for
-    /// op rows). Reserved kinds (`none`, `bounding`) have no family.
+    /// op rows). Only `none` has no family.
     public static func familyName(forKindRaw raw: UInt32) -> String? {
         families.first { $0.items.contains { $0.kindRawValue == raw } }?.name
     }
@@ -1055,6 +1104,11 @@ public enum WarpMenu {
                 WarpOpDTO(op: .forearmCarve(
                     from: [0, 0, 0], to: [0, 1, 0], radius: 0.2, softness: 0.1,
                     strength: 1))
+            },
+        ]),
+        Family(name: "Bounding", items: [
+            Item(.bounding) {
+                WarpOpDTO(op: .bounding(shape: .sphere, scale: 1))
             },
         ]),
     ]
@@ -1202,7 +1256,11 @@ struct StopRow: View {
             ColorPicker("", selection: colorBinding, supportsOpacity: false)
                 .labelsHidden()
             Slider(value: positionBinding, in: 0...1)
-            RowValueText(text: ValueFormatting.format(stop.position))
+            EditableNumberText(
+                display: ValueFormatting.format(stop.position),
+                value: Double(stop.position),
+                range: 0...1,
+                commit: { mirror.setPalette(PaletteEdit.setPosition(mirror.palette, at: index, to: Float($0))) })
             Button(role: .destructive) {
                 mirror.setPalette(PaletteEdit.deleting(mirror.palette, at: index))
             } label: {
@@ -1410,8 +1468,10 @@ struct WarpOpRow: View {
     private var kind: WarpKind? { WarpKind(rawValue: op.kind) }
 
     /// Distance ops use signed strength (attract vs repel); point ops blend.
+    /// Bounding blends identity→full clip, so it stays in 0...1.
     private var strengthRange: ClosedRange<Float> {
-        (kind?.isDistanceOp ?? false) ? -2...2 : 0...2
+        if kind == .bounding { return 0...1 }
+        return (kind?.isDistanceOp ?? false) ? -2...2 : 0...2
     }
 
     private var familyIcon: String {
@@ -1459,7 +1519,11 @@ struct WarpOpRow: View {
                             mirror.warpStack, at: index, to: Float(newStrength)))
                     }
                 ), in: Double(strengthRange.lowerBound)...Double(strengthRange.upperBound))
-                RowValueText(text: ValueFormatting.format(op.strength))
+                EditableNumberText(
+                    display: ValueFormatting.format(op.strength),
+                    value: Double(op.strength),
+                    range: Double(strengthRange.lowerBound)...Double(strengthRange.upperBound),
+                    commit: { mirror.setWarpStack(WarpStackEdit.settingStrength(mirror.warpStack, at: index, to: Float($0))) })
             }
         }
         .padding(DS.Spacing.sm)

@@ -67,6 +67,18 @@ public final class AudioAnalyzer {
         set { sink.state.withLock { $0.timebaseOffset = newValue } }
     }
 
+    /// The user's tunable Focus Band. Published into `audio.band.user` each hop
+    /// while `enabled`; settable any time (including while running). The app
+    /// shell mirrors this from the UI / a loaded scene (it is not render-session
+    /// state — see AudioFocusBand.swift).
+    public var focusBand: AudioFocusBand {
+        get { sink.state.withLock { $0.focusBand } }
+        set { sink.state.withLock { $0.focusBand = newValue } }
+    }
+
+    /// Convenience for the app-shell bridge (mirror/scene → analyzer).
+    public func setFocusBand(_ band: AudioFocusBand) { focusBand = band }
+
     /// - Parameters:
     ///   - signals: table the `audio.*` namespace publishes into; register
     ///     `SignalID.standardAudio` (at least) when building it.
@@ -114,12 +126,15 @@ public final class AudioAnalyzer {
         isRunning = true
     }
 
-    /// Remove the tap and stop the engine. Idempotent.
+    /// Remove the tap and stop the engine. Idempotent. Publishes one silent
+    /// frame so the `audio.*` signals fall to rest — meters drop to zero and
+    /// momentary music routes release instead of freezing on the last value.
     public func stop() {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
+        sink.publishSilence()
     }
 }
 
@@ -137,6 +152,7 @@ private final class TapSink: Sendable {
         var samplesProcessed: Int = 0
         var sampleRate: Double = 44_100
         var timebaseOffset: Double = 0
+        var focusBand: AudioFocusBand = .default
 
         mutating func prepare(sampleRate: Double) {
             dsp = AudioDSP(sampleRate: sampleRate, fftSize: AudioAnalyzer.hopSize)
@@ -190,8 +206,30 @@ private final class TapSink: Sendable {
                 let timestamp =
                     Double(s.samplesProcessed) / s.sampleRate + s.timebaseOffset
                 AudioSignalPublisher.publish(features, into: signals, timestamp: timestamp)
+
+                // Focus Band: an arbitrary window over THIS hop's spectrum
+                // (dsp.bandLevel reads the frame just processed). Only when
+                // enabled — a disabled band leaves audio.band.user to go stale.
+                let band = s.focusBand
+                if band.enabled {
+                    let level = dsp.bandLevel(lowHz: band.lowHz, highHz: band.highHz) * band.gain
+                    signals.publish(
+                        id: .audioBandUser, value: SIMD4(level, 0, 0, 0),
+                        confidence: 1, timestamp: timestamp)
+                }
             }
             if consumed > 0 { s.pending.removeFirst(consumed) }
+        }
+    }
+
+    /// Publish one silent frame (all `audio.*` → 0) at the current sample
+    /// clock, so meters and momentary routes return to rest when capture stops.
+    func publishSilence() {
+        state.withLock { s in
+            let timestamp = Double(s.samplesProcessed) / s.sampleRate + s.timebaseOffset
+            AudioSignalPublisher.publish(.zero, into: signals, timestamp: timestamp)
+            signals.publish(
+                id: .audioBandUser, value: .zero, confidence: 1, timestamp: timestamp)
         }
     }
 }

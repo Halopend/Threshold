@@ -482,12 +482,28 @@ final class SessionGPUEncoder {
         // dropped frame.
         let scale = min(max(request.renderScale, 0), 1)
         var fx: TemporalUpscaler.Pass?
+        var effectiveScale = scale
         if program == nil, scale < 0.985, let upscaler {
+            // MetalFX temporal scaling caps at `maxScaleFactor`× per dimension
+            // (3×) with a 32px minimum input edge. A request below that floor
+            // (Render Quality under ~33%) used to fail `prepare`'s ratio guard
+            // and fall through to a FULL-RESOLUTION direct render — spiking GPU
+            // cost precisely when the user asked for LESS, which can saturate
+            // the GPU and stall the UI. Clamp the march input UP to the
+            // smallest MetalFX-supported size instead, so low quality stays
+            // cheap and the upscaler keeps engaging rather than disengaging.
+            let floor = TemporalUpscaler.minimumInputSize(
+                forOutputWidth: texture.width, height: texture.height)
+            let inputW = max(Int((Float(texture.width) * scale).rounded()), floor.width)
+            let inputH = max(Int((Float(texture.height) * scale).rounded()), floor.height)
             fx = upscaler.prepare(
-                inputWidth: max(Int((Float(texture.width) * scale).rounded()), 1),
-                inputHeight: max(Int((Float(texture.height) * scale).rounded()), 1),
+                inputWidth: inputW,
+                inputHeight: inputH,
                 outputWidth: texture.width,
                 outputHeight: texture.height)
+            // Report the scale actually marched (clamped), not the request, so
+            // the readout reflects reality instead of an unreachable target.
+            if fx != nil { effectiveScale = Float(inputW) / Float(texture.width) }
         }
         let auxOutputs = fx != nil
         let marchTarget = fx?.color ?? texture
@@ -504,7 +520,7 @@ final class SessionGPUEncoder {
         // that honestly (a 100% readout despite a governor request IS the
         // signal that the resolution lever is a no-op here).
         var diagnostics = RenderDiagnostics(
-            renderScale: auxOutputs ? scale : 1, upscaling: auxOutputs)
+            renderScale: auxOutputs ? effectiveScale : 1, upscaling: auxOutputs)
         if program != nil {
             diagnostics.pipeline = .external
         } else {

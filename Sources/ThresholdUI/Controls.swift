@@ -173,7 +173,11 @@ struct FloatSlotRow: View {
                     mirror.endEdit(slot: slot)
                 }
             }
-            RowValueText(text: ValueFormatting.format(mirror.displayValue(slot: slot)))
+            EditableNumberText(
+                display: ValueFormatting.format(mirror.displayValue(slot: slot)),
+                value: Double(mirror.displayValue(slot: slot)),
+                range: Double(range.lowerBound)...Double(range.upperBound),
+                commit: { mirror.updateEdit(slot: slot, target: Float($0)) })
         }
         .frame(minHeight: RowMetrics.height)
     }

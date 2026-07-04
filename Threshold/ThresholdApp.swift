@@ -199,6 +199,14 @@ final class AppModel {
         }
     }
 
+    /// Bridge a Focus Band edit to BOTH the mic analyzer (which computes it) and
+    /// the mirror (the UI's observable copy). App-shell state, not render-session
+    /// state (AudioFocusBand.swift).
+    func setFocusBand(_ band: AudioFocusBand) {
+        audio.setFocusBand(band)
+        mirror.setFocusBand(band)
+    }
+
     // MARK: File open (plan §7.4)
 
     /// Open a .threshscene / .threshanim from a security-scoped URL.
@@ -246,6 +254,10 @@ final class AppModel {
                     embedded.hash = ExternalDELoader.sourceHash(embedded.source)
                     envelope.embeddedDE = embedded
                 }
+                // Focus Band is app-shell-owned scene content — the render-side
+                // capture doesn't know it. Persist it only when customized so
+                // default scenes stay clean.
+                if mirror.focusBand != .default { envelope.focusBand = mirror.focusBand }
                 appLog.info("captureScene: landed")
                 return envelope
             }
@@ -294,6 +306,11 @@ final class AppModel {
     }
 
     private func apply(scene envelope: SceneEnvelope, from filename: String) {
+        // Focus Band is app-shell/analyzer state — push it to the mic + UI for
+        // BOTH the embedded and non-embedded paths (mirror.applyScene seeds the
+        // observable in the non-embedded path, but the analyzer needs it either
+        // way and the embedded path skips applyScene).
+        setFocusBand(envelope.focusBand ?? .default)
         guard envelope.embeddedDE != nil else {
             mirror.applyScene(envelope)
             return
@@ -409,7 +426,8 @@ struct MainView: View {
                         load: { model.open(url: $0) }),
                     audioActions: AudioActions(
                         isEnabled: { model.audioEnabled },
-                        setEnabled: { model.setAudioEnabled($0) }))
+                        setEnabled: { model.setAudioEnabled($0) },
+                        setFocusBand: { model.setFocusBand($0) }))
             }
             .frame(width: 340)
             .fileImporter(
@@ -501,7 +519,7 @@ final class VisionAppModel {
     /// when the user edits a binding (store.onChange) and when the fractal
     /// changes (VisionMainView observes `mirror.deKey`).
     func refreshGestureBindings() {
-        hands.setBindings(gestureStore.table(forFractal: mirror.deKey))
+        hands.setBindings(gestureStore.resolvedTable(forFractal: mirror.deKey))
     }
 
     init() throws {
@@ -567,6 +585,13 @@ final class VisionAppModel {
         }
     }
 
+    /// Bridge a Focus Band edit to the mic analyzer + the mirror (app-shell
+    /// state, not render-session state — AudioFocusBand.swift).
+    func setFocusBand(_ band: AudioFocusBand) {
+        audio.setFocusBand(band)
+        mirror.setFocusBand(band)
+    }
+
     /// Same open flow as the desktop shell (plan §7.4).
     func open(url: URL) {
         let secured = url.startAccessingSecurityScopedResource()
@@ -575,6 +600,9 @@ final class VisionAppModel {
             let data = try Data(contentsOf: url)
             switch try ThresholdFile.decode(data, filename: url.lastPathComponent) {
             case .scene(let envelope):
+                // Focus Band → mic + UI for both the embedded and non-embedded
+                // paths (see the desktop shell's apply(scene:)).
+                setFocusBand(envelope.focusBand ?? .default)
                 guard envelope.embeddedDE != nil else {
                     mirror.applyScene(envelope)
                     return
@@ -617,6 +645,7 @@ final class VisionAppModel {
                     embedded.hash = ExternalDELoader.sourceHash(embedded.source)
                     envelope.embeddedDE = embedded
                 }
+                if mirror.focusBand != .default { envelope.focusBand = mirror.focusBand }
                 return envelope
             }
             try? await Task.sleep(for: .milliseconds(25))
@@ -697,7 +726,8 @@ struct VisionMainView: View {
                     load: { model.open(url: $0) }),
                 audioActions: AudioActions(
                     isEnabled: { model.audioEnabled },
-                    setEnabled: { model.setAudioEnabled($0) }),
+                    setEnabled: { model.setAudioEnabled($0) },
+                    setFocusBand: { model.setFocusBand($0) }),
                 gestureStore: model.gestureStore)
                 // Keep the tracker's bindings in sync with the active fractal.
                 .onAppear { model.refreshGestureBindings() }

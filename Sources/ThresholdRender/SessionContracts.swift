@@ -193,6 +193,10 @@ public struct RenderSnapshot: Sendable {
     /// What the live encoder did this frame (pipeline kind, compile status,
     /// render scale). Default on offscreen/test paths that don't specialize.
     public let diagnostics: RenderDiagnostics
+    /// Live audio feature levels (audio.* signals) sampled this frame — the
+    /// Music-pane meter's source (the UI must not read the SignalTable directly;
+    /// see AudioLevels.swift). `.zero` on paths with no audio.
+    public let audioLevels: AudioLevels
 
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
@@ -201,7 +205,8 @@ public struct RenderSnapshot: Sendable {
         animation: AnimationPlaybackState = .idle,
         dynamicEntries: [CatalogEntry] = [],
         scaleOctave: Int32 = 0,
-        diagnostics: RenderDiagnostics = RenderDiagnostics()
+        diagnostics: RenderDiagnostics = RenderDiagnostics(),
+        audioLevels: AudioLevels = .zero
     ) {
         self.resolved = resolved
         self.frameIndex = frameIndex
@@ -216,6 +221,7 @@ public struct RenderSnapshot: Sendable {
         self.dynamicEntries = dynamicEntries
         self.scaleOctave = scaleOctave
         self.diagnostics = diagnostics
+        self.audioLevels = audioLevels
     }
 }
 

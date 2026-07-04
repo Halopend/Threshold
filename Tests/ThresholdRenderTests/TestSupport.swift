@@ -101,8 +101,11 @@ enum WK {
     static let bounding = UInt32(ThreshWarpKindBounding.rawValue)
 
     /// THRESH_WARP_FLAG_OPTION_A — the shifted-literal macro does not import
-    /// into Swift; value pinned here (BoxFold: HoM, HandAttract: pocket).
+    /// into Swift; value pinned here (BoxFold: HoM, HandAttract: pocket,
+    /// Bounding: subtract).
     static let flagOptionA: UInt32 = 1 << 0
+    /// THRESH_WARP_FLAG_OPTION_B — Bounding: FIXED world-space placement.
+    static let flagOptionB: UInt32 = 1 << 3
 
     static let allPointKinds: [UInt32] = [
         twist, bend, ripple, mirror, boxFold, planeFold, kaleidoscope, coxeter,

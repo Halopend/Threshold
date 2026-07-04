@@ -226,22 +226,64 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
 @Test func setStoresPerFractalAndPrunesEmpty() {
     var set = GestureBindingSet()
     let src = GestureSource.tapThumb(hand: .right, finger: .index)
-    set.setBinding(.vector(.native(ParamKey("de.a.pos"))), for: src, fractal: "mandelbulb")
-    #expect(set.binding(for: src, fractal: "mandelbulb") != nil)
-    #expect(set.binding(for: src, fractal: "mandelbox") == nil)   // isolated per fractal
+    set.setBinding(.vector(.native(ParamKey("de.a.pos"))), for: src, scope: .fractal("mandelbulb"))
+    #expect(set.resolvedBinding(for: src, fractal: "mandelbulb") != nil)
+    #expect(set.resolvedBinding(for: src, fractal: "mandelbox") == nil)   // isolated per fractal
 
     // Clearing the last binding prunes the fractal's table entirely.
-    set.setBinding(nil, for: src, fractal: "mandelbulb")
+    set.setBinding(nil, for: src, scope: .fractal("mandelbulb"))
     #expect(set.isEmpty)
 }
 
 @Test func setRoundTripsThroughJSON() throws {
     var set = GestureBindingSet()
     set.setBinding(.scalar(ParamKey("engine.aoStrength")),
-                   for: .fist(hand: .left), fractal: "mandelbox")
+                   for: .fist(hand: .left), scope: .fractal("mandelbox"))
     set.setBinding(.vector(.grouped(x: ParamKey("a.x"), y: nil, z: ParamKey("a.z"))),
-                   for: .swipe(hand: .right), fractal: "mandelbox")
+                   for: .swipe(hand: .right), scope: .global)
     let data = try JSONEncoder().encode(set)
     let decoded = try JSONDecoder().decode(GestureBindingSet.self, from: data)
     #expect(decoded == set)
+}
+
+// Global vs per-fractal scope -----------------------------------------------
+
+@Test func globalBindingAppliesToAllFractalsUntilOverridden() {
+    var set = GestureBindingSet()
+    let src = GestureSource.tapThumb(hand: .right, finger: .index)
+    set.setBinding(.scalar(ParamKey("g")), for: src, scope: .global)
+    // Global reaches every fractal.
+    #expect(set.resolvedBinding(for: src, fractal: "mandelbulb") == .scalar(ParamKey("g")))
+    #expect(set.resolvedBinding(for: src, fractal: "mandelbox") == .scalar(ParamKey("g")))
+    #expect(set.scope(of: src, fractal: "mandelbulb") == .global)
+
+    // A fractal-specific binding overrides global for THAT fractal only.
+    set.setBinding(.scalar(ParamKey("mb")), for: src, scope: .fractal("mandelbox"))
+    #expect(set.resolvedBinding(for: src, fractal: "mandelbox") == .scalar(ParamKey("mb")))
+    #expect(set.resolvedBinding(for: src, fractal: "mandelbulb") == .scalar(ParamKey("g")))
+    #expect(set.scope(of: src, fractal: "mandelbox") == .fractal("mandelbox"))
+}
+
+@Test func resolvedTableMergesGlobalUnderFractal() {
+    var set = GestureBindingSet()
+    let a = GestureSource.fist(hand: .left)
+    let b = GestureSource.fist(hand: .right)
+    set.setBinding(.scalar(ParamKey("ga")), for: a, scope: .global)
+    set.setBinding(.scalar(ParamKey("gb")), for: b, scope: .global)
+    set.setBinding(.scalar(ParamKey("fb")), for: b, scope: .fractal("mbox"))
+
+    let merged = set.resolvedTable(forFractal: "mbox")
+    #expect(merged.binding(for: a) == .scalar(ParamKey("ga")))   // global survives
+    #expect(merged.binding(for: b) == .scalar(ParamKey("fb")))   // fractal wins
+}
+
+@Test func setScopeMovesBindingBetweenScopes() {
+    var set = GestureBindingSet()
+    let src = GestureSource.swipe(hand: .left)
+    set.setBinding(.scalar(ParamKey("p")), for: src, scope: .fractal("mbox"))
+    // Promote to global — leaves the fractal scope, lands in global.
+    set.setScope(.global, for: src, fractal: "mbox")
+    #expect(set.binding(for: src, scope: .fractal("mbox")) == nil)
+    #expect(set.binding(for: src, scope: .global) == .scalar(ParamKey("p")))
+    #expect(set.resolvedBinding(for: src, fractal: "anything") == .scalar(ParamKey("p")))
 }

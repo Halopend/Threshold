@@ -47,6 +47,24 @@ struct SimplifierRuleTests {
         #expect(simplified.first?.strength == 0.5)
     }
 
+    @Test("Bounding: default survives; strength-0 dropped; adjacent bounds never merge")
+    func boundingSimplify() {
+        // The constructor's default strength (1) must survive rule 1 — a bound
+        // that defaulted to strength 0 would silently vanish on every edit.
+        let keep = WarpSimplifier.simplify([.bounding(shape: .cube, scale: 1)])
+        #expect(keep.count == 1)
+        #expect(keep.first?.kind == WarpKind.bounding.rawValue)
+        // strength == 0 is a no-op → dropped.
+        #expect(WarpSimplifier.simplify(
+            [.bounding(shape: .cube, scale: 1, strength: 0)]).isEmpty)
+        // A bound is not idempotent — two identical adjacent bounds must not
+        // collapse (that would drop a real CSG application).
+        #expect(WarpSimplifier.simplify([
+            .bounding(shape: .cube, scale: 1),
+            .bounding(shape: .cube, scale: 1),
+        ]).count == 2)
+    }
+
     @Test("rule 2: adjacent identical full-strength Mirror pair collapses")
     func mirrorPairCollapses() {
         let stack: [ThreshWarpOp] = [.mirror(strength: 1), .mirror(strength: 1)]

@@ -31,6 +31,9 @@ struct SessionFrame {
     /// Active external DE program — the encoder binds its pipeline/table
     /// instead of the context's built-in-only ones.
     let externalProgram: ExternalDEProgram?
+    /// Live audio feature levels read from the signal table this frame — what
+    /// the Music-pane meter displays (the UI cannot read the table directly).
+    let audioLevels: AudioLevels
 
     /// Complete the snapshot with the PREVIOUS completed frame's GPU stats
     /// (the frame path never waits on the GPU — ARCHITECTURE.md §2) plus the
@@ -52,6 +55,7 @@ struct SessionFrame {
             animation: animation,
             dynamicEntries: dynamicEntries,
             scaleOctave: scaleOctave,
-            diagnostics: diagnostics)
+            diagnostics: diagnostics,
+            audioLevels: audioLevels)
     }
 }

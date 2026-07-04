@@ -11,7 +11,7 @@
 #ifndef THRESHOLD_SHADER_ABI_H
 #define THRESHOLD_SHADER_ABI_H
 
-#define THRESHOLD_ABI_VERSION 2
+#define THRESHOLD_ABI_VERSION 3
 
 #ifdef __METAL_VERSION__
   #include <metal_stdlib>
@@ -75,13 +75,14 @@ typedef enum ThreshWarpKind {
 #define THRESH_WARP_KIND_DISTANCE_OP_BASE 64u
 
 // Per-instance flag bits (WarpOp.flags). Kind-specific meaning where noted.
-#define THRESH_WARP_FLAG_OPTION_A  (1u << 0)  // BoxFold: Hall of Mirrors; HandAttract: pocket enabled
+#define THRESH_WARP_FLAG_OPTION_A  (1u << 0)  // BoxFold: Hall of Mirrors; HandAttract: pocket enabled; Bounding: SUBTRACT (carve solid out) vs intersect
 // Hand-drive flags (plan §4.3 spatial path): CPU-side markers — the shell
 // stamps the op's geometry fields from live hand joints each frame before
 // encode (HandOpStamper). The kernel never reads them. An op without a drive
 // flag is an ordinary slider-driven op (the mandated non-hand control path).
 #define THRESH_WARP_FLAG_DRIVE_RIGHT (1u << 1)  // geometry follows the RIGHT hand
 #define THRESH_WARP_FLAG_DRIVE_LEFT  (1u << 2)  // geometry follows the LEFT hand
+#define THRESH_WARP_FLAG_OPTION_B  (1u << 3)  // Bounding: FIXED world-space placement (clear = in-stack, clips the transformed frame at this slot)
 
 // ---------------------------------------------------------------------------
 // WarpOp — 48 bytes, 16-aligned. ADR-002.

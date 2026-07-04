@@ -226,16 +226,47 @@ public struct SceneActions {
 
 // MARK: - ScenesSection
 
-/// The scene library panel: save-current row + a card grid of saved scenes
-/// (tap to load, context menu to delete). The legacy browse grid, minus
-/// thumbnails (a render-to-thumbnail pass is a follow-up — cards show the
-/// scene's palette gradient as their face).
+/// Top-level browser categories, mirroring the legacy app's section switcher
+/// (Jump Off · Scenes · Animations · Mixed Reality). Only `.scenes` is wired
+/// to content today; the others are placeholders for the ports still to land.
+enum SceneCategory: String, CaseIterable, Identifiable {
+    case jumpOff
+    case scenes
+    case animations
+    case mixedReality
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .jumpOff: return "Jump Off"
+        case .scenes: return "Scenes"
+        case .animations: return "Animations"
+        case .mixedReality: return "Mixed Reality"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .jumpOff: return "sparkles"
+        case .scenes: return "photo.on.rectangle.angled"
+        case .animations: return "film.stack"
+        case .mixedReality: return "cube.transparent"
+        }
+    }
+}
+
+/// The scene library panel: a category switcher over the save-current row and
+/// a card grid of saved scenes (tap to load, context menu to delete). The
+/// legacy browse grid, minus thumbnails and palette faces — cards show the
+/// label only for now (a render-to-thumbnail pass is a follow-up).
 public struct ScenesSection: View {
     let actions: SceneActions
 
     @State private var newName = ""
     @State private var saving = false
     @State private var confirmingDelete: SceneLibraryItem?
+    @State private var category: SceneCategory = .scenes
 
     public init(actions: SceneActions) {
         self.actions = actions
@@ -247,49 +278,18 @@ public struct ScenesSection: View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             SectionHeader("Scenes", icon: "photo.on.rectangle.angled")
 
-            HStack(spacing: DS.Spacing.sm) {
-                TextField("Scene name", text: $newName)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(saveCurrent)
-                Button {
-                    saveCurrent()
-                } label: {
-                    if saving {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Save", systemImage: "plus.circle.fill")
-                    }
-                }
-                .disabled(saving
-                    || newName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+            TabStrip(
+                items: SceneCategory.allCases.map {
+                    TabStrip.Item($0, label: $0.label, icon: $0.icon)
+                },
+                selection: $category,
+                compact: true)
 
-            ForEach(actions.library.sources) { source in
-                if source.items.isEmpty {
-                    if source.isWritable {
-                        Text("No saved scenes yet — name the current view and Save it, or drop .threshscene files into the library folder.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    Text("\(source.name.uppercased()) · \(source.items.count)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, DS.Spacing.xxs)
-                    LazyVGrid(columns: columns, spacing: DS.Spacing.sm) {
-                        ForEach(source.items) { item in
-                            SceneCard(
-                                item: item,
-                                canDelete: source.isWritable
-                            ) {
-                                actions.load(item.url)
-                            } onDelete: {
-                                confirmingDelete = item
-                            }
-                        }
-                    }
-                }
+            switch category {
+            case .scenes:
+                library
+            default:
+                placeholder(for: category)
             }
         }
         .moduleCard(.purple)
@@ -311,6 +311,71 @@ public struct ScenesSection: View {
         .onAppear { actions.library.refresh() }
     }
 
+    /// The saved-scene browser: save-current row over the per-source card grid.
+    @ViewBuilder
+    private var library: some View {
+        HStack(spacing: DS.Spacing.sm) {
+            TextField("Scene name", text: $newName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(saveCurrent)
+            Button {
+                saveCurrent()
+            } label: {
+                if saving {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Save", systemImage: "plus.circle.fill")
+                }
+            }
+            .disabled(saving
+                || newName.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+
+        ForEach(actions.library.sources) { source in
+            if source.items.isEmpty {
+                if source.isWritable {
+                    Text("No saved scenes yet — name the current view and Save it, or drop .threshscene files into the library folder.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("\(source.name.uppercased()) · \(source.items.count)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, DS.Spacing.xxs)
+                LazyVGrid(columns: columns, spacing: DS.Spacing.sm) {
+                    ForEach(source.items) { item in
+                        SceneCard(
+                            item: item,
+                            canDelete: source.isWritable
+                        ) {
+                            actions.load(item.url)
+                        } onDelete: {
+                            confirmingDelete = item
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Empty-state for the categories not yet ported (Jump Off, Animations,
+    /// Mixed Reality) — the switcher is live; the content lands later.
+    @ViewBuilder
+    private func placeholder(for category: SceneCategory) -> some View {
+        VStack(spacing: DS.Spacing.xs) {
+            Image(systemName: category.icon)
+                .font(.largeTitle)
+                .foregroundStyle(.tertiary)
+            Text("\(category.label) — coming soon")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, DS.Spacing.lg)
+    }
+
     private func saveCurrent() {
         let name = newName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty, !saving else { return }
@@ -324,7 +389,8 @@ public struct ScenesSection: View {
     }
 }
 
-/// One saved-scene card: palette-gradient face + name + fractal + date.
+/// One saved-scene card: name + fractal + date (label only for now — the
+/// palette-gradient face is dropped pending a real thumbnail pass).
 struct SceneCard: View {
     let item: SceneLibraryItem
     var canDelete: Bool = true
@@ -334,12 +400,6 @@ struct SceneCard: View {
     var body: some View {
         Button(action: onLoad) {
             VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
-                GradientPreviewBar(
-                    palette: item.palette ?? Palette(stops: [
-                        GradientStop(position: 0, red: 0.2, green: 0.2, blue: 0.25),
-                        GradientStop(position: 1, red: 0.45, green: 0.45, blue: 0.55),
-                    ]),
-                    height: 30)
                 Text(item.name)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)

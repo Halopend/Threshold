@@ -74,6 +74,15 @@ public final class ParameterMirror {
     /// The active procedural LFO bank — the LFO editor's source of truth.
     /// Mirror-owned, same contract as `bindings`.
     public private(set) var lfos: [LFOSpec] = []
+    /// Live audio feature levels from the latest snapshot — the Music-pane
+    /// meter's source. Read-only readback (the render thread samples the signal
+    /// table; the UI cannot). `.zero` until the first audio-bearing snapshot.
+    public private(set) var audioLevels: AudioLevels = .zero
+    /// The tunable Focus Band (music's "LFO equivalent"). Mirror-OWNED UI state:
+    /// its energy is computed in the mic DSP, not the render session, so unlike
+    /// LFOs it does not round-trip through a snapshot — the app shell bridges
+    /// edits to the analyzer. Seeded from a scene on `applyScene`.
+    public private(set) var focusBand: AudioFocusBand = .default
     /// Zoom-rebase counter from the latest snapshot (plan §6.3).
     public private(set) var scaleOctave: Int32 = 0
     /// Live encoder pipeline diagnostics (which pipeline, compile status,
@@ -236,6 +245,10 @@ public final class ParameterMirror {
             diagnostics = snapshot.diagnostics
             changed = true
         }
+        if snapshot.audioLevels != audioLevels {
+            audioLevels = snapshot.audioLevels
+            changed = true
+        }
 
         if reapStaleEdits() { changed = true }
 
@@ -337,9 +350,12 @@ public final class ParameterMirror {
     ) {
         // Seed the editors from the loaded scene: the render side installs the
         // same bindings/LFOs on apply, so the UI source of truth stays in sync
-        // with the engine (see the `bindings`/`lfos` docs).
+        // with the engine (see the `bindings`/`lfos` docs). The Focus Band is
+        // NOT render-session state — seed the observable here; the app shell
+        // pushes it to the mic analyzer (see setFocusBand).
         bindings = scene.bindings
         lfos = scene.lfos
+        focusBand = scene.focusBand ?? .default
         commands.publish(.applyScene(scene, transition: transition))
     }
 
@@ -366,6 +382,14 @@ public final class ParameterMirror {
     public func setLFOs(_ lfos: [LFOSpec]) {
         self.lfos = lfos
         commands.publish(.setLFOs(lfos))
+    }
+
+    /// Update the UI-owned Focus Band. Publishes NO command — the band's energy
+    /// is computed in the mic DSP, not the render session. The app shell (which
+    /// owns the analyzer) mirrors this to `AudioAnalyzer.setFocusBand` via the
+    /// `AudioActions.setFocusBand` closure and injects it into a saved scene.
+    public func setFocusBand(_ band: AudioFocusBand) {
+        focusBand = band
     }
 
     // MARK: Routes / LFO editor mutators

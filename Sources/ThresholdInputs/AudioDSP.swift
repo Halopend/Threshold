@@ -242,4 +242,27 @@ public final class AudioDSP {
             rms: rms, bandLow: bandLow, bandMid: bandMid, bandHigh: bandHigh,
             centroid: centroid, onset: onset)
     }
+
+    /// Energy level in an ARBITRARY `[lowHz, highHz]` window from the LAST
+    /// `process`ed frame's spectrum — the tunable Focus Band (AudioFocusBand).
+    /// Uses the same calibration as the fixed bands (`bandNorm`), so a
+    /// full-scale in-band sine reads ~1. Reads the retained `magnitudeSquared`
+    /// scratch (NOT swapped by `process`), so it must be called after a
+    /// `process` and before the next one; returns 0 before the first frame or
+    /// for a degenerate range. Deterministic; no FFT, no allocation.
+    ///
+    /// Edges are clamped to `1..<halfSize` (DC and Nyquist excluded, as in the
+    /// fixed bands) and swapped if inverted, so any editor input is safe.
+    public func bandLevel(lowHz: Float, highHz: Float) -> Float {
+        let binHz = Float(sampleRate) / Float(fftSize)
+        guard binHz.isFinite, binHz > 0 else { return 0 }
+        let a = min(lowHz, highHz)
+        let b = max(lowHz, highHz)
+        let lo = max(1, min(halfSize, Int((a / binHz).rounded(.down))))
+        let hi = max(lo, min(halfSize, Int((b / binHz).rounded(.up))))
+        guard lo < hi else { return 0 }
+        var sum: Float = 0
+        for k in lo..<hi { sum += magnitudeSquared[k] }
+        return (sum * bandNorm).squareRoot()
+    }
 }

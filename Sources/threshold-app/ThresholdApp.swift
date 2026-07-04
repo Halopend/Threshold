@@ -101,6 +101,14 @@ final class AppModel {
             audioEnabled = false
         }
     }
+
+    /// Bridge a Focus Band edit to BOTH the mic analyzer (which computes it) and
+    /// the mirror (the UI's observable copy). The Focus Band is app-shell state,
+    /// not render-session state (AudioFocusBand.swift).
+    func setFocusBand(_ band: AudioFocusBand) {
+        audio.setFocusBand(band)
+        mirror.setFocusBand(band)
+    }
 }
 
 // MARK: - App
@@ -193,7 +201,8 @@ struct MainView: View {
                 mirror: model.mirror, layout: model.layout,
                 audioActions: AudioActions(
                     isEnabled: { model.audioEnabled },
-                    setEnabled: { model.setAudioEnabled($0) }))
+                    setEnabled: { model.setAudioEnabled($0) },
+                    setFocusBand: { model.setFocusBand($0) }))
                 .frame(minWidth: 320, idealWidth: 360, maxWidth: 480)
         }
     }
