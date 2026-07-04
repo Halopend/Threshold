@@ -145,6 +145,45 @@ struct MirrorCommandTests {
         #expect(slot == 17)
     }
 
+    @Test("A stale beginEdit with no matching endEdit self-heals via the poll watchdog")
+    func staleEditAutoCommits() {
+        let (mirror, snapshots, commands) = makeMirror()
+        snapshots.publish(makeSnapshot(
+            values: [Float](repeating: 0, count: mirror.layout.slotCount)))
+        mirror.refresh()  // baseline poll so watchdog ticks start from here
+        _ = commands.drain()
+
+        // The SwiftUI Slider onEditingChanged(false) that should follow this
+        // never arrives (the AppKit failure mode this guards against).
+        mirror.beginEdit(slot: 16)
+        mirror.updateEdit(slot: 16, target: 0.6)
+        #expect(commands.drain().count == 1)  // the live userEdit
+
+        // Idle polls with no further drag activity — short of the threshold,
+        // the slot is still "mid-edit" and a fresh drag attempt stays live.
+        for _ in 0..<40 { mirror.refresh() }
+        #expect(mirror.displayValue(slot: 16) == 0.6, "still echoing the stranded edit")
+        #expect(commands.drain().isEmpty)
+
+        // Cross the threshold: the watchdog force-commits and releases the slot.
+        for _ in 0..<10 { mirror.refresh() }
+        let drained = commands.drain()
+        #expect(drained.count == 1)
+        guard case .commitUserEdit(let slot, let target) = drained.first else {
+            Issue.record("expected watchdog .commitUserEdit, got \(String(describing: drained.first))")
+            return
+        }
+        #expect(slot == 16)
+        #expect(target == 0.6)
+
+        // The slot is free again — a later slider write on it commits normally.
+        mirror.updateEdit(slot: 16, target: 0.9)
+        guard case .commitUserEdit(16, 0.9) = commands.drain().first else {
+            Issue.record("slot 16 should be released after the watchdog commit")
+            return
+        }
+    }
+
     @Test("A drag is live userEdit* then a commit of the final value, in order")
     func dragSequence() {
         let (mirror, _, commands) = makeMirror()

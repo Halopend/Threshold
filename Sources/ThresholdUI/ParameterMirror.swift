@@ -99,6 +99,19 @@ public final class ParameterMirror {
     @ObservationIgnored private var lastSample: (frameIndex: UInt64, time: Double)?
     /// Slots with an active beginEdit…endEdit interaction.
     @ObservationIgnored private var editingSlots: Set<Int> = []
+    /// Consecutive `refresh()` polls since a slot's last `beginEdit`/`updateEdit`
+    /// activity, keyed by slot. Ticks, not wall time (Invariant 9) — the poll
+    /// cadence is the only clock this uses.
+    ///
+    /// Watchdog for a real AppKit/SwiftUI failure mode: `Slider.onEditingChanged`
+    /// can fire `true` and never deliver the matching `false` (a click that
+    /// resolves to no drag, or a mouseUp the OS delays), which without this
+    /// would strand the slot in `editingSlots` forever — every future drag on
+    /// that control keeps landing on the momentary user lane and never commits,
+    /// i.e. "this slider stopped working." `staleEditTickLimit` consecutive
+    /// idle polls force-commits it, same as a real `endEdit`.
+    @ObservationIgnored private var editIdleTicks: [Int: Int] = [:]
+    private static let staleEditTickLimit = 45  // ~1.5s at the default 30Hz poll
     @ObservationIgnored private var timer: Timer?
 
     public init(
@@ -212,7 +225,28 @@ public final class ParameterMirror {
             changed = true
         }
 
+        if reapStaleEdits() { changed = true }
+
         if changed { refreshGeneration &+= 1 }
+    }
+
+    /// Force-commit any slot that's been sitting in `editingSlots` with no
+    /// drag activity for `staleEditTickLimit` polls — see `editIdleTicks`.
+    /// Returns whether it did anything (folds into `refresh()`'s change flag
+    /// since it can mutate `pendingEdits`, an observable property).
+    private func reapStaleEdits() -> Bool {
+        guard !editingSlots.isEmpty else { return false }
+        var reaped = false
+        for slot in editingSlots {
+            let ticks = (editIdleTicks[slot] ?? 0) + 1
+            if ticks >= Self.staleEditTickLimit {
+                endEdit(slot: slot)
+                reaped = true
+            } else {
+                editIdleTicks[slot] = ticks
+            }
+        }
+        return reaped
     }
 
     /// Total zoom depth in octaves across every rebase (plan §6.3) — the
@@ -237,6 +271,7 @@ public final class ParameterMirror {
     public func beginEdit(slot: Int) {
         editingSlots.insert(slot)
         pendingEdits[slot] = displayValue(slot: slot)
+        editIdleTicks[slot] = 0
     }
 
     /// Forward a resolved-value target for `slot`. DURING a drag (between
@@ -246,6 +281,7 @@ public final class ParameterMirror {
     public func updateEdit(slot: Int, target: Float) {
         if editingSlots.contains(slot) {
             pendingEdits[slot] = target
+            editIdleTicks[slot] = 0
             commands.publish(.userEdit(slot: slot, targetResolved: target))
         } else {
             commands.publish(.commitUserEdit(slot: slot, targetResolved: target))
@@ -259,6 +295,7 @@ public final class ParameterMirror {
         let target = pendingEdits[slot] ?? displayValue(slot: slot)
         editingSlots.remove(slot)
         pendingEdits[slot] = nil
+        editIdleTicks[slot] = nil
         commands.publish(.commitUserEdit(slot: slot, targetResolved: target))
     }
 

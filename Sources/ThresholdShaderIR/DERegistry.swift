@@ -24,16 +24,34 @@ import ThresholdCore
 /// Registration record for one distance estimator.
 public struct DEDescriptor: Sendable, Hashable {
     /// One declared parameter: name (seeds `ParamKey.de(key, name)`), default,
-    /// and clamp range.
+    /// and clamp range. Two optional flags let a DE param behave like the zoom
+    /// integrator (ScaleContext): a rate that drives a wrapping phase.
     public struct Param: Sendable, Hashable {
         public let name: String
         public let `default`: Float
         public let range: ClosedRange<Float>
+        /// If set, this param is a resolver-owned INTEGRATOR PHASE: transient,
+        /// instant, and advanced each frame by the same-DE rate param named
+        /// here, then wrapped into `range` — the `scale.zoom ← scale.zoomSpeed`
+        /// template applied to a DE param (e.g. `rotationPhase ← rotationSpeed`).
+        /// The phase's resolved value still rides the GPU slice at its layout
+        /// position, so the shader reads the live phase like any other param.
+        public let integratorRate: String?
+        /// Register with instant (un-eased) smoothing. Integrator RATES want
+        /// this: integrating a stepped rate already yields continuous motion, so
+        /// smoothing the rate double-smooths (ScaleContext.registerScaleParams).
+        /// Phases are always instant regardless.
+        public let instantSmoothing: Bool
 
-        public init(name: String, default defaultValue: Float, range: ClosedRange<Float>) {
+        public init(
+            name: String, default defaultValue: Float, range: ClosedRange<Float>,
+            integratorRate: String? = nil, instantSmoothing: Bool = false
+        ) {
             self.name = name
             self.default = defaultValue
             self.range = range
+            self.integratorRate = integratorRate
+            self.instantSmoothing = instantSmoothing
         }
     }
 
@@ -101,15 +119,27 @@ extension DEDescriptor {
         stepRelaxation: 1.6
     )
 
-    /// Classic power-N Mandelbulb. Param layout: [power].
+    /// Classic power-N Mandelbulb with a continuous polar rotation (the
+    /// original app's "PolarRotation" knob, now an integrator). Param layout:
+    /// [power, rotationSpeed, rotationPhase]. The rotation offsets the spherical
+    /// angles (θ, φ) each iteration BEFORE the ×power scaling — an isometry on
+    /// the sphere, so the running derivative (and thus the distance bound) is
+    /// unchanged; the fractal cycles as the phase sweeps [0, 2π). `rotationPhase`
+    /// is a resolver-owned integrator driven by `rotationSpeed` (the zoom
+    /// template); at speed 0 the phase stays 0 and the shape is byte-identical
+    /// to the un-rotated bulb.
     public static let mandelbulb = DEDescriptor(
         index: 1,
         key: "mandelbulb",
         displayName: "Mandelbulb",
         mslFunctionName: "de_mandelbulb",
-        equation: "zₙ₊₁ = zₙ^power + p",
+        equation: "zₙ₊₁ = zₙ^power + p (polar rotation θ,φ += phase)",
         paramLayout: [
             Param(name: "power", default: 8.0, range: 2.0...16.0),
+            Param(name: "rotationSpeed", default: 0.0, range: -2.0...2.0,
+                  instantSmoothing: true),
+            Param(name: "rotationPhase", default: 0.0, range: 0.0...6.2831855,
+                  integratorRate: "rotationSpeed"),
         ],
         defaultIterations: 12,
         stepRelaxation: 1.3
@@ -274,16 +304,24 @@ extension DEDescriptor {
         var slots: [Int] = []
         slots.reserveCapacity(paramLayout.count)
         for param in paramLayout {
+            let isPhase = param.integratorRate != nil
             let spec = ParamSpec(
                 key: .de(key, param.name),
                 label: "\(displayName) \(param.name)",
                 range: param.range,
                 default: param.default,
+                // Phases are resolver-owned + wrap; their value is not eased.
+                // Rates flagged instant match the zoom-rate convention. Shape
+                // params still ease (ADR-005).
                 composition: .additive,
-                smoothing: .continuous,  // shape morphs ease (ADR-005)
-                persistence: .scene,
-                capabilities: capabilities,
-                group: group
+                smoothing: (isPhase || param.instantSmoothing) ? .instant : .continuous,
+                // Integrator phases persist via the envelope's integratorPhases
+                // snapshot, not the params walk (like scale.zoom).
+                persistence: isPhase ? .transient : .scene,
+                // A phase is machine-driven, not a slider/music target.
+                capabilities: isPhase ? [.animatable] : capabilities,
+                group: group,
+                integratorRateKey: param.integratorRate.map { .de(key, $0) }
             )
             slots.append(try catalog.register(spec))
         }

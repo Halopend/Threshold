@@ -34,29 +34,6 @@ enum AppModelShared {
     /// UTTypes the importer accepts, from ThresholdFile's extension list.
     static let openableTypes: [UTType] =
         ThresholdFile.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
-
-
-    /// Same demo set as the dev shell: bass → bulb power, level → AO.
-    static let defaultAudioBindings: [ThresholdCore.Binding] = [
-        ThresholdCore.Binding(
-            signal: .audioBandLow,
-            param: ParamKey.de("mandelbulb", "power"),
-            lane: .music,
-            mapping: SignalMapping(
-                inputLo: 0, inputHi: 1, outputLo: 0, outputHi: 2.5,
-                curve: .exponential(k: 1.6), deadzone: 0.02),
-            policy: .momentary,
-            scale: 1),
-        ThresholdCore.Binding(
-            signal: .audioRMS,
-            param: .engineAOStrength,
-            lane: .music,
-            mapping: SignalMapping(
-                inputLo: 0, inputHi: 0.7, outputLo: 0, outputHi: 0.8,
-                curve: .smooth, deadzone: 0.01),
-            policy: .momentary,
-            scale: 1),
-    ]
 }
 
 /// Export wrapper for the save flow — just bytes with a scene extension.
@@ -197,7 +174,12 @@ final class AppModel {
         session.stop()
     }
 
-    func setAudioReactive(_ on: Bool) {
+    /// Whether the mic is feeding the audio.* signals (Motion ▸ Music toggle).
+    var audioEnabled = false
+
+    /// Start/stop mic capture only. Routing is user-owned in Motion ▸ Routes —
+    /// enabling audio no longer installs demo bindings.
+    func setAudioEnabled(_ on: Bool) {
         if on {
             do {
                 try audio.start()
@@ -206,13 +188,14 @@ final class AppModel {
                 if let now = session.snapshots.latest?.time {
                     audio.timebaseOffset = now
                 }
-                mirror.setBindings(AppModelShared.defaultAudioBindings)
+                audioEnabled = true
             } catch {
                 print("audio start failed: \(error)")
+                audioEnabled = false
             }
         } else {
             audio.stop()
-            mirror.setBindings([])
+            audioEnabled = false
         }
     }
 
@@ -337,7 +320,6 @@ final class AppModel {
 
 struct MainView: View {
     @Bindable var model: AppModel
-    @State private var audioReactive = false
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: SceneFileDocument?
@@ -405,14 +387,13 @@ struct MainView: View {
                         Image(systemName: "camera.metering.center.weighted")
                     }
                     .help("Reset the view to the scene's camera")
-                    Toggle(isOn: $audioReactive) {
-                        Image(systemName: audioReactive ? "waveform" : "waveform.slash")
+                    Toggle(isOn: SwiftUI.Binding(
+                        get: { model.audioEnabled },
+                        set: { model.setAudioEnabled($0) })) {
+                        Image(systemName: model.audioEnabled ? "waveform" : "waveform.slash")
                     }
                     .toggleStyle(.button)
-                    .help("React to audio (microphone)")
-                    .onChange(of: audioReactive) { _, on in
-                        model.setAudioReactive(on)
-                    }
+                    .help("Listen to the microphone (route it in Motion ▸ Routes)")
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 8)
@@ -425,7 +406,10 @@ struct MainView: View {
                         saveCurrent: { await model.saveCurrentScene(named: $0) }),
                     animationActions: AnimationActions(
                         library: model.animationLibrary,
-                        load: { model.open(url: $0) }))
+                        load: { model.open(url: $0) }),
+                    audioActions: AudioActions(
+                        isEnabled: { model.audioEnabled },
+                        setEnabled: { model.setAudioEnabled($0) }))
             }
             .frame(width: 340)
             .fileImporter(
@@ -561,20 +545,25 @@ final class VisionAppModel {
         mirror.setQualityGovernor(.platformDefault)
     }
 
-    func setAudioReactive(_ on: Bool) {
+    /// Whether the mic is feeding the audio.* signals (Motion ▸ Music toggle).
+    var audioEnabled = false
+
+    /// Start/stop mic capture only; routing is user-owned in Motion ▸ Routes.
+    func setAudioEnabled(_ on: Bool) {
         if on {
             do {
                 try audio.start()
                 if let now = session.snapshots.latest?.time {
                     audio.timebaseOffset = now
                 }
-                mirror.setBindings(AppModelShared.defaultAudioBindings)
+                audioEnabled = true
             } catch {
                 print("audio start failed: \(error)")
+                audioEnabled = false
             }
         } else {
             audio.stop()
-            mirror.setBindings([])
+            audioEnabled = false
         }
     }
 
@@ -654,7 +643,6 @@ struct VisionMainView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @State private var immersed = false
-    @State private var audioReactive = false
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: SceneFileDocument?
@@ -687,14 +675,13 @@ struct VisionMainView: View {
                 Button("Open…") { importing = true }
                 Button("Save…") { saveScene() }
                 Spacer()
-                Toggle(isOn: $audioReactive) {
-                    Image(systemName: audioReactive ? "waveform" : "waveform.slash")
+                Toggle(isOn: SwiftUI.Binding(
+                    get: { model.audioEnabled },
+                    set: { model.setAudioEnabled($0) })) {
+                    Image(systemName: model.audioEnabled ? "waveform" : "waveform.slash")
                 }
                 .toggleStyle(.button)
-                .help("React to audio (microphone)")
-                .onChange(of: audioReactive) { _, on in
-                    model.setAudioReactive(on)
-                }
+                .help("Listen to the microphone (route it in Motion ▸ Routes)")
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
@@ -708,6 +695,9 @@ struct VisionMainView: View {
                 animationActions: AnimationActions(
                     library: model.animationLibrary,
                     load: { model.open(url: $0) }),
+                audioActions: AudioActions(
+                    isEnabled: { model.audioEnabled },
+                    setEnabled: { model.setAudioEnabled($0) }),
                 gestureStore: model.gestureStore)
                 // Keep the tracker's bindings in sync with the active fractal.
                 .onAppear { model.refreshGestureBindings() }

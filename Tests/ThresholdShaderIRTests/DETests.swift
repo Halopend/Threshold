@@ -165,8 +165,10 @@ struct DERegistryTests {
         #expect(bulb.index == 1)
         #expect(bulb.key == "mandelbulb")
         #expect(bulb.mslFunctionName == "de_mandelbulb")
-        #expect(bulb.paramLayout.map(\.name) == ["power"])
+        #expect(bulb.paramLayout.map(\.name) == ["power", "rotationSpeed", "rotationPhase"])
         #expect(bulb.paramLayout.first?.default == 8.0)
+        // rotationPhase is the integrator phase driven by rotationSpeed.
+        #expect(bulb.paramLayout.last?.integratorRate == "rotationSpeed")
 
         // Structural invariants for the whole table: index == position
         // (the visible-function-table contract), keys and MSL names unique.
@@ -261,7 +263,8 @@ struct DERegistryTests {
         #expect(defaults == [2.0, 0.25, 1.0, 1.0, 12.0])
         #expect(defaults.last == Float(box.defaultIterations))
 
+        // Mandelbulb: [power, rotationSpeed, rotationPhase] + [iterations].
         let bulb = DERegistry.descriptor(forKey: "mandelbulb")!
-        #expect(bulb.defaultParamSlice() == [8.0, 12.0])
+        #expect(bulb.defaultParamSlice() == [8.0, 0.0, 0.0, 12.0])
     }
 }

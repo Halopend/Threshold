@@ -97,12 +97,17 @@ struct DEEquivalenceTests {
         let evaluator = try DEEvaluator(context: ctx)
         var rng = SplitMix64(seed: 0xDE00_0B1B)
 
-        // params: [power]
+        // params: [power] (legacy 1-param, rotation defaults to 0) and
+        // [power, rotationSpeed, rotationPhase] (rotationSpeed unused by the DE;
+        // rotationPhase must move CPU and GPU identically).
         let paramSets: [(params: [Float], iterations: Int)] = [
             ([8.0], 12),
             ([8.0], 8),
             ([5.0], 12),
             ([9.0], 10),
+            ([8.0, 0.0, 0.0], 12),   // 3-param, zero phase ≡ un-rotated
+            ([8.0, 0.5, 1.3], 12),   // rotated
+            ([5.0, -1.0, 3.14159], 10),
         ]
         var tested = 0
         for set in paramSets {
@@ -122,7 +127,7 @@ struct DEEquivalenceTests {
                 tested += 1
             }
         }
-        #expect(tested == 200)
+        #expect(tested == 350)
     }
 
     @Test(.enabled(if: GPU.available))

@@ -83,4 +83,29 @@ struct DEParamEditModulationTests {
         #expect(abs(after - 5.0) < 1e-4,
                 "a live user edit to 5.0 should resolve to 5.0, got \(after)")
     }
+
+    /// The Mandelbulb polar rotation is a DE integrator (the zoom template):
+    /// `rotationPhase` is transient + rate-driven, and its resolved value
+    /// accumulates `rotationSpeed · dt` each frame.
+    @Test func mandelbulbRotationPhaseIntegrates() throws {
+        let (engine, layout, clock) = try makeEngine()
+        let speedSlot = try #require(layout.slot(for: .de("mandelbulb", "rotationSpeed")))
+        let phaseSlot = try #require(layout.slot(for: .de("mandelbulb", "rotationPhase")))
+
+        // The phase is wired as an integrator driven by the speed, transient.
+        let phaseSpec = try #require(layout.entry(for: .de("mandelbulb", "rotationPhase"))?.spec)
+        #expect(phaseSpec.integratorRateKey == .de("mandelbulb", "rotationSpeed"))
+        #expect(phaseSpec.persistence == .transient)
+
+        // At the default speed (0) the phase never moves.
+        clock.advance()
+        #expect(abs(engine.resolve().values[phaseSlot]) < 1e-6)
+
+        // Drive 1 rad/s; after ~1 s the phase has accumulated ~1 rad.
+        engine.write(lane: .scene, slot: speedSlot, value: 1.0)
+        var phase: Float = 0
+        for _ in 0..<60 { clock.advance(); phase = engine.resolve().values[phaseSlot] }
+        #expect(phase > 0.9 && phase < 1.1,
+                "≈1 rad after ~1 s at 1 rad/s, got \(phase)")
+    }
 }

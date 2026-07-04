@@ -582,12 +582,19 @@ static inline bool threshAOEnabled(float aoStrength) {
     return float2(dist, sqrt(trap2));
 }
 
-// params: [power] + [iterations]. Classic triplex-power formulation
-// (Hart-style DE 0.5·log(r)·r/dr), escape radius 4 checked at loop top —
-// numerically identical to ReferenceDEs.mandelbulb.
+// params: [power, rotationSpeed, rotationPhase] + [iterations]. Classic
+// triplex-power formulation (Hart-style DE 0.5·log(r)·r/dr), escape radius 4
+// checked at loop top — numerically identical to ReferenceDEs.mandelbulb.
+// rotationPhase offsets the spherical angles (θ, φ) each iteration before the
+// ×power scaling: an isometry, so dr (the distance bound) is unchanged and the
+// shape cycles as the phase sweeps [0, 2π). rotationSpeed (index 1) is CPU-side
+// integrator input, not read here.
 [[visible]] float2 de_mandelbulb(float3 p, thread const ThreshDEContext& ctx)
 {
     const float power = ctx.params[0];
+    // Defensive: legacy 1-param slices (the equivalence oracle) carry no
+    // rotation — paramCount counts declared params + the appended iterations.
+    const float rotationPhase = ctx.paramCount > 3 ? ctx.params[2] : 0.0f;
     const int iterations = threshDEIterations(ctx);
 
     // Trap reuses the loop-top r (was a second length(z) per iteration —
@@ -603,10 +610,13 @@ static inline bool threshAOEnabled(float aoStrength) {
         trap = min(trap, r);
         if (r > 4.0f) { break; }           // escape radius 4
         float rSafe = max(r, 1e-9f);
-        float theta = acos(clamp(z.z / rSafe, -1.0f, 1.0f)) * power;
+        float theta = (acos(clamp(z.z / rSafe, -1.0f, 1.0f)) + rotationPhase) * power;
         // atan2(0, 0) is NaN in MSL but 0 in libm (C99 F.9.1.4) — points on
-        // the z-axis (e.g. a camera ray origin) must match the CPU reference.
-        float phi = (z.y == 0.0f && z.x == 0.0f) ? 0.0f : atan2(z.y, z.x) * power;
+        // the z-axis (e.g. a camera ray origin) must match the CPU reference,
+        // which adds rotationPhase to that 0. Keep the phase offset OUTSIDE the
+        // z-axis guard so both sides agree.
+        float phiBase = (z.y == 0.0f && z.x == 0.0f) ? 0.0f : atan2(z.y, z.x);
+        float phi = (phiBase + rotationPhase) * power;
         // One transcendental instead of two: r^power = r^(power-1) · r.
         float rp = pow(rSafe, power - 1.0f);
         dr = rp * power * dr + 1.0f;

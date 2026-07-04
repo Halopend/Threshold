@@ -125,14 +125,20 @@ public enum ReferenceDEs {
     /// running derivative `dr = power·r^(power-1)·dr + 1`.
     /// Distance = `0.5·ln(r)·r/dr`, escape radius 4.
     ///
-    /// - Parameter params: `[power]`.
+    /// - Parameter params: `[power, rotationSpeed, rotationPhase]`. Only
+    ///   `power` (index 0) and `rotationPhase` (index 2) are read; the rate at
+    ///   index 1 is CPU-side integrator input, never sampled by the DE. Shorter
+    ///   arrays (legacy `[power]`) default the rotation to 0.
     public static func mandelbulb(
         _ p: SIMD3<Float>,
         params: [Float],
         iterations: Int
     ) -> SIMD2<Float> {
-        precondition(params.count >= 1, "mandelbulb params = [power]")
+        precondition(params.count >= 1, "mandelbulb params = [power, rotationSpeed, rotationPhase]")
         let power = params[0]
+        // Polar rotation offset (radians), added to θ and φ before ×power. At 0
+        // this is byte-identical to the un-rotated bulb (x + 0 is exact).
+        let rotationPhase = params.count > 2 ? params[2] : 0
 
         var z = p
         var dr: Float = 1
@@ -143,8 +149,8 @@ public enum ReferenceDEs {
             r = length(z)
             if r > 4 { break } // escape radius 4
             let rSafe = max(r, 1e-9)
-            let theta = acosf(simd_clamp(z.z / rSafe, -1, 1)) * power
-            let phi = atan2f(z.y, z.x) * power
+            let theta = (acosf(simd_clamp(z.z / rSafe, -1, 1)) + rotationPhase) * power
+            let phi = (atan2f(z.y, z.x) + rotationPhase) * power
             dr = powf(rSafe, power - 1) * power * dr + 1
             let zr = powf(rSafe, power)
             z = zr * SIMD3(sinf(theta) * cosf(phi),

@@ -61,9 +61,8 @@ public enum ControlTab: String, CaseIterable, Sendable {
             ]
         case .motion:
             return [
-                SubTab("zoom", "Zoom", "plus.magnifyingglass"),
-                SubTab("animation", "Animate", "film.stack"),
                 SubTab("camera", "Camera", "move.3d"),
+                SubTab("animation", "Animate", "film.stack"),
                 SubTab("music", "Music", "waveform"),
                 SubTab("lfos", "LFOs", "waveform.path.ecg"),
                 SubTab("routes", "Routes", "point.topleft.down.to.point.bottomright.curvepath"),
@@ -114,7 +113,7 @@ public struct ControlSidebar: View {
     private var textSizeIndex = DS.defaultTextSizeIndex
     // Second-row selection per tab that has one (device-local, persisted).
     @AppStorage("threshold.ui.subtab.color") private var colorSub = "palette"
-    @AppStorage("threshold.ui.subtab.motion") private var motionSub = "zoom"
+    @AppStorage("threshold.ui.subtab.motion") private var motionSub = "camera"
     @AppStorage("threshold.ui.subtab.setup") private var setupSub = "prefs"
     /// Device-local gesture bindings (device-global per-fractal). A shell that
     /// drives a HandTracker injects a SHARED store so edits reach the tracker;
@@ -280,12 +279,6 @@ public struct ControlSidebar: View {
                     AnimationLibrarySection(actions: animationActions)
                 }
                 AnimationSection(mirror: mirror)
-            case "camera":
-                KeyedParamsSection(
-                    title: "Camera", icon: "move.3d", accent: .cyan,
-                    keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
-                    mirror: mirror, layout: layout,
-                    footer: "Drag the view to orbit · pinch or scroll to dolly.")
             case "music":
                 MusicSection(mirror: mirror, layout: layout, audio: audioActions)
             case "lfos":
@@ -293,6 +286,13 @@ public struct ControlSidebar: View {
             case "routes":
                 RoutesSection(mirror: mirror, layout: layout)
             default:
+                // Camera (merged with Zoom): orbit/dolly + the infinite-zoom
+                // rate and depth readout, one scrolling column.
+                KeyedParamsSection(
+                    title: "Camera", icon: "move.3d", accent: .cyan,
+                    keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
+                    mirror: mirror, layout: layout,
+                    footer: "Drag the view to orbit · pinch or scroll to dolly.")
                 ZoomSection(mirror: mirror, layout: layout)
             }
         case .setup:
@@ -546,8 +546,15 @@ public struct ShapeParamsSection: View {
 
     public var body: some View {
         if let descriptor {
-            let entries = descriptor.paramLayout.compactMap { param in
-                layout.entry(for: .de(descriptor.key, param.name)).map { (param.name, $0) }
+            // Integrator phases (e.g. mandelbulb rotationPhase) are resolver-
+            // driven — the engine overrides the slot each frame, so a slider on
+            // them would snap back. The user drives the RATE (…Speed); the
+            // phase advances on its own, so skip phases here.
+            let entries: [(String, CatalogEntry)] = descriptor.paramLayout.compactMap { param in
+                guard let entry = layout.entry(for: .de(descriptor.key, param.name)),
+                      entry.spec.integratorRateKey == nil
+                else { return nil }
+                return (param.name, entry)
             }
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 SectionHeader("Shape", icon: "slider.horizontal.3") {
