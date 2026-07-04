@@ -72,6 +72,35 @@ public enum ReferenceDEs {
         return SIMD2(length(z) / abs(dr), trap)
     }
 
+    /// Mandelbox with a built-in sphere projection applied ONCE to the sample
+    /// point before the fold loop — the CPU oracle for `de_mandelboxSphereProjection`.
+    ///
+    /// - Parameter params: `[scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]`.
+    public static func mandelboxSphereProjection(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 6,
+                     "mandelboxSphereProjection params = [scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]")
+        // Sphere projection domain warp (once). Identity when blend <= 0.
+        var pp = p
+        var k: Float = 1
+        let blend = params[4]
+        if blend > 0 {
+            let r = length(p)
+            if r > 1e-5 {
+                let b = min(max(blend, 0), 0.98)
+                let rp = (1 - b) * r + b * params[5]
+                k = rp / max(r, 1e-9)
+                pp = p * k
+            }
+        }
+        let box = mandelbox(pp, params: params, iterations: iterations)
+        // Divide distance by the conservative stretch bound (matches the GPU DE).
+        return SIMD2(box.x / max(1, k), box.y)
+    }
+
     /// Standard power-N Mandelbulb DE (triplex power formula).
     ///
     /// Per iteration: `z ← r^power·(sin θp·cos φp, sin φp·sin θp, cos θp) + p`

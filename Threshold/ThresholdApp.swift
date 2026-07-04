@@ -508,7 +508,17 @@ final class VisionAppModel {
     @ObservationIgnored let hands: HandTracker
     @ObservationIgnored let sceneLibrary = SceneLibrary()
     @ObservationIgnored let animationLibrary = AnimationLibrary()
+    /// Device-local gesture bindings, shared with the sidebar's Gestures tab
+    /// and pushed into the HandTracker on edit / fractal change.
+    @ObservationIgnored let gestureStore = GestureBindingStore()
     var lastOpenError: String?
+
+    /// Install the current fractal's gesture bindings into the tracker. Called
+    /// when the user edits a binding (store.onChange) and when the fractal
+    /// changes (VisionMainView observes `mirror.deKey`).
+    func refreshGestureBindings() {
+        hands.setBindings(gestureStore.table(forFractal: mirror.deKey))
+    }
 
     init() throws {
         let catalog = Catalog.withEngineDefaults()
@@ -537,6 +547,9 @@ final class VisionAppModel {
         self.mirror = ParameterMirror(
             layout: layout, snapshots: session.snapshots, commands: session.commands)
         self.audio = AudioAnalyzer(signals: signals)
+
+        // Push binding edits straight into the render-thread tracker.
+        gestureStore.onChange = { [weak self] in self?.refreshGestureBindings() }
     }
 
     /// Called from the CompositorLayer content closure when the immersive
@@ -694,7 +707,11 @@ struct VisionMainView: View {
                     saveCurrent: { await model.saveCurrentScene(named: $0) }),
                 animationActions: AnimationActions(
                     library: model.animationLibrary,
-                    load: { model.open(url: $0) }))
+                    load: { model.open(url: $0) }),
+                gestureStore: model.gestureStore)
+                // Keep the tracker's bindings in sync with the active fractal.
+                .onAppear { model.refreshGestureBindings() }
+                .onChange(of: model.mirror.deKey) { model.refreshGestureBindings() }
                 // Distinct nodes for each presentation modifier (stacking
                 // several on one view silently drops some of them).
                 .fileImporter(

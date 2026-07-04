@@ -179,6 +179,31 @@ extension DEDescriptor {
         stepRelaxation: 1.3
     )
 
+    /// Mandelbox with a built-in sphere projection (domain warp applied ONCE to
+    /// the sample point before the fold loop). Reproduces the original app's
+    /// dedicated `mandelboxSphereProjection` type — the look behind scenes like
+    /// "good luck" and "mono". Shape params match `mandelbox`; `projBlend` /
+    /// `projRadius` are the legacy Space-tab "Sphere Projection" controls, now
+    /// self-contained in the DE instead of the warp stack. Identity projection
+    /// (blend = 0) degenerates to a plain Mandelbox.
+    public static let mandelboxSphereProjection = DEDescriptor(
+        index: 6,
+        key: "mandelboxSphereProjection",
+        displayName: "Mandelbox (Sphere Proj)",
+        mslFunctionName: "de_mandelboxSphereProjection",
+        equation: "p′ = p·((1−b) + b·R/|p|);  Mandelbox(p′)",
+        paramLayout: [
+            Param(name: "scale", default: 2.0, range: -4.0...4.0),
+            Param(name: "minRadius", default: 0.25, range: 0.01...2.0),
+            Param(name: "fixedRadius", default: 1.0, range: 0.05...4.0),
+            Param(name: "foldLimit", default: 1.0, range: 0.1...4.0),
+            Param(name: "projBlend", default: 0.98, range: 0.0...0.98),
+            Param(name: "projRadius", default: 1.0, range: 0.2...12.0),
+        ],
+        defaultIterations: 12,
+        stepRelaxation: 1.6
+    )
+
     /// Julia-mode Mandelbulb: the mandelbulb iteration with a fixed additive
     /// constant instead of p. The original's Bailout/DerivBias/PolarRotation
     /// knobs were escape-hatch tuning, not shape — dropped; bailout is the
@@ -206,7 +231,7 @@ public enum DERegistry {
     /// Built-in DEs, ordered by table index.
     public static let builtin: [DEDescriptor] = [
         .mandelbox, .mandelbulb, .kleinian, .mengerSponge,
-        .quaternionJulia, .mandelbulbJulia,
+        .quaternionJulia, .mandelbulbJulia, .mandelboxSphereProjection,
     ]
 
     public static func descriptor(forKey key: String) -> DEDescriptor? {

@@ -68,6 +68,7 @@ public enum ControlTab: String, CaseIterable, Sendable {
         case .setup:
             return [
                 SubTab("prefs", "Prefs", "slider.horizontal.3"),
+                SubTab("gestures", "Gestures", "hand.point.up.left"),
                 SubTab("performance", "Performance", "speedometer"),
             ]
         default:
@@ -112,16 +113,24 @@ public struct ControlSidebar: View {
     @AppStorage("threshold.ui.subtab.color") private var colorSub = "palette"
     @AppStorage("threshold.ui.subtab.motion") private var motionSub = "zoom"
     @AppStorage("threshold.ui.subtab.setup") private var setupSub = "prefs"
+    /// Device-local gesture bindings (device-global per-fractal). A shell that
+    /// drives a HandTracker injects a SHARED store so edits reach the tracker;
+    /// shells that don't (dev shell, Mac) fall back to this owned instance.
+    @State private var ownedStore = GestureBindingStore()
+    private let injectedStore: GestureBindingStore?
+    private var gestureStore: GestureBindingStore { injectedStore ?? ownedStore }
 
     public init(
         mirror: ParameterMirror, layout: CatalogLayout,
         sceneActions: SceneActions? = nil,
-        animationActions: AnimationActions? = nil
+        animationActions: AnimationActions? = nil,
+        gestureStore: GestureBindingStore? = nil
     ) {
         self.mirror = mirror
         self.layout = layout
         self.sceneActions = sceneActions
         self.animationActions = animationActions
+        self.injectedStore = gestureStore
     }
 
     private var tabs: [ControlTab] {
@@ -277,6 +286,11 @@ public struct ControlSidebar: View {
                 StatsSection(mirror: mirror)
                 PipelineSection(mirror: mirror)
                 CatalogSectionView(group: .performance, layout: layout, mirror: mirror)
+            case "gestures":
+                HandConstellationPanel(
+                    params: BindableParams.derive(from: layout.entries + mirror.dynamicEntries),
+                    fractal: mirror.deKey,
+                    store: gestureStore)
             default:
                 DisplaySettingsSection()
                 InputSettingsSection()

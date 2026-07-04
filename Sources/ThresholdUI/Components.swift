@@ -280,6 +280,7 @@ public enum DisplayIcons {
         case "menger": return "square.grid.3x3.fill"
         case "quaternionJulia": return "atom"
         case "mandelbulbJulia": return "moon.stars.fill"
+        case "mandelboxSphereProjection": return "cube.transparent.fill"
         default: return "cube.transparent"
         }
     }

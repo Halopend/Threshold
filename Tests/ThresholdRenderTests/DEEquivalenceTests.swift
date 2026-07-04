@@ -60,6 +60,38 @@ struct DEEquivalenceTests {
     }
 
     @Test(.enabled(if: GPU.available))
+    func mandelboxSphereProjectionEquivalence() throws {
+        let ctx = try GPU.ctx()
+        let evaluator = try DEEvaluator(context: ctx)
+        var rng = SplitMix64(seed: 0xDE00_5B70)
+
+        // params: [scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]
+        let paramSets: [(params: [Float], iterations: Int)] = [
+            ([2.0, 0.5, 1.0, 1.0, 0.0, 1.0], 12),   // blend 0 → plain mandelbox
+            ([2.0, 0.5, 1.0, 1.0, 1.0, 1.0], 12),   // full projection
+            ([2.5, 0.6, 1.2, 1.0, 0.5, 2.1], 8),
+            ([1.7, 0.4, 1.0, 1.2, 0.9, 0.6], 12),
+        ]
+        var tested = 0
+        for set in paramSets {
+            let points = (0..<50).map { _ in exteriorPoint(&rng, radius: 4.0...8.0) }
+            let gpu = try evaluator.evaluate(points: points, deIndex: 6,
+                                             deParams: set.params,
+                                             iterations: set.iterations)
+            for (i, p) in points.enumerated() {
+                let cpu = ReferenceDEs.mandelboxSphereProjection(p, params: set.params,
+                                                                 iterations: set.iterations)
+                #expect(relClose(gpu[i].x, cpu.x, rel: 1e-3),
+                        "mandelboxSphereProjection .x GPU \(gpu[i].x) vs CPU \(cpu.x) at \(p), params \(set.params)")
+                #expect(relClose(gpu[i].y, cpu.y, rel: 5e-3),
+                        "mandelboxSphereProjection .y (trap) GPU \(gpu[i].y) vs CPU \(cpu.y) at \(p), params \(set.params)")
+                tested += 1
+            }
+        }
+        #expect(tested == 200)
+    }
+
+    @Test(.enabled(if: GPU.available))
     func mandelbulbEquivalence() throws {
         let ctx = try GPU.ctx()
         let evaluator = try DEEvaluator(context: ctx)

@@ -101,19 +101,27 @@ struct LegacyCorpusTests {
         #expect(envelope.params["de.kleinian.crossRadius"]?.count == 1)
     }
 
-    @Test("Blue hero: mandelbox DE params + zoom migrate")
+    @Test("Blue hero: mandelboxSphereProjection DE shape from formulaParamValues + zoom migrate")
     func mandelboxScaleAndZoomMapping() throws {
         let data = try Data(
             contentsOf: scenesDir.appendingPathComponent("Blue hero.threshscene"))
         let envelope = try SceneCodec.decode(data)
-        #expect(envelope.fractalTypeKey == "mandelbox")
-        // fractalScale/foldingLimit/sphereRadius map 1:1; legacy minDistance
-        // is minRadius² (see LegacyMigration) so 0.8 → sqrt.
-        #expect(envelope.params["de.mandelbox.scale"] == [2.8])
-        #expect(envelope.params["de.mandelbox.foldLimit"] == [1])
-        #expect(envelope.params["de.mandelbox.fixedRadius"] == [0.5])
-        let minRadius = try #require(envelope.params["de.mandelbox.minRadius"]?.first)
-        #expect(abs(minRadius - Float(0.8).squareRoot()) < 1e-5)
+        // Blue hero is a legacy mandelboxSphereProjection scene: its top-level
+        // minDistance/foldingLimit/sphereRadius/fractalScale are catalog
+        // DEFAULTS (0.8/1/0.5/2.8) — the real shape lives in formulaParamValues
+        // [0.702063, 3.6218371, 2.8280883, 4.9319124, 1, 1, …] = [minRadius²,
+        // foldLimit, fixedRadius, scale, projBlend, projRadius]. (Migrating this
+        // as base mandelbox would have rendered a DEFAULT box — the bug the
+        // dedicated DE fixes.)
+        let key = "mandelboxSphereProjection"
+        #expect(envelope.fractalTypeKey == key)
+        #expect(envelope.params["de.\(key).scale"] == [4.9319124])
+        #expect(envelope.params["de.\(key).foldLimit"] == [3.6218371])
+        #expect(envelope.params["de.\(key).fixedRadius"] == [2.8280883])
+        let minRadius = try #require(envelope.params["de.\(key).minRadius"]?.first)
+        #expect(abs(minRadius - Float(0.702063).squareRoot()) < 1e-5)
+        #expect(envelope.params["de.\(key).projBlend"] == [1])
+        #expect(envelope.params["de.\(key).projRadius"] == [1])
         // scale(1) × detailScale(1.4763585) → zoom octaves, in
         // integratorPhases (a params write would lose to the integrator).
         let zoom = try #require(envelope.integratorPhases[ParamKey.scaleZoom.rawValue])
@@ -206,20 +214,44 @@ struct LegacyCorpusTests {
         #expect(anyBindings, "corpus maps target saturation/iterations/fractalScale — some must map")
     }
 
-    @Test("mandelboxSphereProjection maps to mandelbox + sphereProject op")
-    func sphereProjectionUnification() throws {
+    @Test("mandelboxSphereProjection maps to the dedicated DE with shape + projection from formulaParamValues")
+    func sphereProjectionDedicatedType() throws {
         for file in try corpusFiles() {
             let raw = try JSONDecoder().decode(
                 JSONValue.self, from: Data(contentsOf: file))
             guard case .object(let tree) = raw,
-                  case .string("mandelboxSphereProjection")? = tree["fractalType"]
+                  case .string("mandelboxSphereProjection")? = tree["fractalType"],
+                  case .array(let formula)? = tree["formulaParamValues"], formula.count >= 6
             else { continue }
+            func f(_ i: Int) -> Float? {
+                if case .number(let n) = formula[i] { return Float(n) }
+                return nil
+            }
+            let name = Comment(rawValue: file.lastPathComponent)
             let envelope = try SceneCodec.decode(try Data(contentsOf: file))
-            #expect(envelope.fractalTypeKey == "mandelbox", Comment(rawValue: file.lastPathComponent))
-            if case .bool(true)? = tree["sphereProjectionEnabled"] {
-                #expect(
-                    envelope.warpStack.contains { $0.kind == 18 },
-                    "\(file.lastPathComponent): sphereProject op missing")
+            let key = "mandelboxSphereProjection"
+            // The legacy MSP type kept its Mandelbox SHAPE in formulaParamValues
+            // [0..3] (minRadius², foldingLimit, sphereRadius, scale) and the
+            // projection in [4]/[5] — NOT in the top-level fields (defaults).
+            #expect(envelope.fractalTypeKey == key, name)
+            if let scale = f(3) {
+                #expect(envelope.params["de.\(key).scale"]?.first == scale, name)
+            }
+            if let mr2 = f(0), mr2 > 0 {
+                let minRadius = try #require(envelope.params["de.\(key).minRadius"]?.first, name)
+                #expect(abs(minRadius - mr2.squareRoot()) < 1e-5, name)
+            }
+            if let fixedR = f(2) {
+                #expect(envelope.params["de.\(key).fixedRadius"]?.first == fixedR, name)
+            }
+            if let foldLimit = f(1) {
+                #expect(envelope.params["de.\(key).foldLimit"]?.first == foldLimit, name)
+            }
+            if let blend = f(4) {
+                #expect(envelope.params["de.\(key).projBlend"]?.first == blend, name)
+            }
+            if let radius = f(5) {
+                #expect(envelope.params["de.\(key).projRadius"]?.first == radius, name)
             }
             return  // one exemplar suffices
         }

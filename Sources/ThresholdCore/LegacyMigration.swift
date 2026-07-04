@@ -83,9 +83,11 @@ public enum LegacyScene {
         }
 
         // --- identity ----------------------------------------------------
+        // The rebuild now has a dedicated `mandelboxSphereProjection` DE (the
+        // projection baked into the formula), so the legacy type name maps
+        // straight through instead of folding into base mandelbox + warp op.
         if case .string(let type)? = tree["fractalType"] {
-            tree["fractalTypeKey"] = .string(
-                type == "mandelboxSphereProjection" ? "mandelbox" : type)
+            tree["fractalTypeKey"] = .string(type)
         }
         // `name` carries over verbatim (same key both formats).
 
@@ -191,14 +193,40 @@ public enum LegacyScene {
         // foldLimit, sphereRadius → fixedRadius. Legacy `minDistance` is the
         // mandelbox minRadius SQUARED (despite the name — it is passed as the
         // `minDistance // minRadius²` argument), so it maps through sqrt.
-        if case .string(let type)? = tree["fractalType"],
-           type == "mandelbox" || type == "mandelboxSphereProjection" {
+        if case .string("mandelbox")? = tree["fractalType"] {
             copyParam("fractalScale", to: .de("mandelbox", "scale"))
             copyParam("foldingLimit", to: .de("mandelbox", "foldLimit"))
             copyParam("sphereRadius", to: .de("mandelbox", "fixedRadius"))
             if let mr2 = number("minDistance"), mr2 > 0 {
                 params["de.mandelbox.minRadius"] = .array([.number(mr2.squareRoot())])
             }
+        }
+
+        // --- mandelboxSphereProjection DE params ---------------------------
+        // The dedicated legacy MSP type stored its Mandelbox SHAPE in
+        // formulaParamValues[0..3] (minDistance=minRadius², foldingLimit,
+        // sphereRadius, scale) and the sphere-projection blend/radius in
+        // [4]/[5] — the top-level minDistance/foldingLimit/sphereRadius/
+        // fractalScale fields stayed at catalog defaults and were never the
+        // real shape (FractalPreset.init, original app). Seed the new DE's
+        // layout [scale, minRadius, fixedRadius, foldLimit, projBlend,
+        // projRadius] from those. (Faithful only when minDistance ≥ 0 — base
+        // Mandelbox forces the DE denominator positive.)
+        if case .string("mandelboxSphereProjection")? = tree["fractalType"],
+           case .array(let formula)? = tree["formulaParamValues"], formula.count >= 6 {
+            func f(_ i: Int) -> Double? {
+                if case .number(let n) = formula[i] { return n }
+                return nil
+            }
+            let key = "mandelboxSphereProjection"
+            if let scale = f(3) { params["de.\(key).scale"] = .array([.number(scale)]) }
+            if let mr2 = f(0), mr2 > 0 {
+                params["de.\(key).minRadius"] = .array([.number(mr2.squareRoot())])
+            }
+            if let fixedR = f(2) { params["de.\(key).fixedRadius"] = .array([.number(fixedR)]) }
+            if let foldLimit = f(1) { params["de.\(key).foldLimit"] = .array([.number(foldLimit)]) }
+            if let blend = f(4) { params["de.\(key).projBlend"] = .array([.number(blend)]) }
+            if let radius = f(5) { params["de.\(key).projRadius"] = .array([.number(radius)]) }
         }
 
         // --- zoom (plan §6.3) ----------------------------------------------

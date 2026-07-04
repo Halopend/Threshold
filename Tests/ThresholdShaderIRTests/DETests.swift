@@ -149,7 +149,7 @@ struct ReferenceDETests {
 struct DERegistryTests {
     @Test("builtin table: indices, keys, MSL names, layouts")
     func builtinTable() {
-        #expect(DERegistry.builtin.count == 6)
+        #expect(DERegistry.builtin.count == 7)
 
         let box = DERegistry.builtin[0]
         #expect(box.index == 0)
@@ -195,6 +195,8 @@ struct DERegistryTests {
             == ["cX", "cY", "cZ", "cW", "threshold"])
         #expect(DERegistry.descriptor(forKey: "mandelbulbJulia")?.paramLayout.map(\.name)
             == ["power", "cX", "cY", "cZ"])
+        #expect(DERegistry.descriptor(forKey: "mandelboxSphereProjection")?.paramLayout.map(\.name)
+            == ["scale", "minRadius", "fixedRadius", "foldLimit", "projBlend", "projRadius"])
 
         // Lookups.
         #expect(DERegistry.descriptor(forKey: "mandelbox")?.index == 0)

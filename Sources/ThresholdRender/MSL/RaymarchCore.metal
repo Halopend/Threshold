@@ -510,6 +510,59 @@ static inline bool threshAOEnabled(float aoStrength) {
     return float2(length(z) / fabs(dr), sqrt(trap2));
 }
 
+// params: [scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]
+//         + [iterations]
+// Mandelbox with a built-in sphere projection: the sample point is projected
+// radially toward the shell ONCE (p·((1−b)+b·R/|p|), identical to the
+// ThreshWarpKindSphereProject op) before the standard fold loop runs. The
+// projection's tangential stretch k is divided back out of the returned
+// distance (max(1,k), the op's Lipschitz-conservative bound) so a march stays
+// safe — self-contained, so no warp-stack entry is needed. Reproduces the
+// original app's dedicated "mandelboxSphereProjection" type (good luck / mono).
+[[visible]] float2 de_mandelboxSphereProjection(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float blend  = ctx.params[4];
+    const float radius = ctx.params[5];
+
+    // Sphere projection domain warp (once). Identity when blend <= 0.
+    float k = 1.0f;
+    if (blend > 0.0f) {
+        float r = length(p);
+        if (r > 1e-5f) {
+            float b  = clamp(blend, 0.0f, 0.98f);
+            float rp = (1.0f - b) * r + b * radius;   // mix(r, radius, b)
+            k = rp / max(r, 1e-9f);
+            p *= k;
+        }
+    }
+
+    const float scale = ctx.params[0];
+    const float minR  = ctx.params[1];
+    const float fixR  = ctx.params[2];
+    const float limit = ctx.params[3];
+    const int iterations = threshDEIterations(ctx);
+    const float mR2 = minR * minR;
+    const float fR2 = fixR * fixR;
+
+    float3 z = p;
+    float dr = 1.0f;
+    float trap2 = dot(z, z);
+    for (int i = 0; i < iterations; ++i) {
+        z = clamp(z, -limit, limit) * 2.0f - z;
+        float r2 = dot(z, z);
+        if (r2 < mR2)      { float f = fR2 / mR2; z *= f; dr *= f; }
+        else if (r2 < fR2) { float f = fR2 / r2;  z *= f; dr *= f; }
+        z = z * scale + p;
+        dr = dr * fabs(scale) + 1.0f;
+        float zz = dot(z, z);
+        trap2 = min(trap2, zz);
+        if (zz > 1e8f) { break; }
+    }
+    // Divide by the projection stretch (conservative bound) — matches the op's
+    // dScale *= max(1,k) followed by mapScene's d = de.x / dScale.
+    return float2((length(z) / fabs(dr)) / max(1.0f, k), sqrt(trap2));
+}
+
 // params: [power] + [iterations]. Classic triplex-power formulation
 // (Hart-style DE 0.5·log(r)·r/dr), escape radius 4 checked at loop top —
 // numerically identical to ReferenceDEs.mandelbulb.

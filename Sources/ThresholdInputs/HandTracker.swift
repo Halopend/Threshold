@@ -18,6 +18,7 @@
 
 import ARKit
 import Foundation
+import os
 import ThresholdCore
 
 public final class HandTracker: @unchecked Sendable {
@@ -31,14 +32,41 @@ public final class HandTracker: @unchecked Sendable {
     static let radiansPerMeter: Float = 2.5
     /// log-dolly per meter of pinched left-hand push/pull (push away = in).
     static let logDollyPerMeter: Float = 3.0
+    /// Pinch strength (0…1) at/above which a tapThumb drag is engaged.
+    static let tapThumbEngage: Float = 0.6
+    /// Finger travel (m) that maps to a full ±1 normalized drive. ~15 cm.
+    static let dragMetersToUnit: Float = 1.0 / 0.15
+    /// Hand speed (m/s) that maps to a full ±1 swipe drive.
+    static let swipeMetersPerSecToUnit: Float = 1.0 / 1.5
 
     // MARK: Wiring
 
     private let signals: SignalTable
     private let mailbox: LaneMailbox
+    private let layout: CatalogLayout
     private let yawSlot: Int?
     private let pitchSlot: Int?
     private let dollySlot: Int?
+
+    // MARK: Binding-driven detection (the assignable gesture layer)
+
+    /// The active fractal's binding table. Written from the main actor
+    /// (`setBindings`) and read on the render thread each frame — behind a lock
+    /// so the value-type swap is race-free.
+    private let bindings = OSAllocatedUnfairLock<GestureBindingTable>(initialState: .init())
+    /// Per-source drives accumulated across both hands within one `update`.
+    private var frameDrives: [GestureSource: GestureDrive] = [:]
+    /// The table snapshot for the current frame (set at the top of `update`),
+    /// used both for camera-conflict gating and the resolve pass.
+    private var frameTable = GestureBindingTable()
+    /// Committed tapThumb offset per finger (persists across releases so a bound
+    /// param holds its adjusted value — the gesture lane is not folded to base).
+    private var committedDrag: [GestureSource: SIMD3<Float>] = [:]
+    /// Engage position while a tapThumb drag is held (nil = not pinched).
+    private var dragEngage: [GestureSource: SIMD3<Float>] = [:]
+    /// Last wrist position + time per hand, for swipe velocity.
+    private var lastWrist: [Bool: SIMD3<Float>] = [:]
+    private var lastWristTime: [Bool: Double] = [:]
 
     private let arSession = ARKitSession()
     private let provider = HandTrackingProvider()
@@ -60,9 +88,16 @@ public final class HandTracker: @unchecked Sendable {
     public init(layout: CatalogLayout, mailbox: LaneMailbox, signals: SignalTable) {
         self.signals = signals
         self.mailbox = mailbox
+        self.layout = layout
         self.yawSlot = layout.slot(for: .cameraOrbitYaw)
         self.pitchSlot = layout.slot(for: .cameraOrbitPitch)
         self.dollySlot = layout.slot(for: .cameraDolly)
+    }
+
+    /// Install the active fractal's gesture bindings (call on fractal switch and
+    /// whenever the user edits a binding). Thread-safe.
+    public func setBindings(_ table: GestureBindingTable) {
+        bindings.withLock { $0 = table }
     }
 
     /// Request authorization + start the provider. Hand tracking denied is
@@ -86,6 +121,11 @@ public final class HandTracker: @unchecked Sendable {
     /// binding freshness compares like with like.
     public func update(sessionTime: Double) {
         let anchors = provider.latestAnchors
+        // Snapshot the bindings once per frame: camera gating and the resolve
+        // pass see the same table.
+        frameTable = bindings.withLock { $0 }
+        frameDrives.removeAll(keepingCapacity: true)
+
         updateHand(
             anchors.leftHand, isRight: false, time: sessionTime,
             pinchSignal: .handLeftPinch, positionSignal: .handLeftPosition,
@@ -94,6 +134,18 @@ public final class HandTracker: @unchecked Sendable {
             anchors.rightHand, isRight: true, time: sessionTime,
             pinchSignal: .handRightPinch, positionSignal: .handRightPosition,
             palmSignal: .handRightPalm, forearmSignal: .handRightForearm)
+
+        // Map this frame's drives through the bindings onto the gesture lane.
+        for write in GestureLaneResolver.resolve(
+            drives: frameDrives, table: frameTable, layout: layout) {
+            mailbox.publish(write)
+        }
+    }
+
+    /// True when an assignable binding claims this source, so the hardwired
+    /// camera control on the same finger must yield to it.
+    private func bindingClaims(_ source: GestureSource) -> Bool {
+        frameTable.binding(for: source) != nil
     }
 
     // MARK: Per-hand
@@ -148,9 +200,58 @@ public final class HandTracker: @unchecked Sendable {
             id: pinchSignal,
             value: SIMD4(strength, 0, 0, 0), confidence: 1, timestamp: time)
 
+        // ── Assignable gesture drives (fed to GestureLaneResolver) ──────────
+        let handEnum: GestureHand = isRight ? .right : .left
+        let fingerJoints: [(GestureFinger, HandSkeleton.JointName)] = [
+            (.index, .indexFingerTip), (.middle, .middleFingerTip),
+            (.ring, .ringFingerTip), (.pinky, .littleFingerTip),
+        ]
+        let palmCenter = worldJoint(.middleFingerMetacarpal)
+        var fingertips: [SIMD3<Float>] = []
+        for (finger, jointName) in fingerJoints {
+            guard let tip = worldJoint(jointName) else { continue }
+            fingertips.append(tip)
+            // tapThumb: while pinched, accumulate the finger's normalized 3D
+            // displacement; commit on release so the bound param holds.
+            let src = GestureSource.tapThumb(hand: handEnum, finger: finger)
+            let pinch = HandGeometry.pinchStrength(thumb: thumb, finger: tip)
+            if pinch >= Self.tapThumbEngage {
+                if dragEngage[src] == nil { dragEngage[src] = tip }
+                let delta = (tip - dragEngage[src]!) * Self.dragMetersToUnit
+                frameDrives[src] = .vector((committedDrag[src] ?? .zero) + delta)
+            } else {
+                if let engage = dragEngage[src] {
+                    committedDrag[src, default: .zero] += (tip - engage) * Self.dragMetersToUnit
+                    dragEngage[src] = nil
+                }
+                frameDrives[src] = .vector(committedDrag[src] ?? .zero)
+            }
+            // tapPalm: finger-to-palm touch strength (the palm drop-points).
+            if let palmCenter {
+                let th = HandGeometry.palmThresholds(for: finger)
+                frameDrives[.tapPalm(hand: handEnum, finger: finger)] =
+                    .scalar(HandGeometry.palmTouchStrength(
+                        fingerTip: tip, palm: palmCenter, touch: th.touch, away: th.away))
+            }
+        }
+        if let palmCenter, fingertips.count == 4 {
+            frameDrives[.fist(hand: handEnum)] =
+                .scalar(HandGeometry.fistClosure(fingerTips: fingertips, palm: palmCenter))
+        }
+        // swipe: wrist velocity (m/s) normalized to a ±1 per-axis drive.
+        if let last = lastWrist[isRight], let lastT = lastWristTime[isRight], time > lastT {
+            let velocity = (wrist - last) / Float(time - lastT)
+            frameDrives[.swipe(hand: handEnum)] = .vector(velocity * Self.swipeMetersPerSecToUnit)
+        }
+        lastWrist[isRight] = wrist
+        lastWristTime[isRight] = time
+
         // Latched pinch-drag with hysteresis (plan §8.3 gesture semantics).
+        // Camera control on the index finger yields when a binding claims it.
         let midpoint = (thumb + index) * 0.5
-        if isRight {
+        if bindingClaims(.tapThumb(hand: handEnum, finger: .index)) {
+            if isRight { rightDrag = nil } else { leftDrag = nil }
+        } else if isRight {
             rightDrag = drag(
                 rightDrag, gap: gap, at: midpoint,
                 committedA: yaw, committedB: pitch
