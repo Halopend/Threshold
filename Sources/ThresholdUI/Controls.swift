@@ -147,6 +147,21 @@ struct FloatSlotRow: View {
     var icon: String?
     var labelWidth: CGFloat = RowMetrics.labelWidth
 
+    /// Raw slider position echoed back while dragging, bypassing the
+    /// position→value→position round trip through the curve for the
+    /// binding's `get`. `ResponseCurveMapping`'s own contract is only
+    /// approximate ("≈ t", Float tolerance) — for curved (`.exp`/`.sCurve`)
+    /// responses, feeding a `set` position back through `value(forPosition:)`
+    /// then `position(forValue:)` can return a slightly different position
+    /// than what was just set. SwiftUI's `Slider` sees its bound value
+    /// "jump" on its own mid-gesture and can spin trying to reconcile it —
+    /// surfaces as the runtime's "onChange action tried to update multiple
+    /// times per frame" diagnostic, and in practice as the thumb freezing.
+    /// Echoing the exact `set` position here (same trick as
+    /// `ParameterMirror.pendingEdits`, one layer up) keeps `get`/`set`
+    /// consistent for the duration of the drag.
+    @State private var liveDragPosition: Double?
+
     var body: some View {
         HStack(spacing: DS.Spacing.sm) {
             RowLabel(icon: icon, label: label, labelWidth: labelWidth)
@@ -154,6 +169,7 @@ struct FloatSlotRow: View {
                 if editing {
                     mirror.beginEdit(slot: slot)
                 } else {
+                    liveDragPosition = nil
                     mirror.endEdit(slot: slot)
                 }
             }
@@ -165,10 +181,11 @@ struct FloatSlotRow: View {
     private var positionBinding: SwiftUI.Binding<Double> {
         SwiftUI.Binding(
             get: {
-                Double(ResponseCurveMapping.position(
+                liveDragPosition ?? Double(ResponseCurveMapping.position(
                     forValue: mirror.displayValue(slot: slot), in: range, curve: curve))
             },
             set: { position in
+                liveDragPosition = position
                 mirror.updateEdit(
                     slot: slot,
                     target: ResponseCurveMapping.value(

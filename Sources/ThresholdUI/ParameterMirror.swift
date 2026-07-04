@@ -138,6 +138,18 @@ public final class ParameterMirror {
     /// values shown or computed come from snapshot session-clock time, never
     /// from the timer. Scheduled on the main run loop from the main actor,
     /// so the callback always runs on the main thread.
+    ///
+    /// Deliberately `.default` mode, NOT `.common`: `.common` includes
+    /// `.eventTracking`, which is the mode an AppKit `NSSlider` drag runs its
+    /// live mouse-tracking loop in. A poll firing mid-drag mutates Observable
+    /// state (`resolvedValues`, `stats`, …), forcing a SwiftUI re-render that
+    /// competes with that tracking loop — on macOS this can starve it outright,
+    /// freezing the thumb until the drag's tracking loop gives up (surfaced as
+    /// "the slider stopped responding," self-recovering once the OS abandons
+    /// the frozen gesture). `displayValue` already prefers the local
+    /// `pendingEdits` echo during a drag, so the dragged control needs no
+    /// snapshot round-trip while the gesture is live — only other live
+    /// readouts (stats, other params) visibly pause for that one drag.
     public func startPolling(interval: TimeInterval = 1.0 / 30.0) {
         stopPolling()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] timer in
@@ -151,7 +163,7 @@ public final class ParameterMirror {
                 self.refresh()
             }
         }
-        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .default)
         self.timer = timer
     }
 
