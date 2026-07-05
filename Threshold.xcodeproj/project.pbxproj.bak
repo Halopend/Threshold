@@ -12,35 +12,16 @@
 		000000000000000000000203 /* ThresholdRender in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000303 /* ThresholdRender */; };
 		000000000000000000000204 /* ThresholdUI in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000304 /* ThresholdUI */; };
 		000000000000000000000205 /* ThresholdInputs in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000305 /* ThresholdInputs */; };
-		000000000000000000000206 /* ThresholdRender in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000306 /* ThresholdRender */; };
-		000000000000000000000207 /* ThresholdShaderIR in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000307 /* ThresholdShaderIR */; };
-		000000000000000000000208 /* ThresholdCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000308 /* ThresholdCore */; };
 /* End PBXBuildFile section */
-
-/* Begin PBXContainerItemProxy section */
-		000000000000000000000501 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 000000000000000000000000 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 000000000000000100000000;
-			remoteInfo = Threshold;
-		};
-/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Threshold.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Threshold.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		000000000000000000000121 /* ThresholdDeviceBenchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ThresholdDeviceBenchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		000000000000000000000010 /* Threshold */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Threshold;
-			sourceTree = "<group>";
-		};
-		000000000000000000000030 /* DeviceBenchTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = DeviceBenchTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -56,14 +37,6 @@
 				000000000000000000000205 /* ThresholdInputs in Frameworks */,
 			);
 		};
-		000000000000000230000000 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-				000000000000000000000206 /* ThresholdRender in Frameworks */,
-				000000000000000000000207 /* ThresholdShaderIR in Frameworks */,
-				000000000000000000000208 /* ThresholdCore in Frameworks */,
-			);
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -71,7 +44,6 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000010 /* Threshold */,
-				000000000000000000000030 /* DeviceBenchTests */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -80,7 +52,6 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000120 /* Threshold.app */,
-				000000000000000000000121 /* ThresholdDeviceBenchTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -113,32 +84,6 @@
 			productReference = 000000000000000000000120 /* Threshold.app */;
 			productType = "com.apple.product-type.application";
 		};
-		000000000000000200000000 /* ThresholdDeviceBenchTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000210000000 /* Build configuration list for PBXNativeTarget "ThresholdDeviceBenchTests" */;
-			buildPhases = (
-				000000000000000220000000 /* Sources */,
-				000000000000000230000000 /* Frameworks */,
-				000000000000000240000000 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				000000000000000000000502 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				000000000000000000000030 /* DeviceBenchTests */,
-			);
-			name = ThresholdDeviceBenchTests;
-			packageProductDependencies = (
-				000000000000000000000306 /* ThresholdRender */,
-				000000000000000000000307 /* ThresholdShaderIR */,
-				000000000000000000000308 /* ThresholdCore */,
-			);
-			productName = ThresholdDeviceBenchTests;
-			productReference = 000000000000000000000121 /* ThresholdDeviceBenchTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -151,10 +96,6 @@
 				TargetAttributes = {
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
-					};
-					000000000000000200000000 = {
-						CreatedOnToolsVersion = 26.3;
-						TestTargetID = 000000000000000100000000;
 					};
 				};
 			};
@@ -176,18 +117,12 @@
 			projectRoot = "";
 			targets = (
 				000000000000000100000000 /* Threshold */,
-				000000000000000200000000 /* ThresholdDeviceBenchTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		000000000000000140000000 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			files = (
-			);
-		};
-		000000000000000240000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -200,20 +135,7 @@
 			files = (
 			);
 		};
-		000000000000000220000000 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-			);
-		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXTargetDependency section */
-		000000000000000000000502 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 000000000000000100000000 /* Threshold */;
-			targetProxy = 000000000000000000000501 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		000000000000000011000000 /* Debug configuration for PBXProject "Threshold" */ = {
@@ -444,52 +366,6 @@
 			};
 			name = Release;
 		};
-		000000000000000211000000 /* Debug configuration for PBXNativeTarget "ThresholdDeviceBenchTests" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = PMHYFM3SU4;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.pupppower.thresholdb3.DeviceBench;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Threshold.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Threshold";
-				XROS_DEPLOYMENT_TARGET = 26.0;
-			};
-			name = Debug;
-		};
-		000000000000000212000000 /* Release configuration for PBXNativeTarget "ThresholdDeviceBenchTests" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = PMHYFM3SU4;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.pupppower.thresholdb3.DeviceBench;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Threshold.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Threshold";
-				XROS_DEPLOYMENT_TARGET = 26.0;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -506,14 +382,6 @@
 			buildConfigurations = (
 				000000000000000111000000 /* Debug configuration for PBXNativeTarget "Threshold" */,
 				000000000000000112000000 /* Release configuration for PBXNativeTarget "Threshold" */,
-			);
-			defaultConfigurationName = Release;
-		};
-		000000000000000210000000 /* Build configuration list for PBXNativeTarget "ThresholdDeviceBenchTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				000000000000000211000000 /* Debug configuration for PBXNativeTarget "ThresholdDeviceBenchTests" */,
-				000000000000000212000000 /* Release configuration for PBXNativeTarget "ThresholdDeviceBenchTests" */,
 			);
 			defaultConfigurationName = Release;
 		};
@@ -546,18 +414,6 @@
 		000000000000000000000305 /* ThresholdInputs */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ThresholdInputs;
-		};
-		000000000000000000000306 /* ThresholdRender */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ThresholdRender;
-		};
-		000000000000000000000307 /* ThresholdShaderIR */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ThresholdShaderIR;
-		};
-		000000000000000000000308 /* ThresholdCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ThresholdCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

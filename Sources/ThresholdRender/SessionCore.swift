@@ -299,12 +299,20 @@ final class SessionCore {
         func rigValue(_ key: ParamKey, _ fallback: Float) -> Float {
             layout.slot(for: key).map { resolved.values[$0] } ?? fallback
         }
+        // A float3 rig param (pan/twist): three consecutive resolved slots, or
+        // zero when the layout has no such param (minimal test catalogs).
+        func rigVec(_ key: ParamKey) -> SIMD3<Float> {
+            guard let s = layout.slot(for: key) else { return .zero }
+            return SIMD3(resolved.values[s], resolved.values[s + 1], resolved.values[s + 2])
+        }
         let baseCamera = displayedCamera
         let pose = CameraRig.pose(
             base: baseCamera,
             yaw: rigValue(.cameraOrbitYaw, 0),
             pitch: rigValue(.cameraOrbitPitch, 0),
-            dolly: rigValue(.cameraDolly, 1))
+            dolly: rigValue(.cameraDolly, 1),
+            pan: rigVec(.cameraPan),
+            twist: rigVec(.cameraTwist))
         uniforms.camPosFov = SIMD4(pose.position, tan(baseCamera.fovYRadians * 0.5))
         uniforms.camQuat = pose.orientation
         // Zoom (plan §6.3): resolved scale.zoom (integrator phase driven by

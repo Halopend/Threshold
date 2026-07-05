@@ -1525,10 +1525,79 @@ struct WarpOpRow: View {
                     range: Double(strengthRange.lowerBound)...Double(strengthRange.upperBound),
                     commit: { mirror.setWarpStack(WarpStackEdit.settingStrength(mirror.warpStack, at: index, to: Float($0))) })
             }
+            if kind == .bounding {
+                boundingControls
+            }
         }
         .padding(DS.Spacing.sm)
         .background(
             RoundedRectangle(cornerRadius: DS.Radius.inset)
                 .fill(.quaternary.opacity(0.5)))
+    }
+
+    // MARK: Bounding op controls (§66)
+
+    /// Shape picker + scale/softness sliders + subtract/fixed toggles. Shown
+    /// only for the Bounding op (the first warp op to expose per-op fields).
+    @ViewBuilder private var boundingControls: some View {
+        Picker("Shape", selection: shapeBinding) {
+            ForEach(BoundingShape.allCases, id: \.self) { shape in
+                Text(shape.uiName).tag(shape)
+            }
+        }
+        .pickerStyle(.menu)
+        .font(.caption)
+        componentSlider("Scale", component: 1, range: 0.1...4)
+        componentSlider("Softness", component: 2, range: 0.01...0.5)
+        HStack(spacing: DS.Spacing.md) {
+            Toggle("Subtract", isOn: flagBinding(bit: WarpFlags.optionA.rawValue))
+            Toggle("Fixed", isOn: fixedBinding)
+        }
+        .font(.caption)
+        .toggleStyle(.switch)
+    }
+
+    private var shapeBinding: SwiftUI.Binding<BoundingShape> {
+        SwiftUI.Binding(
+            get: { BoundingShape(code: op.a[0]) },
+            set: { mirror.setWarpStack(WarpStackEdit.settingA(
+                mirror.warpStack, at: index, component: 0, to: $0.shapeCode)) })
+    }
+
+    private func flagBinding(bit: UInt32) -> SwiftUI.Binding<Bool> {
+        SwiftUI.Binding(
+            get: { op.flags & bit != 0 },
+            set: { mirror.setWarpStack(WarpStackEdit.settingFlag(
+                mirror.warpStack, at: index, bit: bit, on: $0)) })
+    }
+
+    /// Fixed placement uses the dedicated helper so enabling it also relocates
+    /// the op to the end of the stack.
+    private var fixedBinding: SwiftUI.Binding<Bool> {
+        SwiftUI.Binding(
+            get: { op.flags & WarpFlags.optionB.rawValue != 0 },
+            set: { mirror.setWarpStack(WarpStackEdit.settingBoundFixed(
+                mirror.warpStack, at: index, fixed: $0)) })
+    }
+
+    @ViewBuilder
+    private func componentSlider(_ label: String, component comp: Int,
+                                 range: ClosedRange<Float>) -> some View {
+        let value = op.a.indices.contains(comp) ? op.a[comp] : 0
+        HStack(spacing: DS.Spacing.sm) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+                .frame(width: 60, alignment: .leading)
+            Slider(value: SwiftUI.Binding(
+                get: { Double(value) },
+                set: { mirror.setWarpStack(WarpStackEdit.settingA(
+                    mirror.warpStack, at: index, component: comp, to: Float($0))) }
+            ), in: Double(range.lowerBound)...Double(range.upperBound))
+            EditableNumberText(
+                display: ValueFormatting.format(value),
+                value: Double(value),
+                range: Double(range.lowerBound)...Double(range.upperBound),
+                commit: { mirror.setWarpStack(WarpStackEdit.settingA(
+                    mirror.warpStack, at: index, component: comp, to: Float($0))) })
+        }
     }
 }

@@ -73,19 +73,52 @@ struct WarpStackEditTests {
             #expect(current.map(\.kind).sorted() == originalKinds)
         }
     }
+
+    @Test("settingA writes one payload component; out-of-range is a no-op")
+    func settingA() {
+        let edited = WarpStackEdit.settingA(stack, at: 1, component: 2, to: 0.3)
+        #expect(edited[1].a[2] == 0.3)
+        #expect(edited[0] == stack[0])
+        #expect(edited[2] == stack[2])
+        #expect(WarpStackEdit.settingA(stack, at: 9, component: 0, to: 1) == stack)
+        #expect(WarpStackEdit.settingA(stack, at: 0, component: 4, to: 1) == stack)
+    }
+
+    @Test("settingFlag sets and clears a single bit without clobbering others")
+    func settingFlag() {
+        let set = WarpStackEdit.settingFlag(stack, at: 0, bit: 1 << 0, on: true)
+        #expect(set[0].flags == 1)
+        #expect(WarpStackEdit.settingFlag(set, at: 0, bit: 1 << 0, on: false)[0].flags == 0)
+        let two = WarpStackEdit.settingFlag(set, at: 0, bit: 1 << 3, on: true)
+        #expect(two[0].flags == (1 | 8))
+    }
+
+    @Test("settingBoundFixed sets OPTION_B and moves the op to the end")
+    func settingBoundFixed() {
+        let boundStack = [dto(kind: 66, strength: 1), stack[1], stack[2]]
+        let fixed = WarpStackEdit.settingBoundFixed(boundStack, at: 0, fixed: true)
+        #expect(fixed.count == 3)
+        #expect(fixed.last?.kind == 66)            // relocated to the end
+        #expect(fixed.last?.flags == (1 << 3))     // OPTION_B set
+        #expect(fixed[0].kind == boundStack[1].kind)  // others shifted up
+        // Disabling Fixed clears the bit and leaves the position as-is.
+        let unfixed = WarpStackEdit.settingBoundFixed(fixed, at: 2, fixed: false)
+        #expect(unfixed[2].kind == 66)
+        #expect(unfixed[2].flags == 0)
+    }
 }
 
 @Suite("WarpMenu add-menu catalog")
 struct WarpMenuTests {
-    @Test("Every constructible kind appears exactly once (none/bounding excluded)")
+    @Test("Every constructible kind appears exactly once (only none excluded)")
     func coverage() {
         let items = WarpMenu.families.flatMap(\.items)
         let kinds = items.map(\.kindRawValue)
-        #expect(items.count == 20)  // kinds 1…18 + handAttract(64) + forearmCarve(65)
+        #expect(items.count == 21)  // kinds 1…18 + handAttract(64) + forearmCarve(65) + bounding(66)
         #expect(Set(kinds).count == kinds.count)
-        #expect(!kinds.contains(0))   // .none
-        #expect(!kinds.contains(66))  // .bounding (reserved, no constructor)
-        let expected = Set<UInt32>((1...18).map(UInt32.init) + [64, 65])
+        #expect(!kinds.contains(0))   // .none is the only excluded kind
+        #expect(kinds.contains(66))   // .bounding is now user-addable
+        let expected = Set<UInt32>((1...18).map(UInt32.init) + [64, 65, 66])
         #expect(Set(kinds) == expected)
     }
 

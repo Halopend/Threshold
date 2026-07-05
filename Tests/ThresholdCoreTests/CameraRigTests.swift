@@ -70,6 +70,57 @@ struct CameraRigTests {
         #expect(pose.orientation == SIMD4(0, 0, 0, 1))
     }
 
+    // MARK: - Two-hand grab DOF (pan + twist)
+
+    @Test func panTranslatesTheCameraInWorldSpace() {
+        let base = CameraDTO(position: [0, 0, 3], orientation: [0, 0, 0, 1],
+                             fovYRadians: .pi / 3)
+        let pose = CameraRig.pose(
+            base: base, yaw: 0, pitch: 0, dolly: 1,
+            pan: SIMD3(1, 2, -0.5))
+        #expect(simd_length(pose.position - SIMD3<Float>(1, 2, 2.5)) < 1e-5)
+        // Pure pan does not rotate.
+        #expect(simd_length(pose.orientation - SIMD4<Float>(0, 0, 0, 1)) < 1e-5)
+    }
+
+    @Test func twistRotatesAboutTheTarget() {
+        let base = CameraDTO(position: [0, 0, 3], orientation: [0, 0, 0, 1],
+                             fovYRadians: .pi / 3)
+        // Rotation-vector of magnitude π about world-up: swings the camera from
+        // +Z to −Z about the origin target (like a π yaw), same distance.
+        let pose = CameraRig.pose(
+            base: base, yaw: 0, pitch: 0, dolly: 1,
+            twist: SIMD3(0, .pi, 0))
+        #expect(abs(pose.position.x) < 1e-4)
+        #expect(abs(pose.position.y) < 1e-4)
+        #expect(abs(pose.position.z + 3) < 1e-4)
+        // Still framing the target: forward points back toward +Z.
+        let q = simd_quatf(vector: pose.orientation)
+        let forward = q.act(SIMD3(0, 0, -1))
+        #expect(simd_length(forward - SIMD3(0, 0, 1)) < 1e-4)
+    }
+
+    @Test func zeroPanAndTwistLeaveTheOrbitPoseUnchanged() {
+        let base = CameraDTO(position: [0, 0, 3], orientation: [0, 0, 0, 1],
+                             fovYRadians: .pi / 3)
+        let orbit = CameraRig.pose(base: base, yaw: 0.4, pitch: 0.2, dolly: 0.8)
+        let withZero = CameraRig.pose(
+            base: base, yaw: 0.4, pitch: 0.2, dolly: 0.8,
+            pan: .zero, twist: .zero)
+        #expect(simd_length(orbit.position - withZero.position) < 1e-6)
+        #expect(simd_length(orbit.orientation - withZero.orientation) < 1e-6)
+    }
+
+    @Test func engineDefaultsRegisterPanAndTwist() {
+        let layout = Catalog.withEngineDefaults().freeze()
+        for key in [ParamKey.cameraPan, .cameraTwist] {
+            let entry = try! #require(layout.entry(for: key))
+            #expect(entry.spec.group == .camera)
+            #expect(entry.spec.kind == .float3)
+            #expect(entry.spec.capabilities.contains(.gestureBindable))
+        }
+    }
+
     @Test func engineDefaultsRegisterTheRig() {
         let layout = Catalog.withEngineDefaults().freeze()
         for key in [ParamKey.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly] {

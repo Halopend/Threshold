@@ -22,7 +22,8 @@ import ThresholdShaderABI
 
 /// Swift mirror of `ThreshWarpKind`. Raw values are the ABI values — they
 /// persist in scene files and index the GPU interpreter's switch. NEVER
-/// renumber; `Bounding` (66) is reserved (clip/fog, not implemented Phase 2).
+/// renumber. `Bounding` (66) clips the fractal to a platonic solid
+/// (docs/op-semantics.md §66).
 public enum WarpKind: UInt32, CaseIterable, Sendable, Codable, Hashable {
     case none = 0
     // Bend & Wave

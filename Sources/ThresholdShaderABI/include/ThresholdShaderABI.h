@@ -5,13 +5,18 @@
 // that cross the CPU→GPU boundary. Layout rules are enforced by the static
 // asserts at the bottom on both compilers.
 //
-// ABI evolution: bump THRESHOLD_ABI_VERSION on any layout or semantic change.
+// ABI evolution: bump THRESHOLD_ABI_VERSION on any STRUCT-LAYOUT or DE-ABI
+// change (DEContext / param-slice convention) — it is checked by strict
+// equality against embedded/external DE programs, so a bump rejects older
+// content. Additive, layout-preserving warp-op semantics (e.g. implementing a
+// previously reserved kind) do NOT bump it: old scenes stay binary-compatible
+// and unknown kinds already degrade to no-ops.
 // Never reorder or renumber existing enum values — they persist in scene files.
 
 #ifndef THRESHOLD_SHADER_ABI_H
 #define THRESHOLD_SHADER_ABI_H
 
-#define THRESHOLD_ABI_VERSION 3
+#define THRESHOLD_ABI_VERSION 2
 
 #ifdef __METAL_VERSION__
   #include <metal_stdlib>

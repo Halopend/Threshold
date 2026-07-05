@@ -48,7 +48,12 @@ public final class GestureBindingStore {
            let decoded = try? JSONDecoder().decode(GestureBindingSet.self, from: data) {
             self.set = decoded
         } else {
-            self.set = GestureBindingSet()
+            // Fresh install (no saved bindings): seed the per-fractal starter
+            // defaults so gestures do something out of the box, rather than an
+            // empty set the user must fill in the editor first. An existing
+            // user who cleared every binding has a saved (possibly empty) blob
+            // and is not re-seeded.
+            self.set = GestureBindingSet.starter()
         }
         if let data = defaults.data(forKey: Self.presetsKey),
            let decoded = try? JSONDecoder().decode([GestureBindingPreset].self, from: data) {

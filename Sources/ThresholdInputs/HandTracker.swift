@@ -67,6 +67,13 @@ public final class HandTracker: @unchecked Sendable {
     /// Last wrist position + time per hand, for swipe velocity.
     private var lastWrist: [Bool: SIMD3<Float>] = [:]
     private var lastWristTime: [Bool: Double] = [:]
+    /// Momentary sources (palm/fist/swipe) that produced a drive last frame.
+    /// A source that STOPS being detected (finger lifts, hand leaves frame) must
+    /// be actively released — the LaneMailbox is latest-value-wins and never
+    /// auto-zeroes, so without a 0 write the bound param would latch at its last
+    /// value. tapThumb is excluded on purpose: its committedDrag persists so a
+    /// set value holds after release.
+    private var lastMomentary: Set<GestureSource> = []
 
     private let arSession = ARKitSession()
     private let provider = HandTrackingProvider()
@@ -135,10 +142,28 @@ public final class HandTracker: @unchecked Sendable {
             pinchSignal: .handRightPinch, positionSignal: .handRightPosition,
             palmSignal: .handRightPalm, forearmSignal: .handRightForearm)
 
+        // Release momentary sources (palm/fist/swipe) that were detected last
+        // frame but not this one, so a bound param unwinds to base (0 offset on
+        // the transient gesture lane) instead of latching at its last value.
+        let detectedMomentary = Set(frameDrives.keys.filter(Self.isMomentary))
+        for source in lastMomentary where !detectedMomentary.contains(source) {
+            frameDrives[source] = source.arity == .scalar ? .scalar(0) : .vector(.zero)
+        }
+        lastMomentary = detectedMomentary
+
         // Map this frame's drives through the bindings onto the gesture lane.
         for write in GestureLaneResolver.resolve(
             drives: frameDrives, table: frameTable, layout: layout) {
             mailbox.publish(write)
+        }
+    }
+
+    /// Momentary sources release when they stop being detected; tapThumb holds
+    /// its committed offset and is deliberately not auto-released.
+    private static func isMomentary(_ source: GestureSource) -> Bool {
+        switch source {
+        case .tapPalm, .fist, .swipe: return true
+        case .tapThumb: return false
         }
     }
 

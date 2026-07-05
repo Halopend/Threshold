@@ -79,6 +79,39 @@ struct RenderTests {
                 "kaleidoscope+twist must change the image")
     }
 
+    /// End-to-end Bounding op (§66) through the real march — the equivalence
+    /// tests validate the CSG math in isolation; this catches march
+    /// INSTABILITY (a hard clip surface tunnelled by the over-relaxed tracer
+    /// would show as NaN-sentinel pixels, i.e. alpha 0).
+    @Test(.enabled(if: GPU.available))
+    func boundingRender() throws {
+        let renderer = try OffscreenRenderer(context: GPU.ctx())
+        let unbounded = try renderer.render(smokeRequest())
+
+        // In-stack sphere bound (intersect) clips the bulb to a small sphere.
+        let inStack = try renderer.render(smokeRequest(ops: [
+            makeOp(WK.bounding, s: 1, a: SIMD4(0, 0.35, 0.05, 0)),   // sphere, scale, in-stack intersect
+        ]))
+        #expect(Image(result: inStack).allAlphaOpaque, "clip must not destabilize the march (no NaN)")
+        #expect(inStack.stats.totalSteps > 0)
+        #expect(inStack.rgba8 != unbounded.rgba8, "a tight intersect bound must change the image")
+
+        // Subtract mode (carve a sphere out of the bulb).
+        let subtract = try renderer.render(smokeRequest(ops: [
+            makeOp(WK.bounding, s: 1, a: SIMD4(0, 0.3, 0.05, 0), flags: WK.flagOptionA),
+        ]))
+        #expect(Image(result: subtract).allAlphaOpaque, "subtract must not destabilize the march")
+        #expect(subtract.rgba8 != unbounded.rgba8, "subtract must change the image")
+
+        // Fixed (world-space) cube bound.
+        let fixed = try renderer.render(smokeRequest(ops: [
+            makeOp(WK.bounding, s: 1, a: SIMD4(1, 0.5, 0.05, 0),
+                   b: SIMD4(0, 0, 0, 0), flags: WK.flagOptionB),
+        ]))
+        #expect(Image(result: fixed).allAlphaOpaque, "fixed bound must not destabilize the march")
+        #expect(fixed.rgba8 != unbounded.rgba8, "a fixed cube bound must change the image")
+    }
+
     @Test(.enabled(if: GPU.available))
     func renderIsDeterministic() throws {
         let renderer = try OffscreenRenderer(context: GPU.ctx())

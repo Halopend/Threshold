@@ -263,7 +263,61 @@ cap = length(pa - ba·h) - a.w
 d' = lerp(d, smax(d, -cap, max(b.w, 1e-4)), |s|)
 ```
 
-### 66 Bounding — reserved (clip/fog op; not implemented in Phase 2)
+### 66 Bounding — `a.x` shape code, `a.y` scale r, `a.z` softness k; `b.xyz` world center (fixed only)
+
+Clips the fractal to a platonic solid via CSG. Two flags select behaviour:
+`OPTION_A` = **subtract** (carve the solid out) vs intersect (keep the fractal
+inside); `OPTION_B` = **fixed** world-space placement vs **in-stack** (the
+default). `strength` blends identity→full clip (a `mix` amount, like the other
+distance ops).
+
+**Shape SDF** `sdSolid(p, r, shape)` — signed distance to a shape centred at the
+origin, half-extent `r`. `shape` is `a.x`: `0..1` morphs sphere→cube; discrete
+codes select platonic solids. The exposed set is sphere (0), cube (1), tetra
+(2), octa (4), icosa (5), dodeca (6); code 3 (rounded-cube superquadric) exists
+for the legacy safety bubble but is not offered by the Bounding op. `sdSolid` is
+ONE function shared by this op and the safety bubble, cross-checked CPU↔GPU.
+
+```
+box(p, r)   = length(max(|p| - r, 0)) + min(max((|p|-r).x, (|p|-r).y, (|p|-r).z), 0)
+shape ≤ 1:  sdSolid = mix(|p| - r, box(p, r), clamp(shape, 0, 1))
+shape = 2 (tetra):  max over the 4 face normals ·p  −  r/√3
+shape = 4 (octa):   (|p|.x + |p|.y + |p|.z − r) / √3
+shape = 5 (icosa):  max over the icosahedral normals ·|p|  −  r·0.85065…
+shape = 6 (dodeca): max over the dodecahedral normals ·|p|  −  r·0.85065…
+```
+
+**In-stack** (`OPTION_B` clear) — captured DURING the point-op walk at this op's
+slot, so preceding warps bend/tile/fold the solid. Let `p_k`, `dScale_k` be the
+transformed point and accumulated scale when the walk reaches slot k:
+
+```
+bw_k = sdSolid(p_k, a.y, a.x) / dScale_k     — frame-local distance → world units
+```
+
+The `/dScale_k` conversion is the same reasoning as `d = de.x/dScale`. Captured
+bounds fold into the resolved distance in stack order, INSIDE mapScene (so the
+clip surface gets correct normals/AO), BEFORE the world-space distance ops:
+
+```
+intersect:  d = mix(d, smax(d,  bw_k, max(a.z, 1e-4)), s)
+subtract:   d = mix(d, smax(d, -bw_k, max(a.z, 1e-4)), s)
+```
+
+At most `THRESH_MAX_BOUND_OPS` in-stack bounds are captured per stack; extras are
+dropped (a documented soft cap).
+
+**Fixed** (`OPTION_B` set) — a world-space distance op (`applyDistanceOps`),
+evaluated on the ORIGINAL point at `b.xyz`, folded AFTER the in-stack bounds:
+
+```
+bw = sdSolid(worldP − b.xyz, a.y, a.x)
+intersect:  d = mix(d, smax(d,  bw, max(a.z, 1e-4)), s)
+subtract:   d = mix(d, smax(d, -bw, max(a.z, 1e-4)), s)
+```
+
+The editor forces a fixed bound to the END of the stack (its slot no longer
+matters), so in-stack-then-fixed ordering holds by construction.
 
 ## Simplifier contract (port of the shipping rules — exact fusion ONLY)
 
