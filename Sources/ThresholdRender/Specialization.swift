@@ -123,12 +123,21 @@ public struct MarchSpec: Sendable, Hashable {
     /// library never declares it; the CLI --specialize perf path defaults it
     /// ON (fps-first policy — docs/perf-notes.md block 9).
     public var coneMarch: Bool?
+    /// Cone-traced supersampling (function_constant 12, aux-style bool):
+    /// stateless geometric AA inside the march — hit groups with partial
+    /// pixel-cone coverage are shaded once each and composited through a
+    /// subpixel visibility mask (Chubarau et al., GI 2023). Changes the image
+    /// by design (that's the AA), so the generic/golden library never bakes
+    /// it; opt-in on the perf pipeline while the cost A/B (perf block 17)
+    /// settles.
+    public var ctss: Bool?
 
     public init(iterations: Int? = nil, maxSteps: Int? = nil,
                 hasWarpOps: Bool? = nil, colorMapMode: Int? = nil,
                 aoEnabled: Bool? = nil, hasDistanceOps: Bool? = nil,
                 statsEnabled: Bool? = nil, coneMarch: Bool? = nil,
-                coneMargin: Int? = nil, lodFalloff: Int? = nil) {
+                coneMargin: Int? = nil, lodFalloff: Int? = nil,
+                ctss: Bool? = nil) {
         self.iterations = iterations
         self.maxSteps = maxSteps
         self.hasWarpOps = hasWarpOps
@@ -139,6 +148,7 @@ public struct MarchSpec: Sendable, Hashable {
         self.coneMarch = coneMarch
         self.coneMargin = coneMargin
         self.lodFalloff = lodFalloff
+        self.ctss = ctss
     }
 
     /// Translate live tuning + the resolved param table into the constants to
@@ -161,7 +171,8 @@ public struct MarchSpec: Sendable, Hashable {
             aoEnabled: tuning.gateAO
                 ? (params[Int(THRESH_SLOT_AO_STRENGTH)] > 0) : nil,
             coneMarch: tuning.conePrepass ? true : nil,
-            coneMargin: tuning.conePrepass ? tuning.coneStability.margin : nil)
+            coneMargin: tuning.conePrepass ? tuning.coneStability.margin : nil,
+            ctss: tuning.ctss ? true : nil)
     }
 
     /// Nothing baked — the variant is just the direct-call inline.
@@ -169,14 +180,14 @@ public struct MarchSpec: Sendable, Hashable {
         iterations == nil && maxSteps == nil && hasWarpOps == nil
             && colorMapMode == nil && aoEnabled == nil && hasDistanceOps == nil
             && statsEnabled == nil && coneMarch == nil && coneMargin == nil
-            && lodFalloff == nil
+            && lodFalloff == nil && ctss == nil
     }
 
     /// Stable cache-key fragment.
     var keyFragment: String {
         func i(_ v: Int?) -> String { v.map(String.init) ?? "-" }
         func b(_ v: Bool?) -> String { v.map { $0 ? "1" : "0" } ?? "-" }
-        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))m\(i(coneMargin))l\(i(lodFalloff))"
+        return "i\(i(iterations))s\(i(maxSteps))o\(b(hasWarpOps))c\(i(colorMapMode))a\(b(aoEnabled))d\(b(hasDistanceOps))t\(b(statsEnabled))k\(b(coneMarch))m\(i(coneMargin))l\(i(lodFalloff))x\(b(ctss))"
     }
 
     /// Human-readable summary of what's baked (for the diagnostics readout).
@@ -192,6 +203,7 @@ public struct MarchSpec: Sendable, Hashable {
         if let coneMarch { parts.append(coneMarch ? "cone" : "no-cone") }
         if let coneMargin { parts.append("cone-margin=\(coneMargin)") }
         if let lodFalloff { parts.append("lod-falloff=\(lodFalloff)") }
+        if let ctss { parts.append(ctss ? "ctss" : "no-ctss") }
         return parts.joined(separator: ", ")
     }
 }
@@ -206,14 +218,19 @@ extension GPUContext {
     func compileSpecializedLibrary(
         deFunctionName: String, mathMode: MTLMathMode? = nil
     ) throws -> MTLLibrary {
-        guard DERegistry.builtin.contains(where: { $0.mslFunctionName == deFunctionName })
+        guard let descriptor = DERegistry.builtin.first(
+            where: { $0.mslFunctionName == deFunctionName })
         else { throw RenderError.missingFunction("not a built-in DE: \(deFunctionName)") }
 
         guard let coreURL = Bundle.module.url(
             forResource: "RaymarchCore", withExtension: "metal", subdirectory: "MSL")
         else { throw RenderError.missingResource("MSL/RaymarchCore.metal") }
         let core = try String(contentsOf: coreURL, encoding: .utf8)
-        let source = "#define THRESH_SPEC_DE \(deFunctionName)\n"
+        // Per-DE cone-prepass distrust factor, folded at compile time (the
+        // core's #ifndef default of 1.0 covers the generic/external paths).
+        let fudge = String(format: "#define THRESH_CONE_FUDGE %.3ff\n",
+                           descriptor.coneFudge)
+        let source = "#define THRESH_SPEC_DE \(deFunctionName)\n" + fudge
             + abiHeaderSource + "\n" + core
 
         let options = MTLCompileOptions()

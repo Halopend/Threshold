@@ -30,7 +30,9 @@ public final class OffscreenRenderer: @unchecked Sendable {
     // fixed size, so re-creating a 16 MiB output texture (plus cone/stats
     // objects) every frame is pure allocator churn. Rebuilt on size change.
     private var cachedTexture: MTLTexture?
-    private var cachedConeTexture: MTLTexture?
+    /// Cone-prepass textures cached per level (index 0 = coarsest). Reused
+    /// across frames when dimensions match; grown/reallocated on size change.
+    private var cachedConeTextures: [MTLTexture] = []
     private var cachedStats: MTLBuffer?
 
     // Env seams parsed ONCE (ProcessInfo.environment re-bridges the whole
@@ -122,51 +124,72 @@ public final class OffscreenRenderer: @unchecked Sendable {
         // the specialized variant baked coneMarch.
         var coneTexture: MTLTexture? = nil
         if program == nil, let prepass = specialized?.conePrepass {
-            // MUST match THRESH_CONE_TILE in RaymarchCore.metal (the fine
-            // kernel maps gid/8 → cone texel).
-            let tile = 8
-            let cw = (request.width + tile - 1) / tile
-            let ch = (request.height + tile - 1) / tile
-            let coneTex: MTLTexture
-            if let cached = cachedConeTexture, cached.width == cw, cached.height == ch {
-                coneTex = cached
-            } else {
-                let coneDesc = MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat: .r32Float, width: cw, height: ch, mipmapped: false)
-                coneDesc.usage = [.shaderWrite, .shaderRead]
-                coneDesc.storageMode = .private
-                guard let fresh = device.makeTexture(descriptor: coneDesc) else {
-                    throw RenderError.allocationFailed("cone prepass texture")
+            // Multi-level hierarchy (block 18): dispatch the prepass kernel
+            // once per level (coarse → fine), each seeding the next; the
+            // FINEST (8×8) texture feeds the march. Single-level (levels 1,
+            // budget 48, iterScale 1) is the block-9 pass.
+            let plan = ConePrepassPlan.levels(
+                levelCount: request.tuning.conePrepassLevels,
+                fullWidth: request.width, fullHeight: request.height,
+                stepBudget: request.tuning.conePrepassStepBudget,
+                iterScale: request.tuning.conePrepassIterScale)
+
+            // (Re)allocate the per-level texture cache when the plan's sizes
+            // change (resolution or level-count change).
+            let wantSizes = plan.map {
+                ConePrepassPlan.textureSize(
+                    tileSize: $0.tileSize,
+                    fullWidth: request.width, fullHeight: request.height)
+            }
+            let cacheOK = cachedConeTextures.count == wantSizes.count
+                && zip(cachedConeTextures, wantSizes).allSatisfy {
+                    $0.width == $1.width && $0.height == $1.height
                 }
-                cachedConeTexture = fresh
-                coneTex = fresh
+            if !cacheOK {
+                cachedConeTextures = try wantSizes.map { size in
+                    let d = MTLTextureDescriptor.texture2DDescriptor(
+                        pixelFormat: .r32Float, width: size.width,
+                        height: size.height, mipmapped: false)
+                    d.usage = [.shaderWrite, .shaderRead]
+                    d.storageMode = .private
+                    guard let t = device.makeTexture(descriptor: d) else {
+                        throw RenderError.allocationFailed("cone prepass texture")
+                    }
+                    return t
+                }
             }
-            guard let pre = commandBuffer.makeComputeCommandEncoder() else {
-                throw RenderError.allocationFailed("cone prepass encoder")
+
+            for (i, level) in plan.enumerated() {
+                let out = cachedConeTextures[i]
+                // Level 0 has no coarser input; bind its own output as an
+                // unread dummy (the kernel gates the read on hasInput).
+                let prev = i == 0 ? out : cachedConeTextures[i - 1]
+                guard let pre = commandBuffer.makeComputeCommandEncoder() else {
+                    throw RenderError.allocationFailed("cone prepass encoder")
+                }
+                pre.label = "march_cone_prepass L\(i) tile\(level.tileSize)"
+                pre.setComputePipelineState(prepass)
+                withUnsafeBytes(of: uniforms) { raw in
+                    pre.setBytes(raw.baseAddress!, length: raw.count,
+                                 index: Int(THRESH_BUFFER_UNIFORMS))
+                }
+                pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
+                pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
+                pre.setVisibleFunctionTable(
+                    specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
+                var cp = level.params
+                withUnsafeBytes(of: &cp) { raw in
+                    pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
+                }
+                pre.setTexture(out, index: 3)
+                pre.setTexture(prev, index: 5)
+                pre.dispatchThreadgroups(
+                    MTLSize(width: (out.width + 7) / 8,
+                            height: (out.height + 7) / 8, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+                pre.endEncoding()
             }
-            pre.label = "march_cone_prepass"
-            pre.setComputePipelineState(prepass)
-            withUnsafeBytes(of: uniforms) { raw in
-                pre.setBytes(raw.baseAddress!, length: raw.count,
-                             index: Int(THRESH_BUFFER_UNIFORMS))
-            }
-            pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
-            pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-            pre.setVisibleFunctionTable(
-                specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
-            var dims = SIMD2<UInt32>(UInt32(request.width), UInt32(request.height))
-            withUnsafeBytes(of: &dims) { raw in
-                pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
-            }
-            pre.setTexture(coneTex, index: 3)
-            let coneGroups = MTLSize(
-                width: (coneTex.width + 7) / 8,
-                height: (coneTex.height + 7) / 8, depth: 1)
-            pre.dispatchThreadgroups(
-                coneGroups,
-                threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-            pre.endEncoding()
-            coneTexture = coneTex
+            coneTexture = cachedConeTextures.last
         }
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {

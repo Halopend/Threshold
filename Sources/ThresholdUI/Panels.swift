@@ -876,8 +876,54 @@ public struct PipelineSection: View {
                     Text("higher = less silhouette shimmer, slightly slower")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+
+                // Advanced Prepass (block 18): the multi-level hierarchy runs
+                // coarse pre-passes (32→16→8) before the fine march, each
+                // clearing empty space so the fine level starts partway. Real
+                // ~20% win when the fractal is small-in-frame / lots of empty
+                // space; inert (never harmful) when it fills the view.
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("Prepass Levels", selection: conePrepassLevels) {
+                        Text("1").tag(1)
+                        Text("2").tag(2)
+                        Text("3").tag(3)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!mirror.renderTuning.conePrepass)
+                    Text("coarse→fine passes (2–3 skip empty space when zoomed out)")
+                        .font(.caption2).foregroundStyle(.secondary)
+
+                    Stepper(
+                        "Coarse Steps: \(mirror.renderTuning.conePrepassStepBudget)",
+                        value: conePrepassStepBudget, in: 8...96, step: 8)
+                        .disabled(!mirror.renderTuning.conePrepass)
+                    Text("budget per coarse pass (lower = cheaper, seed more conservative)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+
+                // Cone-traced supersampling: stateless geometric AA in the
+                // march (partial-coverage surfaces composited by subpixel
+                // visibility). Cost concentrates on silhouette pixels.
+                Divider().padding(.vertical, 2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Cone Supersampling (CTSS)", isOn: tuning(\.ctss))
+                    Text("smooths geometric edges without history/ghosting; costs most on silhouettes")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             .disabled(!mirror.renderTuning.specializationEnabled)
+
+            // visionOS half-rate cadence (independent of specialization):
+            // each frame is held for two 90Hz display cycles. Head tracking
+            // stays smooth (compositor depth reprojection); content
+            // animation drops to 45Hz. The big power/thermal lever on
+            // device; no effect on the Mac/iOS shells.
+            Divider().padding(.vertical, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Half Rate (45 Hz, Vision Pro)", isOn: tuning(\.halfRate))
+                Text("holds each frame two display cycles — head tracking stays smooth, content animates at 45 Hz")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .moduleCard(.orange)
     }
@@ -905,6 +951,26 @@ public struct PipelineSection: View {
                 next[keyPath: keyPath] = newValue
                 mirror.setRenderTuning(next)
             })
+    }
+
+    /// Same contract for an Int RenderTuning field (prepass levels, budget).
+    private func tuning(
+        _ keyPath: WritableKeyPath<RenderTuning, Int>
+    ) -> SwiftUI.Binding<Int> {
+        SwiftUI.Binding(
+            get: { mirror.renderTuning[keyPath: keyPath] },
+            set: { newValue in
+                var next = mirror.renderTuning
+                next[keyPath: keyPath] = newValue
+                mirror.setRenderTuning(next)
+            })
+    }
+
+    private var conePrepassLevels: SwiftUI.Binding<Int> {
+        tuning(\.conePrepassLevels)
+    }
+    private var conePrepassStepBudget: SwiftUI.Binding<Int> {
+        tuning(\.conePrepassStepBudget)
     }
 
 }

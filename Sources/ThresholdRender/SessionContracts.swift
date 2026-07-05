@@ -76,13 +76,46 @@ public struct RenderTuning: Sendable, Equatable {
     /// OFF: the march runs at `drawable × scale` and MetalFX upscales to full
     /// resolution. 1 = full-res. Ignored while the governor drives the scale.
     public var manualRenderScale: Float
+    /// visionOS half-rate mode: render at 45Hz on the 90Hz display by asking
+    /// the compositor to show each frame for two update cycles
+    /// (`LayerRenderer.minimumFrameRepeatCount = 1`). Head-tracking comfort is
+    /// preserved — the compositor's depth-based reprojection re-warps the
+    /// held frame to the live head pose every display cycle; only CONTENT
+    /// animation (LFO morphs, param changes) drops to 45Hz. Roughly halves
+    /// GPU cost per second — the biggest single power/thermal lever on
+    /// device. Ignored by the Mac/iOS shells.
+    public var halfRate: Bool
+    /// Cone-traced supersampling (function_constant 12): stateless geometric
+    /// AA in the march loop — partial-coverage surfaces along the ray are
+    /// each shaded once and composited by subpixel visibility. Extra cost
+    /// concentrates on silhouette pixels; the A/B lever for perf block 17.
+    public var ctss: Bool
+    /// Cone-prepass hierarchy depth (perf block 18): coarse→fine levels the
+    /// prepass runs before the fine march (finest is always 8×8). 1 = the
+    /// block-9 single pass; 2 → 16→8; 3 → 32→16→8. Each coarser level clears
+    /// big empty regions with few threads so the fine level starts partway.
+    /// RUNTIME (not baked) — the same compiled prepass kernel runs per level.
+    /// Only meaningful with `conePrepass` on.
+    public var conePrepassLevels: Int
+    /// Max coarse-march steps per prepass level (the block-9 hardcoded 48).
+    /// Lower converges the seed in fewer steps (cheaper, more conservative
+    /// seed); RUNTIME. Only meaningful with `conePrepass` on.
+    public var conePrepassStepBudget: Int
+    /// DE fold-iteration fraction the prepass marches at, (0,1] (the "low LOD
+    /// prepass" lever). < 1 runs the coarse DE at fewer iterations — cheaper,
+    /// and the escape-time set inflates outward so the seed stays conservative
+    /// (shorter, never past a surface). RUNTIME. Only meaningful with
+    /// `conePrepass` on. 1 = the block-9 full-iteration prepass.
+    public var conePrepassIterScale: Float
 
     public init(
         specializationEnabled: Bool = true, bakeIterations: Bool = false,
         bakeMaxSteps: Bool = false, gateWarpOps: Bool = false,
         bakeColorMapMode: Bool = false, gateAO: Bool = false,
         conePrepass: Bool = false, coneStability: ConeStability = .fast,
-        manualRenderScale: Float = 1
+        manualRenderScale: Float = 1, halfRate: Bool = false,
+        ctss: Bool = false, conePrepassLevels: Int = 1,
+        conePrepassStepBudget: Int = 48, conePrepassIterScale: Float = 1
     ) {
         self.specializationEnabled = specializationEnabled
         self.bakeIterations = bakeIterations
@@ -93,6 +126,11 @@ public struct RenderTuning: Sendable, Equatable {
         self.conePrepass = conePrepass
         self.coneStability = coneStability
         self.manualRenderScale = manualRenderScale
+        self.halfRate = halfRate
+        self.ctss = ctss
+        self.conePrepassLevels = conePrepassLevels
+        self.conePrepassStepBudget = conePrepassStepBudget
+        self.conePrepassIterScale = conePrepassIterScale
     }
 
     /// The app's starting tuning; the UI overrides live. All function-constant
@@ -101,10 +139,13 @@ public struct RenderTuning: Sendable, Equatable {
     /// IS the runtime value — marchSpec contract), and the generic pipeline
     /// still covers frames until the specialized variant finishes compiling.
     public static var envDefault: RenderTuning {
+        // coneStability .balanced: the block-16 margin sweep measured 6× at
+        // −7% cone-induced temporal flicker for +2.5% GPU on the worst scene
+        // (12× buys −23% at +8.4% — the UI knob still offers it).
         RenderTuning(specializationEnabled: true,
                      bakeIterations: true, bakeMaxSteps: true,
                      gateWarpOps: true, bakeColorMapMode: true, gateAO: true,
-                     conePrepass: true)
+                     conePrepass: true, coneStability: .balanced)
     }
 }
 

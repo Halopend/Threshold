@@ -515,11 +515,12 @@ final class VisionAppModel {
     @ObservationIgnored let gestureStore = GestureBindingStore()
     var lastOpenError: String?
 
-    /// Install the current fractal's gesture bindings into the tracker. Called
-    /// when the user edits a binding (store.onChange) and when the fractal
-    /// changes (VisionMainView observes `mirror.deKey`).
+    /// Install the current fractal's gesture bindings + grab tuning into the
+    /// tracker. Called when the user edits a binding (store.onChange) and
+    /// when the fractal changes (VisionMainView observes `mirror.deKey`).
     func refreshGestureBindings() {
         hands.setBindings(gestureStore.resolvedTable(forFractal: mirror.deKey))
+        hands.setFractal(deKey: mirror.deKey)
     }
 
     init() throws {
@@ -540,12 +541,14 @@ final class VisionAppModel {
         self.loader = try ExternalDELoader(context: context)
 
         let hands = HandTracker(
-            layout: layout, mailbox: session.laneMailbox, signals: signals,
-            snapshots: session.snapshots)
+            layout: layout, mailbox: session.laneMailbox, signals: signals)
         self.hands = hands
         // Hands poll on the render loop's cadence, stamped with session time
         // (CompositorSession.onFrame contract) — set BEFORE the layer attaches.
         session.onFrame = { time in hands.update(sessionTime: time) }
+        // The gesture placement the frame's hand update produced, read right
+        // after onFrame on the same render thread (CompositorSession doc).
+        session.placement = { hands.currentPlacement() }
 
         self.mirror = ParameterMirror(
             layout: layout, snapshots: session.snapshots, commands: session.commands)
@@ -601,6 +604,11 @@ final class VisionAppModel {
             let data = try Data(contentsOf: url)
             switch try ThresholdFile.decode(data, filename: url.lastPathComponent) {
             case .scene(let envelope):
+                // Applying a scene re-anchors the gesture placement (the old
+                // app reset position/rotation/scale on every preset load) —
+                // eased, not snapped, by the tracker's settle spring. Covers
+                // both the embedded-DE and plain paths below.
+                hands.requestPlacementReset()
                 // Focus Band → mic + UI for both the embedded and non-embedded
                 // paths (see the desktop shell's apply(scene:)).
                 setFocusBand(envelope.focusBand ?? .default)
@@ -676,6 +684,8 @@ struct VisionMainView: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: SceneFileDocument?
+    /// Pending un-suppress after a control-window interaction ends.
+    @State private var uiInteractionLinger: Task<Void, Never>?
 
     var body: some View {
         // The sidebar scrolls itself (tab strip stays fixed on top).
@@ -762,6 +772,36 @@ struct VisionMainView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.lastOpenError ?? "")
+        }
+        // Working the control window must not ALSO drag the hologram: every
+        // system pinch here is a real ARKit pinch to the tracker (the old
+        // app's suppressParameterGestures, rebuilt). A simultaneous observer
+        // — never consumes the interaction — suppresses placement gestures
+        // while a pinch-drag is on this window.
+        //
+        // Self-healing: EVERY onChanged reschedules a 0.5 s auto-clear
+        // (cancelling the prior). While the finger moves, onChanged keeps
+        // pushing the clear forward; the moment it stops — finger lifted OR
+        // the gesture CANCELLED (SwiftUI does not guarantee onEnded on
+        // cancellation) — the last-scheduled clear fires and re-enables
+        // gestures. Suppression can never get stuck on. onEnded is a
+        // best-effort accelerator only.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    model.hands.setUISuppressed(true)
+                    scheduleSuppressionClear()
+                }
+                .onEnded { _ in scheduleSuppressionClear() })
+    }
+
+    /// (Re)arm the 0.5 s auto-clear of gesture suppression.
+    private func scheduleSuppressionClear() {
+        uiInteractionLinger?.cancel()
+        uiInteractionLinger = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            model.hands.setUISuppressed(false)
         }
     }
 

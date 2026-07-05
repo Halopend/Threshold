@@ -371,7 +371,10 @@ final class SessionGPUEncoder {
     /// Cone-prepass depth textures, one per in-flight frame (ring parallel to
     /// statsRing): frame N+1's prepass must not overwrite the texture frame
     /// N's march is still reading. Rebuilt on size change.
-    private var coneRing: [MTLTexture?] = [nil, nil, nil]
+    /// Per-ring-slot cone-prepass textures, ONE ARRAY PER LEVEL (coarse→fine,
+    /// block 18 multi-level). Empty until the first prepass sizes them; the
+    /// finest (last) is what the march reads.
+    private var coneRing: [[MTLTexture]] = [[], [], []]
 
     /// Swift mirror of RaymarchCore.metal's ThreshAuxUniforms (private
     /// live-path contract, buffer 7 / textures 1–2 — not ABI).
@@ -553,42 +556,60 @@ final class SessionGPUEncoder {
         // never share a texture.
         var coneTexture: MTLTexture? = nil
         if program == nil, let prepass = specialized?.conePrepass {
-            let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
-            let cw = (marchTarget.width + tile - 1) / tile
-            let ch = (marchTarget.height + tile - 1) / tile
             let slot = (ringCursor + statsRing.count - 1) % statsRing.count
-            var coneTex = coneRing[slot]
-            if coneTex == nil || coneTex!.width != cw || coneTex!.height != ch {
-                let desc = MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat: .r32Float, width: cw, height: ch, mipmapped: false)
-                desc.usage = [.shaderWrite, .shaderRead]
-                desc.storageMode = .private
-                coneTex = context.device.makeTexture(descriptor: desc)
-                coneRing[slot] = coneTex
+            let plan = ConePrepassPlan.levels(
+                levelCount: request.tuning.conePrepassLevels,
+                fullWidth: marchTarget.width, fullHeight: marchTarget.height,
+                stepBudget: request.tuning.conePrepassStepBudget,
+                iterScale: request.tuning.conePrepassIterScale)
+            let wantSizes = plan.map {
+                ConePrepassPlan.textureSize(
+                    tileSize: $0.tileSize,
+                    fullWidth: marchTarget.width, fullHeight: marchTarget.height)
             }
-            if let coneTex,
-               let pre = commandBuffer.makeComputeCommandEncoder() {
-                pre.label = "session cone prepass"
-                pre.setComputePipelineState(prepass)
-                withUnsafeBytes(of: uniforms) { raw in
-                    pre.setBytes(raw.baseAddress!, length: raw.count,
-                                 index: Int(THRESH_BUFFER_UNIFORMS))
+            let cacheOK = coneRing[slot].count == wantSizes.count
+                && zip(coneRing[slot], wantSizes).allSatisfy {
+                    $0.width == $1.width && $0.height == $1.height
                 }
-                pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
-                pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-                pre.setVisibleFunctionTable(
-                    specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
-                var dims = SIMD2<UInt32>(UInt32(marchTarget.width),
-                                         UInt32(marchTarget.height))
-                withUnsafeBytes(of: &dims) { raw in
-                    pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
+            if !cacheOK {
+                coneRing[slot] = wantSizes.compactMap { size in
+                    let d = MTLTextureDescriptor.texture2DDescriptor(
+                        pixelFormat: .r32Float, width: size.width,
+                        height: size.height, mipmapped: false)
+                    d.usage = [.shaderWrite, .shaderRead]
+                    d.storageMode = .private
+                    return context.device.makeTexture(descriptor: d)
                 }
-                pre.setTexture(coneTex, index: 3)
-                pre.dispatchThreadgroups(
-                    MTLSize(width: (cw + 7) / 8, height: (ch + 7) / 8, depth: 1),
-                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-                pre.endEncoding()
-                coneTexture = coneTex
+            }
+            let textures = coneRing[slot]
+            if textures.count == plan.count {
+                for (i, level) in plan.enumerated() {
+                    let out = textures[i]
+                    let prev = i == 0 ? out : textures[i - 1]
+                    guard let pre = commandBuffer.makeComputeCommandEncoder() else { break }
+                    pre.label = "session cone prepass L\(i)"
+                    pre.setComputePipelineState(prepass)
+                    withUnsafeBytes(of: uniforms) { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count,
+                                     index: Int(THRESH_BUFFER_UNIFORMS))
+                    }
+                    pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
+                    pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
+                    pre.setVisibleFunctionTable(
+                        specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
+                    var cp = level.params
+                    withUnsafeBytes(of: &cp) { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
+                    }
+                    pre.setTexture(out, index: 3)
+                    pre.setTexture(prev, index: 5)
+                    pre.dispatchThreadgroups(
+                        MTLSize(width: (out.width + 7) / 8,
+                                height: (out.height + 7) / 8, depth: 1),
+                        threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+                    pre.endEncoding()
+                }
+                coneTexture = textures.last
             }
         }
 

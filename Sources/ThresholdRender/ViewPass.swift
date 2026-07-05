@@ -15,6 +15,7 @@ import Foundation
 import Metal
 import simd
 import Synchronization
+import ThresholdCore
 import ThresholdShaderABI
 import ThresholdShaderIR
 
@@ -32,12 +33,20 @@ public enum CompositorViewMath {
     /// (room meters → fractal units), rides on top of the session pose —
     /// so the desktop framing is exactly what you see at open, and walking
     /// moves you through fractal space.
+    ///
+    /// `placement` is the gesture-driven RoomPlacement G ("the hologram
+    /// moved in the room"): every room-space viewer maps through G⁻¹ BEFORE
+    /// the base map, which is exactly equivalent to moving the hologram by
+    /// G — grab/translate stay in room meters end to end (no zoom-dependent
+    /// unit conversion; the property that made the old app's grab 1:1).
+    /// Identity placement takes the placement-free path bit-exactly.
     public static func viewUniforms(
         projection: simd_float4x4,
         eyeToRoom: simd_float4x4,
         anchorPosition: SIMD3<Float>,
         base: ThreshFrameUniforms,
-        roomScale: Float = 1
+        roomScale: Float = 1,
+        placement: RoomPlacement = .identity
     ) -> ThreshViewUniforms {
         let baseRot = baseRotation(base)
         let eyePos = SIMD3(
@@ -46,26 +55,39 @@ public enum CompositorViewMath {
 
         let origin = fractalPoint(
             room: eyePos, base: base, anchorPosition: anchorPosition,
-            roomScale: roomScale)
-        let orient = simd_normalize(baseRot * eyeRot)
+            roomScale: roomScale, placement: placement)
+        // G's rotation composes between the base map and the eye pose;
+        // its uniform scale never affects directions.
+        let orient = placement.isIdentity
+            ? simd_normalize(baseRot * eyeRot)
+            : simd_normalize(baseRot * placement.rotation.inverse * eyeRot)
+        // World units per room meter — the depth reconstruction divides the
+        // world-space hit distance by this to recover eye-local meters.
+        let unitsPerMeter = placement.isIdentity
+            ? roomScale
+            : roomScale / max(placement.scale, 1e-6)
 
         return ThreshViewUniforms(
             proj: projection,
             invProj: projection.inverse,
-            originScale: SIMD4(origin, roomScale),
+            originScale: SIMD4(origin, unitsPerMeter),
             orient: orient.vector)
     }
 
     /// Room point → fractal-world point: the SAME mapping the eyes use, so
     /// hand geometry lands exactly where you see your hand (plan §4.3).
+    /// `placement` (G) applies as G⁻¹ ahead of the base map — see
+    /// `viewUniforms`.
     public static func fractalPoint(
         room: SIMD3<Float>,
         base: ThreshFrameUniforms,
         anchorPosition: SIMD3<Float>,
-        roomScale: Float = 1
+        roomScale: Float = 1,
+        placement: RoomPlacement = .identity
     ) -> SIMD3<Float> {
         let basePos = SIMD3(base.camPosFov.x, base.camPosFov.y, base.camPosFov.z)
-        return basePos + baseRotation(base).act(roomScale * (room - anchorPosition))
+        let mapped = placement.isIdentity ? room : placement.inverseMap(room)
+        return basePos + baseRotation(base).act(roomScale * (mapped - anchorPosition))
     }
 
     private static func baseRotation(_ base: ThreshFrameUniforms) -> simd_quatf {
@@ -90,6 +112,23 @@ public enum CompositorViewMath {
             SIMD4(0, sy, 0, 0),
             SIMD4(0, 0, -far / zRange, -1),
             SIMD4(0, 0, -far * near / zRange, 0)))
+    }
+
+    /// The safety bubble's radius param is authored in WORLD units, but its
+    /// meaning is PHYSICAL head clearance (it exists to keep the viewer out
+    /// of solid fractal — RaymarchCore.metal's applySafetyBubble). Under a
+    /// gesture placement with scale s, X world units = X·s physical meters,
+    /// so the radius is divided by s to keep the carved clearance a constant
+    /// physical size. Identity placement returns the array untouched.
+    public static func bubbleCompensatedParams(
+        _ params: [Float], placement: RoomPlacement
+    ) -> [Float] {
+        guard !placement.isIdentity else { return params }
+        let slot = Int(THRESH_SLOT_BUBBLE_RADIUS)
+        guard params.indices.contains(slot) else { return params }
+        var out = params
+        out[slot] /= max(placement.scale, 1e-6)
+        return out
     }
 
     /// The view-local ray direction the fragment shader derives for `ndc` —
@@ -139,7 +178,9 @@ final class ViewPassEncoder {
     /// default under foveation) encodes once/frame → 3 frames of headroom;
     /// DEDICATED (no-foveation fallback) encodes twice/frame → ~1.5 frames, the
     /// same marginal contract the statsRing already carries.
-    private var coneRing: [MTLTexture?]
+    /// Per-ring-slot cone textures, ONE ARRAY PER LEVEL (coarse→fine, block 18
+    /// multi-level); each entry is a texture2d_array (one slice per view).
+    private var coneRing: [[MTLTexture]]
 
     /// Builds the raster pipeline for the target formats. `maxViewCount` is
     /// the vertex amplification ceiling (2 on device, 1 for tests/simulator).
@@ -153,7 +194,7 @@ final class ViewPassEncoder {
         self.specializations = RasterSpecializationCache(
             context: context, colorFormat: colorFormat,
             depthFormat: depthFormat, maxViewCount: maxViewCount)
-        self.coneRing = [nil, nil, nil]
+        self.coneRing = [[], [], []]
         let device = context.device
 
         guard let vertex = context.library.makeFunction(name: "thresh_fullscreen_vertex")
@@ -306,46 +347,69 @@ final class ViewPassEncoder {
         if let s = specialized, let prepass = s.conePrepass,
            let prepassTable = s.conePrepassDETable,
            let target = renderPass.colorAttachments[0].texture {
-            let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
-            let cw = (target.width + tile - 1) / tile
-            let ch = (target.height + tile - 1) / tile
             let slices = max(1, amplificationCount)
-            var coneTex = coneRing[ringSlot]
-            if coneTex == nil || coneTex!.width != cw || coneTex!.height != ch
-                || coneTex!.arrayLength != slices {
-                let desc = MTLTextureDescriptor()
-                desc.textureType = .type2DArray
-                desc.pixelFormat = .r32Float
-                desc.width = cw
-                desc.height = ch
-                desc.arrayLength = slices
-                desc.usage = [.shaderWrite, .shaderRead]
-                desc.storageMode = .private
-                coneTex = context.device.makeTexture(descriptor: desc)
-                coneRing[ringSlot] = coneTex
+            let plan = ConePrepassPlan.levels(
+                levelCount: request.tuning.conePrepassLevels,
+                fullWidth: target.width, fullHeight: target.height,
+                stepBudget: request.tuning.conePrepassStepBudget,
+                iterScale: request.tuning.conePrepassIterScale)
+            let wantSizes = plan.map {
+                ConePrepassPlan.textureSize(
+                    tileSize: $0.tileSize,
+                    fullWidth: target.width, fullHeight: target.height)
             }
-            if let coneTex, let pre = commandBuffer.makeComputeCommandEncoder() {
-                pre.label = "raster cone prepass"
-                pre.setComputePipelineState(prepass)
-                withUnsafeBytes(of: uniforms) { raw in
-                    pre.setBytes(raw.baseAddress!, length: raw.count,
-                                 index: Int(THRESH_BUFFER_UNIFORMS))
+            let cacheOK = coneRing[ringSlot].count == wantSizes.count
+                && zip(coneRing[ringSlot], wantSizes).allSatisfy {
+                    $0.width == $1.width && $0.height == $1.height
+                        && $0.arrayLength == slices
                 }
-                pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
-                pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-                pre.setVisibleFunctionTable(
-                    prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
-                views.withUnsafeBytes { raw in
-                    let base = raw.baseAddress!.advanced(by: viewsByteOffset)
-                    pre.setBytes(base, length: raw.count - viewsByteOffset,
-                                 index: Int(THRESH_BUFFER_VIEWS))
+            if !cacheOK {
+                coneRing[ringSlot] = wantSizes.compactMap { size in
+                    let desc = MTLTextureDescriptor()
+                    desc.textureType = .type2DArray
+                    desc.pixelFormat = .r32Float
+                    desc.width = size.width
+                    desc.height = size.height
+                    desc.arrayLength = slices
+                    desc.usage = [.shaderWrite, .shaderRead]
+                    desc.storageMode = .private
+                    return context.device.makeTexture(descriptor: desc)
                 }
-                pre.setTexture(coneTex, index: 3)
-                pre.dispatchThreadgroups(
-                    MTLSize(width: (cw + 7) / 8, height: (ch + 7) / 8, depth: slices),
-                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-                pre.endEncoding()
-                coneTexture = coneTex
+            }
+            let textures = coneRing[ringSlot]
+            if textures.count == plan.count {
+                for (i, level) in plan.enumerated() {
+                    let out = textures[i]
+                    let prev = i == 0 ? out : textures[i - 1]
+                    guard let pre = commandBuffer.makeComputeCommandEncoder() else { break }
+                    pre.label = "raster cone prepass L\(i)"
+                    pre.setComputePipelineState(prepass)
+                    withUnsafeBytes(of: uniforms) { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count,
+                                     index: Int(THRESH_BUFFER_UNIFORMS))
+                    }
+                    pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
+                    pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
+                    pre.setVisibleFunctionTable(
+                        prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
+                    views.withUnsafeBytes { raw in
+                        let base = raw.baseAddress!.advanced(by: viewsByteOffset)
+                        pre.setBytes(base, length: raw.count - viewsByteOffset,
+                                     index: Int(THRESH_BUFFER_VIEWS))
+                    }
+                    var cp = level.params
+                    withUnsafeBytes(of: &cp) { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
+                    }
+                    pre.setTexture(out, index: 3)
+                    pre.setTexture(prev, index: 5)
+                    pre.dispatchThreadgroups(
+                        MTLSize(width: (out.width + 7) / 8,
+                                height: (out.height + 7) / 8, depth: slices),
+                        threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+                    pre.endEncoding()
+                }
+                coneTexture = textures.last
             }
         }
         // A cone-baked pipeline REQUIRES the fragment cone texture; if the

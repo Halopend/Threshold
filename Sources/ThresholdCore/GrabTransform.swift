@@ -1,56 +1,89 @@
-// GrabTransform.swift — two-hand grab math, ported from the old app's
-// GrabZoomMapping (TEMP/MetalRaymarch-main/Threshold/Gestures/GrabZoomMapping.swift),
-// which "worked relatively well" and is the reference for the feel.
+// GrabTransform.swift — two-hand grab math, ported VERBATIM from the old
+// app's GrabZoomMapping (TEMP/MetalRaymarch-main/Threshold/Gestures/
+// GrabZoomMapping.swift + GestureController.processTwoPointGrab), the
+// reference for the feel.
 //
-// Pure and platform-free so it unit-tests on any host; the visionOS HandTracker
-// feeds it hand pinch points and maps its output onto the camera rig.
+// Captured ONCE when both hands engage (hand midpoint / separation / axis
+// plus the DISPLAYED RoomPlacement — displayed, not target, so re-grabbing
+// mid-smooth never pops; old GestureController.swift:785). Each frame
+// `evaluate` maps the current hand positions through that fixed snapshot
+// into an ABSOLUTE placement:
 //
-// The original mapped the gesture onto a FRACTAL transform (position / rotation
-// / detailScale) — it moved the fractal. The rebuild is camera-centric (the
-// fractal sits at the origin and the CAMERA moves), so this exposes the raw
-// per-frame deltas — separation ratio, shortest-arc twist, midpoint travel —
-// captured against an engage snapshot, and the caller applies them to the
-// camera (as the inverse: scaling/rotating the environment ≡ moving the camera
-// oppositely). The 1:1 scale-tracking and shortest-arc twist are preserved
-// verbatim; only the application target changes.
+//   scaleRatio  = currentHandDistance / startHandDistance
+//   newScale    = clamp(startScale × scaleRatio, scaleClamp)
+//   effScale    = newScale / startScale          // respects the clamp
+//   deltaRot    = shortestArc(startAxis → currentAxis)
+//   rotation    = (deltaRot × startRotation).normalized
+//   position    = currentMidpoint + deltaRot.act(effScale × (startPos − startMid))
+//
+// The position formula pins the hologram point under the hand midpoint at
+// engage to wherever the midpoint moves; scale and rotation expand/twist
+// around that anchor. True 1:1 — no deadzone, no attenuation. A pure
+// function of current hands vs the snapshot: jitter never integrates, and
+// tracking loss simply ends the gesture with the placement where it was.
+//
+// Rotation derives ONLY from the inter-hand axis — twisting the pair about
+// its own axis (roll) is deliberately not a rotation, matching the old app.
+// (The old code's "rotation breakaway"/rebase comments are dead code there;
+// do not add them.)
 
 import simd
 
-/// Snapshot of a two-hand grab taken when both hands engage, evaluated each
-/// frame into camera-agnostic deltas.
+/// Snapshot of a two-hand grab taken at engage, evaluated each frame into an
+/// absolute RoomPlacement.
 public struct GrabTransform: Sendable {
-    /// Hand midpoint at engage.
+    /// Hand midpoint at engage (room meters).
     public let startMidpoint: SIMD3<Float>
     /// Hand separation at engage, clamped ≥ 1 cm (the 1:1 scale denominator).
     public let startDistance: Float
     /// Normalized right→left hand axis at engage (the twist reference).
     public let startAxis: SIMD3<Float>
+    /// The DISPLAYED placement at engage.
+    public let startPlacement: RoomPlacement
+
+    /// The old app's default per-fractal grab-scale clamp
+    /// (FractalTypeDescriptor.swift:181).
+    public static let defaultScaleClamp: ClosedRange<Float> = 0.001...500
+    /// The old app's Mandelbulb / MandelbulbJulia override
+    /// (FractalTypeDescriptor.swift:336, 394).
+    public static let mandelbulbScaleClamp: ClosedRange<Float> = 0.0005...2000
 
     /// Capture at engage. `left`/`right` are each hand's pinch point (the
-    /// thumb–index midpoint).
-    public init(left: SIMD3<Float>, right: SIMD3<Float>) {
+    /// thumb–index midpoint), `placement` the currently DISPLAYED placement.
+    public init(left: SIMD3<Float>, right: SIMD3<Float>, placement: RoomPlacement) {
         self.startMidpoint = (left + right) * 0.5
         self.startDistance = max(simd_length(left - right), 0.01)
         let axis = right - left
         let len = simd_length(axis)
         self.startAxis = len > 1e-4 ? axis / len : SIMD3(1, 0, 0)
+        self.startPlacement = placement
     }
 
-    /// Per-frame grab deltas relative to the engage snapshot:
-    /// - `scaleRatio`: currentSeparation / startSeparation (1 = unchanged; > 1 =
-    ///   hands pulled apart, i.e. the environment scales up / zoom in). True
-    ///   1:1 tracking — no deadzone, no attenuation (the old app's signature).
-    /// - `rotation`: shortest-arc rotation of the two-hand axis since engage.
-    /// - `midpointTravel`: how far the hand midpoint has moved since engage.
-    public func evaluate(left: SIMD3<Float>, right: SIMD3<Float>)
-        -> (scaleRatio: Float, rotation: simd_quatf, midpointTravel: SIMD3<Float>) {
-        let axis = right - left
-        let len = simd_length(axis)
-        let currentAxis = len > 1e-4 ? axis / len : startAxis
-        let rotation = Self.quaternionBetweenAxes(from: startAxis, to: currentAxis)
+    /// Absolute placement for the current hand positions (old
+    /// GrabZoomMapping.evaluate + evaluateCore, transcribed exactly —
+    /// including the clamp-then-effScale order that keeps the midpoint
+    /// pinned when the scale clamp saturates).
+    public func evaluate(
+        left: SIMD3<Float>, right: SIMD3<Float>,
+        scaleClamp: ClosedRange<Float> = defaultScaleClamp
+    ) -> RoomPlacement {
+        let currentAxis = right - left
+        let currentAxisLen = simd_length(currentAxis)
+        let currentAxisNorm = currentAxisLen > 1e-4 ? currentAxis / currentAxisLen : startAxis
+        let deltaRotation = Self.quaternionBetweenAxes(from: startAxis, to: currentAxisNorm)
+
+        let currentMidpoint = (left + right) * 0.5
         let scaleRatio = simd_length(left - right) / startDistance
-        let midpointTravel = (left + right) * 0.5 - startMidpoint
-        return (scaleRatio, rotation, midpointTravel)
+        let newScale = simd_clamp(
+            startPlacement.scale * scaleRatio,
+            scaleClamp.lowerBound, scaleClamp.upperBound)
+        let effectiveScaleRatio = newScale / max(startPlacement.scale, 1e-6)
+        let scaledOffset = effectiveScaleRatio * (startPlacement.position - startMidpoint)
+
+        return RoomPlacement(
+            position: currentMidpoint + deltaRotation.act(scaledOffset),
+            rotation: (deltaRotation * startPlacement.rotation).normalized,
+            scale: newScale)
     }
 
     /// Shortest-arc quaternion rotating unit vector `a` to unit vector `b`.

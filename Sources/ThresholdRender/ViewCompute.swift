@@ -47,7 +47,9 @@ final class ViewComputeEncoder {
     /// collision costs pipelining, never a torn read.
     private var colorRing: [MTLTexture?] = [nil, nil, nil]
     private var depthRing: [MTLTexture?] = [nil, nil, nil]
-    private var coneRing: [MTLTexture?] = [nil, nil, nil]
+    /// Per-ring-slot cone textures, ONE ARRAY PER LEVEL (block 18 multi-level);
+    /// each entry is a texture2d_array (one slice per view).
+    private var coneRing: [[MTLTexture]] = [[], [], []]
 
     /// `colorFormat` must match the drawable's (blit copies require identical
     /// or sRGB-variant formats).
@@ -162,34 +164,66 @@ final class ViewComputeEncoder {
         var coneTexture: MTLTexture? = nil
         if let s = specialized, let prepass = s.conePrepass,
            let prepassTable = s.conePrepassDETable {
-            let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
-            let cw = (w + tile - 1) / tile
-            let ch = (h + tile - 1) / tile
-            if let coneTex = ringTexture(
-                   &coneRing, slot: ringSlot, pixelFormat: .r32Float,
-                   width: cw, height: ch, slices: slices,
-                   label: "view-compute cone"),
-               let pre = commandBuffer.makeComputeCommandEncoder() {
-                pre.label = "view-compute cone prepass"
-                pre.setComputePipelineState(prepass)
-                withUnsafeBytes(of: uniforms) { raw in
-                    pre.setBytes(raw.baseAddress!, length: raw.count,
-                                 index: Int(THRESH_BUFFER_UNIFORMS))
+            let plan = ConePrepassPlan.levels(
+                levelCount: request.tuning.conePrepassLevels,
+                fullWidth: w, fullHeight: h,
+                stepBudget: request.tuning.conePrepassStepBudget,
+                iterScale: request.tuning.conePrepassIterScale)
+            let wantSizes = plan.map {
+                ConePrepassPlan.textureSize(
+                    tileSize: $0.tileSize, fullWidth: w, fullHeight: h)
+            }
+            let cacheOK = coneRing[ringSlot].count == wantSizes.count
+                && zip(coneRing[ringSlot], wantSizes).allSatisfy {
+                    $0.width == $1.width && $0.height == $1.height
+                        && $0.arrayLength == slices
                 }
-                pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
-                pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-                pre.setVisibleFunctionTable(
-                    prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
-                views.withUnsafeBytes { raw in
-                    pre.setBytes(raw.baseAddress!, length: raw.count,
-                                 index: Int(THRESH_BUFFER_VIEWS))
+            if !cacheOK {
+                coneRing[ringSlot] = wantSizes.compactMap { size in
+                    let desc = MTLTextureDescriptor()
+                    desc.textureType = .type2DArray
+                    desc.pixelFormat = .r32Float
+                    desc.width = size.width
+                    desc.height = size.height
+                    desc.arrayLength = slices
+                    desc.usage = [.shaderWrite, .shaderRead]
+                    desc.storageMode = .private
+                    return context.device.makeTexture(descriptor: desc)
                 }
-                pre.setTexture(coneTex, index: 3)
-                pre.dispatchThreadgroups(
-                    MTLSize(width: (cw + 7) / 8, height: (ch + 7) / 8, depth: slices),
-                    threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
-                pre.endEncoding()
-                coneTexture = coneTex
+            }
+            let textures = coneRing[ringSlot]
+            if textures.count == plan.count {
+                for (i, level) in plan.enumerated() {
+                    let out = textures[i]
+                    let prev = i == 0 ? out : textures[i - 1]
+                    guard let pre = commandBuffer.makeComputeCommandEncoder() else { break }
+                    pre.label = "view-compute cone prepass L\(i)"
+                    pre.setComputePipelineState(prepass)
+                    withUnsafeBytes(of: uniforms) { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count,
+                                     index: Int(THRESH_BUFFER_UNIFORMS))
+                    }
+                    pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
+                    pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
+                    pre.setVisibleFunctionTable(
+                        prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
+                    views.withUnsafeBytes { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count,
+                                     index: Int(THRESH_BUFFER_VIEWS))
+                    }
+                    var cp = level.params
+                    withUnsafeBytes(of: &cp) { raw in
+                        pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
+                    }
+                    pre.setTexture(out, index: 3)
+                    pre.setTexture(prev, index: 5)
+                    pre.dispatchThreadgroups(
+                        MTLSize(width: (out.width + 7) / 8,
+                                height: (out.height + 7) / 8, depth: slices),
+                        threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+                    pre.endEncoding()
+                }
+                coneTexture = textures.last
             }
         }
         // A cone-baked pipeline REQUIRES the cone texture — fall back to

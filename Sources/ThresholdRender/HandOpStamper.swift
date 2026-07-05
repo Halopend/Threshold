@@ -9,6 +9,7 @@
 
 import Foundation
 import simd
+import ThresholdCore
 import ThresholdShaderABI
 import ThresholdShaderIR
 
@@ -39,19 +40,25 @@ public enum HandOpStamper {
 
     /// Stamp every drive-flagged op from `right`/`left`, mapping room points
     /// through the SAME room→fractal transform the eyes use
-    /// (CompositorViewMath.fractalPoint), so the effect sits exactly where
-    /// the user sees their hand. Ops without a drive flag pass through
-    /// untouched (they are ordinary slider-driven ops — plan §4.3's mandated
-    /// fallback path). A drive-flagged op whose hand is NOT tracked has its
-    /// strength zeroed for the frame: the effect vanishes rather than
-    /// freezing at a stale pose.
+    /// (CompositorViewMath.fractalPoint, including the gesture placement G),
+    /// so the effect sits exactly where the user sees their hand. Ops without
+    /// a drive flag pass through untouched (they are ordinary slider-driven
+    /// ops — plan §4.3's mandated fallback path). A drive-flagged op whose
+    /// hand is NOT tracked has its strength zeroed for the frame: the effect
+    /// vanishes rather than freezing at a stale pose.
+    ///
+    /// Authored radii (op.a.w / op.b.w) stay world units: at placement scale
+    /// ≠ 1 the effect's physical size scales with the hologram while its
+    /// center tracks the physical hand — positions stay correct by
+    /// construction.
     public static func stamp(
         _ ops: [ThreshWarpOp],
         right: Hand,
         left: Hand,
         base: ThreshFrameUniforms,
         anchorPosition: SIMD3<Float>,
-        roomScale: Float = 1
+        roomScale: Float = 1,
+        placement: RoomPlacement = .identity
     ) -> [ThreshWarpOp] {
         ops.map { op in
             let flags = WarpFlags(rawValue: op.flags)
@@ -63,7 +70,7 @@ public enum HandOpStamper {
             func fractal(_ room: SIMD3<Float>) -> SIMD3<Float> {
                 CompositorViewMath.fractalPoint(
                     room: room, base: base, anchorPosition: anchorPosition,
-                    roomScale: roomScale)
+                    roomScale: roomScale, placement: placement)
             }
 
             var stamped = op

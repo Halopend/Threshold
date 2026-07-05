@@ -21,13 +21,14 @@ extension ParamKey {
     public static let cameraOrbitPitch = ParamKey("camera.orbitPitch")
     /// Distance-to-target multiplier (1 = authored distance).
     public static let cameraDolly = ParamKey("camera.dolly")
-    /// World-space translation offset applied to the camera (two-hand grab
-    /// pan). Zero = no pan.
+    /// World-space translation offset applied to the camera. Zero = no pan.
+    /// No hardwired writer today (the hand grab moves the RoomPlacement, not
+    /// the camera — RoomPlacement doc); stays registered as a bindable /
+    /// animatable camera param.
     public static let cameraPan = ParamKey("camera.pan")
-    /// Free rotation offset as a rotation-vector (axis·angle) about the orbit
-    /// target (two-hand grab twist). Zero = no rotation. Lives beside the
-    /// yaw/pitch orbit because grab produces an arbitrary-axis rotation that the
-    /// two orbit angles cannot express.
+    /// Free rotation offset as a rotation-vector (axis·angle) about the
+    /// world origin. Zero = no rotation. Same status as `cameraPan`: no
+    /// hardwired writer, still bindable/animatable.
     public static let cameraTwist = ParamKey("camera.twist")
 }
 

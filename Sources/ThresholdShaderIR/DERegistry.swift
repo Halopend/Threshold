@@ -76,6 +76,18 @@ public struct DEDescriptor: Sendable, Hashable {
     /// overestimate near the set and only tolerate ~1.1; box-fold DEs take
     /// 1.6. 1.0 = plain sphere tracing.
     public let stepRelaxation: Float
+    /// Cone-prepass DE distrust factor (THRESH_CONE_FUDGE): the coarse tile
+    /// prepass multiplies this into every distance estimate before stepping
+    /// or stopping — Fulcrum's graduated-fudge idea (distrust an
+    /// OVERESTIMATING DE more in wide coarse cones than at per-pixel scale).
+    /// REFUTED as a default (perf-notes block 16): on the shimmer/perf axes
+    /// it is dominated by the existing Cone Stability margin — bulb-family
+    /// 0.75 bought less flicker reduction than margin 12 at higher cost. The
+    /// seam stays (baked at specialized-library compile; 1.0 folds away to
+    /// zero cost) as a re-test hook for DEs whose prepass demonstrably
+    /// tunnels — e.g. the sphere-projection singularity once MSP scenes
+    /// render. The fine march's trust knob is `stepRelaxation`.
+    public let coneFudge: Float
 
     public init(
         index: UInt32,
@@ -85,7 +97,8 @@ public struct DEDescriptor: Sendable, Hashable {
         equation: String,
         paramLayout: [Param],
         defaultIterations: Int,
-        stepRelaxation: Float = 1.0
+        stepRelaxation: Float = 1.0,
+        coneFudge: Float = 1.0
     ) {
         self.index = index
         self.key = key
@@ -95,6 +108,7 @@ public struct DEDescriptor: Sendable, Hashable {
         self.paramLayout = paramLayout
         self.defaultIterations = defaultIterations
         self.stepRelaxation = stepRelaxation
+        self.coneFudge = coneFudge
     }
 }
 
@@ -143,6 +157,7 @@ extension DEDescriptor {
         ],
         defaultIterations: 12,
         stepRelaxation: 1.3
+        // coneFudge 0.75 tested + refuted, perf-notes block 16
     )
 
     /// Knighty's Pseudo Kleinian: box fold + sphere fold with a cylindrical

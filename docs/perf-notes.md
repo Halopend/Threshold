@@ -621,3 +621,195 @@ original 3x audit is either PORTED (1,2,3,5,7,9,10 + fast-math), REFUTED
 (8), or REMAINS by design (4: redundant with the cone prepass's empty-space
 skip; 6/11: sub-ms hit-shading tail, revisit only if a scene shows a
 shading-bound profile; 12–14: launch-latency, not steady-state ms).
+
+## Cone-prepass conservativeness (back-off + per-DE fudge) — REFUTED; margin sweep quantified — 2026-07-05 (perf block 16)
+
+The research-recommended artifact fix for the cone prepass (Fulcrum/Claybook
+lineage: seed the fine march from the coarse t BEFORE the failing step
+("discard the last test") + a per-DE coarse distrust factor for
+overestimating DEs) was implemented and MEASURED AS DOMINATED by the
+existing Cone Stability margin on both axes. Reverted; the per-DE distrust
+seam stays (inert); envDefault coneStability bumped .fast → .balanced.
+
+New measurement: a headless TEMPORAL SHIMMER harness (stills can't see the
+artifact — cone-vs-nocone still diffs are scattered per-pixel hit chaos on a
+detail-everywhere fractal, NOT tile-blocky). Scene: default-bulb +
+rotationSpeed 0.02 (slow surface morph ≈ LFO modulation), 512², 12 frames
+via `--frames k`, deterministic fixed-step clock. Metric: % pixels flipping
+>48/255 between consecutive frames; CONE EXCESS = cone − nocone flips (real
+motion cancels). Excess is small in absolute terms (~0.03–0.04 % of
+pixels/frame ≈ dozens of clustered pops at 512²) but responds exactly as
+the Cone Stability doc predicts.
+
+Measured (1024² warped-bulb cone-pass median for cost; slow-bulb excess):
+
+    margin 3  (old code)       6.76 ms    excess +0.044 %/frame
+    margin 6  (old code)       6.93 ms    excess +0.041 %
+    margin 12 (old code)       7.33 ms    excess +0.034 %
+    back-off only, margin 3    7.94 ms    excess +0.040 %
+    back-off + fudge 0.75      8.50 ms    excess +0.036 %
+    (hybrid stop-only back-off 7.97 ms — same cost: the tax is the
+     stop-path retreat itself, not budget-exhausted cruise tiles)
+
+Margin 12 beats the full fix on BOTH axes (7.33 < 7.97 ms, 0.034 < 0.036).
+Why: the margin backs the shared tile seed off the surface proportionally
+(margin·eps·t — smooth, cheap), while discard-last-test retreats one whole
+COARSE STEP, which on rugged warped fields (abrupt slack collapse) is large
+and re-taxes all 64 fine rays. Per-DE fudge (mandelbulb 0.75) bought only
+−0.004 %/frame on top of back-off. bench-mandelbox paired ratios: cone
+speedup 1.62x (old) vs 1.56–1.58x (fix variants); default-bulb 1.91x ↔
+1.79–1.93x (noise); warped-bulb 1.66x → 1.41x (the regression that killed
+it).
+
+Disposition:
+- Prepass loop reverted to block-9 semantics (write the stop-sample t).
+  Re-verified byte-identical to the pre-change binary across 9 configs
+  (3 scenes × cone-m3/cone-m12/nocone, 768², --compare).
+- Seam kept, inert: `DEDescriptor.coneFudge` (all built-ins 1.0) →
+  `#define THRESH_CONE_FUDGE` injected at specialized-library compile; the
+  ×1.0 folds away. Re-test hook for DEs whose prepass demonstrably tunnels
+  (candidate: mandelboxSphereProjection's r→0 singularity once MSP scenes
+  render; refuted candidates recorded inline: bulbs 0.75, quatJulia 0.8,
+  kleinian 0.9).
+- envDefault coneStability .fast → .balanced (6×): −7 % excess flicker for
+  +2.5 % worst-scene GPU. .stable (12×) buys −23 % at +8.4 % — user knob.
+- Harness kept: scratchpad shimmer.sh / shimmer_metric.py pattern (12-frame
+  slow-morph sequences, flip-excess + flip-map blockiness check) — reuse to
+  gate Phase 2/3 (stereo/temporal seed reuse), where a bad seed becomes a
+  WRONG PIXEL, not shimmer.
+
+## Cone-traced supersampling (CTSS) port — opt-in, kills prepass shimmer, costs 30-80% — 2026-07-05 (perf block 17)
+
+Chubarau et al., "Cone-Traced Supersampling for SDF Rendering" (GI 2023;
+reference: github.com/ch-andrei/cone-traced-supersampling, shadertoy 7lSXWK)
+ported into marchShade as `marchShadeCTSS` behind function_constant 12
+(aux-style bool; absent → the pre-CTSS kernel EXACTLY — byte-identity
+re-verified against pre-change renders on all three bench scenes, cone and
+nocone). Levers: MarchSpec.ctss / RenderTuning.ctss (UI toggle in the
+pipeline card) / THRESHOLD_SPEC_CTSS=1 on the CLI. Default OFF everywhere.
+
+Stateless geometric AA inside the march: contiguous runs of partial
+pixel-cone coverage ("hit groups") are each shaded once at a backtracked
+safe position; the ray crosses partially covering surfaces via a 0.5·Rc
+step floor; groups composite front-to-back through the paper's 32-bit ~6×6
+subpixel visibility mask (popcount-weighted). No history buffer — no
+ghosting under LFO parameter animation, unlike any TAA-family approach.
+
+TWO PORT DEVIATIONS the paper does not cover (both forced by escape-time
+fractal DEs; first attempt without them rendered full-surface noise):
+1. Escape-time DEs are effectively UNSIGNED (≈0 inside the set) — the
+   reference's full-occlusion stop (occ > 0.99 ⇔ d < −0.98·Rc) never
+   fires and rays tunnel through the fractal collecting interior groups.
+   Fix: terminate on the CLASSIC epsilon acceptance (d < epsBase·t, same
+   position and convergence as the plain march) and grant the terminal
+   sample occ = 1 (all remaining subpixel visibility — opaque semantics).
+2. Our acceptance epsilon (1.5e-3·t) is FATTER than the true pixel cone
+   (~0.9e-3·t at 768p) — with the raw pixel cone, termination fires before
+   the cone is touched and no coverage accumulates. Fix: CTSS cone =
+   max(pixel cone, 2·epsBase)·t (THRESH_CTSS_EPS_CONE_MULT).
+
+Measured (1024², specialized + cone prepass .fast, 40-frame medians):
+
+    scene            off      CTSS     GPU cost   march steps
+    bench-mandelbox  4.07 ms  5.29 ms  +30%       —
+    default-bulb     1.80 ms  2.93 ms  +62%       4.5M → 5.5M (+21%)
+    warped-bulb      6.76 ms 12.27 ms  +82%      16.0M → 20.6M (+29%)
+
+Steps rise far less than GPU time → the overhead is dominated by per-group
+SHADING (up to 4 × 6 mapScene taps on silhouette pixels) plus register
+pressure from the sample array, not by marching. Future cost levers, in
+expected order: skip AO on non-terminal (grazing sliver) samples;
+THRESH_CTSS_MAX_SAMPLES 4 → 2; slim the CTSSSample struct; narrow
+EPS_CONE_MULT.
+
+Quality:
+- vs 4×4-SSAA ground truth (3072²→768 box): RMSE 8.68 → 8.21, PSNR 29.36 →
+  29.84 dB (+0.5 dB global; gains concentrate at geometric edges — fractal
+  SHADING detail is out of CTSS's scope, matching the paper's own claims).
+- TEMPORAL: the headline. Slow-morph shimmer harness (block 16 method):
+  cone-prepass excess flicker +0.044 %/frame → −0.001 % with CTSS — the
+  tile-quantized silhouette shimmer that motivated the Cone Stability knob
+  is ELIMINATED outright (and absolute flicker lands slightly below even
+  the no-prepass reference). CTSS + coneStability .fast is a plausible
+  future default IF the cost comes down: it out-stabilizes .stable margins
+  at every level.
+
+Disposition: ships opt-in (perf-first policy — 30-80% is too steep for a
+default at 90Hz stereo). Revisit as the designated shimmer killer after the
+shading-cost levers above are measured, and A/B on device against margin
+.balanced (the block-16 default) — on M5 the FP16 work (roadmap Phase 4)
+compounds with CTSS's shading-bound profile.
+
+VISIBILITY CAVEAT (why CTSS can look inert in the Mac app): the toggle is
+wired end-to-end and proven by tests (CTSSCompileProbe: offscreen output
+changes with ctss; the live SessionGPUEncoder lands a specialized variant
+whose bakedConstants contains "ctss" — shown in the pipeline card's "Baked"
+readout). It is easy to miss on the Mac live path because (a) it exists only
+in the SPECIALIZED variant — "Specialized Pipeline" must be ON or the toggle
+is greyed and generic never bakes it; (b) MetalFX temporal upscaling engages
+whenever Auto Quality drops scale < 0.985 and already antialiases, largely
+masking CTSS's geometric AA — at full quality (fx == nil) there is no
+masking; (c) the edge AA is subtle at 1:1 on an edges-everywhere fractal
+(+0.5 dB global). Reliable "is it on" signals: the "Baked" readout lists
+ctss, and GPU cost jumps +30-80% (unless Auto Quality absorbs it as a
+resolution drop). The unmasked wins are on visionOS (no MetalFX temporal)
+and in the offscreen shimmer/edge metrics.
+
+## Multi-level prepass hierarchy + Advanced Prepass UI — 2026-07-05 (perf block 18)
+
+Generalized the cone prepass (block 9) into a runtime-configurable coarse→fine
+hierarchy and exposed the knobs in the UI (the user's "low LOD prepass"
+request). ONE compiled prepass kernel now serves every level: tile size, coarse
+step budget, and DE iteration LOD are runtime (ThreshConePrepassParams, buffer
+8), and a level chain (32→16→8) seeds each level from the coarser one at
+texture 5. The FINEST level is always 8×8 — the fine march reads it unchanged.
+New shared helper ConePrepass.swift (ConePrepassPlan); dispatch loop ported to
+all four encoders (OffscreenRenderer + the three shells). RenderTuning gains
+conePrepassLevels / conePrepassStepBudget / conePrepassIterScale (RUNTIME, not
+baked). Single-level default (levels 1, budget 48, iterScale 1) re-verified
+BYTE-IDENTICAL to block 9 on all bench scenes, cone and nocone; bench-suite
+2048² unchanged (13.8 ms / 72 fps PASS). Cone/spec/CTSS suites green.
+
+MEASURED (1024², specialized, 40-frame medians; drift vs single-level L1):
+
+  MULTI-LEVEL (levels, full iterations — the safe win):
+    scene            L1       L2              L3           drift (L2 vs L1)
+    warped-bulb    6.75 ms  5.41 (-19.9%)  5.46 (-19.1%)  meanΔ0.36 / 0.12%>48
+    bench-mandelbox 4.06 ms 4.05 (-0.3%)   4.06 (-0.2%)   meanΔ0.51 / 0.53%>48
+    default-bulb   1.81 ms  1.81 (+0.5%)   1.83 (+1.6%)   meanΔ0.48 / 0.17%>48
+    far-bulb       0.35 ms  0.37 (+5.2%)   0.39 (+13%)    (tiny scene)
+    far-box        4.81 ms  4.81 (-0.1%)   4.81 (+0.0%)
+
+  Multi-level is a REAL ~20% win, but NOT on "empty space" generally — on
+  EXPENSIVE-DE scenes with empty space (warped-bulb has kaleido+twist domain
+  warps, ~45%/step). There the coarse pre-pass clears empty space with few
+  threads × few (expensive) DE evals, so the fine level starts partway and
+  does far fewer evals (16.0M → 8.6M march steps). On CHEAP-DE scenes the
+  saved evals don't cover the extra dispatch overhead (+5% on the 0.35 ms
+  far-bulb). L3 never beats L2 (the ~20% ceiling the literature reports).
+  Drift stays within the block-9 float-start tolerance (L1-vs-nocone was
+  meanΔ~1.2); the fine march remains the hit authority. Shimmer unchanged:
+  slow-morph excess +0.046% (L2) vs +0.044% (L1).
+
+  ITERATION-LOD prepass (conePrepassIterScale < 1) — REFUTED:
+    bench-mandelbox iterScale 0.5: 4.06 → 1.85 ms (-54%) BUT meanΔ 42.8,
+      59.8% of pixels wrong. The low-iteration box-fold DE OVERESTIMATES
+      distance → the seed tunnels PAST the surface → the fine march starts
+      beyond thin features and misses them. The "-54%" is corruption, not
+      speed. Applying the LOD to coarse levels only (finest full) does NOT
+      fix it: the coarse overestimate propagates through the seed chain (58%
+      still wrong). For escape-time bulb DEs iteration-LOD is INERT (points
+      escape before iteration 6, so 0.5× is byte-identical). So iteration LOD
+      is harmful-or-useless on the prepass in every regime — the SET inflates
+      outward with fewer iterations, but the DE MAGNITUDE does not stay a
+      conservative bound (dr shrinks → d overshoots). The seam stays
+      (conePrepassIterScale, CLI THRESHOLD_CONE_ITERSCALE, coarse-only) as a
+      documented experimental hook; NOT wired to the UI.
+
+Disposition: SHIP multi-level as an opt-in UI control (Advanced Prepass:
+Levels 1/2/3 + Coarse Steps stepper). Default stays L1 (no regression on
+cheap scenes; byte-identical). Recommend L2 for warp-heavy scenes. Obvious
+follow-up: let the quality governor auto-raise levels when frame time is
+high (warp-heavy scenes self-select) instead of a manual knob. Iteration
+LOD is dead as a speed lever — the "low LOD prepass" that WORKS is low
+RESOLUTION (coarse tiles), not low iterations.

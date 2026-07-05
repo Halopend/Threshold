@@ -48,14 +48,12 @@ let package = Package(
             // breaks iOS/visionOS codesign — see build-quirks memory).
             resources: [.copy("BundledContent")]
         ),
-        // Input sources: audio analysis (AVAudioEngine + vDSP) publishing
-        // into the SignalTable. Hand tracking/gestures land here later.
+        // Input sources: audio analysis (AVAudioEngine + vDSP) and the
+        // visionOS hand tracker, publishing into the SignalTable / gesture
+        // lane / RoomPlacement.
         .target(
             name: "ThresholdInputs",
-            // ThresholdRender for SnapshotSlot — HandTracker reads the live
-            // resolved scale.zoom value to convert hand-meter deltas into
-            // world units at the current zoom depth (CameraRig.swift doc).
-            dependencies: ["ThresholdCore", "ThresholdRender"]
+            dependencies: ["ThresholdCore"]
         ),
         // Headless CLI renderer + perf/regression harness (macOS).
         .executableTarget(

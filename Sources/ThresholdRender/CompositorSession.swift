@@ -56,6 +56,13 @@ public final class CompositorSession: @unchecked Sendable {
     /// module depending on ThresholdInputs. Set before `start(_:)`.
     public var onFrame: (@Sendable (Double) -> Void)?
 
+    /// The gesture-driven room placement G for this frame ("the hologram
+    /// moved in the room" — RoomPlacement doc), read on the render thread
+    /// right after `onFrame` so the same frame's hand update is what
+    /// renders. Same seam contract as `onFrame`: set before `start(_:)`,
+    /// called only by the render thread. nil ⇒ identity.
+    public var placement: (@Sendable () -> RoomPlacement)?
+
     public init(
         context: GPUContext,
         layout: CatalogLayout,
@@ -229,6 +236,13 @@ public final class CompositorSession: @unchecked Sendable {
         var pendingRenderQuality = Self.maxRenderQuality
         var lastAppliedRenderQuality: Float = -1
 
+        // Half-rate mode (RenderTuning.halfRate): each frame is shown for two
+        // 90Hz cycles (45Hz render cadence); the compositor's depth-based
+        // reprojection keeps head-tracking at full rate. Same one-frame-late,
+        // deduped application pattern as renderQuality above.
+        var pendingRepeatCount: Int32 = 0
+        var lastAppliedRepeatCount: Int32 = -1
+
         // Profiling seam (RenderTelemetry.swift). Until now the visionOS render
         // path had NO os_signpost coverage — a Metal System Trace / os_signpost
         // capture on Vision Pro showed unnamed regions and no phase breakdown.
@@ -263,6 +277,10 @@ public final class CompositorSession: @unchecked Sendable {
             if foveated, abs(pendingRenderQuality - lastAppliedRenderQuality) > 0.001 {
                 lastAppliedRenderQuality = pendingRenderQuality
                 layer.renderQuality = LayerRenderer.RenderQuality(pendingRenderQuality)
+            }
+            if pendingRepeatCount != lastAppliedRepeatCount {
+                lastAppliedRepeatCount = pendingRepeatCount
+                layer.minimumFrameRepeatCount = pendingRepeatCount
             }
 
             guard let timing = frame.predictTiming() else { continue }
@@ -299,6 +317,9 @@ public final class CompositorSession: @unchecked Sendable {
             // Inputs (hands) publish BEFORE the step so bindings and the
             // gesture lane see this frame's values.
             onFrame?(sessionTime)
+            // The gesture placement G this frame's hand update produced —
+            // applied to eyes, hand ops, and the bubble radius below.
+            let placement = self.placement?() ?? .identity
 
             let stats = lastCompletedStats()
             let colorTexture = drawable.colorTextures[0]
@@ -323,6 +344,7 @@ public final class CompositorSession: @unchecked Sendable {
             // ("BUG IN CLIENT: called -setRenderQuality with value larger than
             // configuration render quality").
             pendingRenderQuality = min(sessionFrame.request.renderScale, Self.maxRenderQuality)
+            pendingRepeatCount = sessionFrame.request.tuning.halfRate ? 1 : 0
 
             let originFromDevice =
                 deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
@@ -337,15 +359,17 @@ public final class CompositorSession: @unchecked Sendable {
                     projection: drawable.computeProjection(viewIndex: i),
                     eyeToRoom: originFromDevice * drawable.views[i].transform,
                     anchorPosition: anchorPosition ?? .zero,
-                    base: sessionFrame.request.uniforms)
+                    base: sessionFrame.request.uniforms,
+                    placement: placement)
             }
 
             // Spatial hand path (plan §4.3): drive-flagged ops get their
             // geometry stamped from the hand signals, through the same
-            // room→fractal map as the eyes.
+            // room→fractal map (including G) as the eyes.
             let request = stampHandOps(
                 sessionFrame.request, now: sessionFrame.time,
-                anchorPosition: anchorPosition ?? .zero)
+                anchorPosition: anchorPosition ?? .zero,
+                placement: placement)
 
             // "encode" phase: CPU cost of building + committing the command
             // buffer (the GPU work itself lands in gpuMilliseconds, next frame).
@@ -476,35 +500,45 @@ public final class CompositorSession: @unchecked Sendable {
     private static let handSignalFreshness = 0.25
 
     private func stampHandOps(
-        _ request: RenderRequest, now: Double, anchorPosition: SIMD3<Float>
+        _ request: RenderRequest, now: Double, anchorPosition: SIMD3<Float>,
+        placement: RoomPlacement
     ) -> RenderRequest {
-        guard request.ops.contains(where: {
+        let hasHandOps = request.ops.contains(where: {
             WarpFlags(rawValue: $0.flags)
                 .intersection([.driveRightHand, .driveLeftHand]) != []
-        }) else { return request }
+        })
+        if !hasHandOps && placement.isIdentity { return request }
 
-        func point(_ id: SignalID) -> SIMD3<Float>? {
-            guard let signal = signals.read(id: id),
-                  now - signal.timestamp < Self.handSignalFreshness
-            else { return nil }
-            return SIMD3(signal.value.x, signal.value.y, signal.value.z)
+        var ops = request.ops
+        if hasHandOps {
+            func point(_ id: SignalID) -> SIMD3<Float>? {
+                guard let signal = signals.read(id: id),
+                      now - signal.timestamp < Self.handSignalFreshness
+                else { return nil }
+                return SIMD3(signal.value.x, signal.value.y, signal.value.z)
+            }
+
+            let right = HandOpStamper.Hand(
+                palm: point(.handRightPalm),
+                wrist: point(.handRightPosition),
+                forearm: point(.handRightForearm))
+            let left = HandOpStamper.Hand(
+                palm: point(.handLeftPalm),
+                wrist: point(.handLeftPosition),
+                forearm: point(.handLeftForearm))
+            ops = HandOpStamper.stamp(
+                ops, right: right, left: left,
+                base: request.uniforms, anchorPosition: anchorPosition,
+                placement: placement)
         }
-
-        let right = HandOpStamper.Hand(
-            palm: point(.handRightPalm),
-            wrist: point(.handRightPosition),
-            forearm: point(.handRightForearm))
-        let left = HandOpStamper.Hand(
-            palm: point(.handLeftPalm),
-            wrist: point(.handLeftPosition),
-            forearm: point(.handLeftForearm))
 
         return RenderRequest(
             uniforms: request.uniforms,
-            params: request.params,
-            ops: HandOpStamper.stamp(
-                request.ops, right: right, left: left,
-                base: request.uniforms, anchorPosition: anchorPosition),
+            // Keep the safety bubble a PHYSICAL clearance under G — its
+            // radius slot is world units (CompositorViewMath doc).
+            params: CompositorViewMath.bubbleCompensatedParams(
+                request.params, placement: placement),
+            ops: ops,
             palette: request.palette,
             width: request.width,
             height: request.height,

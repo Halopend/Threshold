@@ -520,9 +520,145 @@ static inline bool threshHasDistOps(uint runtimeOpCount) {
 constant bool thresh_cone_defined [[function_constant(8)]];
 constant bool THRESH_CONE = is_function_constant_defined(thresh_cone_defined)
     ? thresh_cone_defined : false;
-#define THRESH_TEXTURE_CONE    3
-#define THRESH_BUFFER_CONE_DIMS 8
-#define THRESH_CONE_TILE       8
+#define THRESH_TEXTURE_CONE      3
+#define THRESH_TEXTURE_CONE_PREV 5   // coarser level's depths (multi-level)
+#define THRESH_BUFFER_CONE_DIMS  8
+#define THRESH_CONE_TILE         8   // the FINEST level (what the march reads)
+
+// Per-level prepass parameters (buffer 8; private contract with the encoders,
+// same standing as ThreshAuxUniforms). One compiled prepass kernel serves
+// every level of the hierarchy — tile size, coarse step budget, and DE
+// iteration LOD are RUNTIME so a coarse→fine chain (32→16→8) and the UI's
+// Advanced Prepass knobs need no per-level recompile. Defaults
+// {tileSize=8, stepBudget=48, iterScale=1, hasInput=0} reproduce the block-9
+// single-level pass exactly. iterScale < 1 is the DE-iteration LOD seam: the
+// coarse pass marches at fewer fold iterations (the escape-time set inflates
+// OUTWARD, so the safe start depth stays conservative — only shorter, never
+// past a surface).
+struct ThreshConePrepassParams {
+    uint2 fullDims;    // full output width/height (was the whole buffer)
+    uint  tileSize;    // this level's tile edge in pixels (8, 16, 32, …)
+    uint  stepBudget;  // max coarse march steps this level
+    float iterScale;   // DE fold-iteration fraction for the coarse march
+    uint  hasInput;    // 1 → seed from the coarser level at texture 5
+};
+
+// Coarse-pass DE distrust seam (Fulcrum's graduated fudge: distrust an
+// overestimating DE more in wide coarse cones than at per-pixel scale). The
+// prepass scales every distance estimate by this before stepping/stopping.
+// The specialized source injects DEDescriptor.coneFudge; generic and
+// external-DE libraries use the 1.0 default. All built-ins currently bake
+// 1.0 — the multiply folds away — because per-DE distrust was TESTED AND
+// REFUTED as a default (perf-notes block 16): the Cone Stability margin
+// dominates it on both the shimmer and cost axes. Kept as a re-test hook
+// for DEs whose prepass demonstrably tunnels.
+#ifndef THRESH_CONE_FUDGE
+#define THRESH_CONE_FUDGE 1.0f
+#endif
+
+// ---------------------- cone-traced supersampling (CTSS) --------------------
+//
+// Chubarau et al., "Cone-Traced Supersampling for Signed Distance Field
+// Rendering", Graphics Interface 2023 (reference implementation:
+// github.com/ch-andrei/cone-traced-supersampling, shadertoy 7lSXWK).
+// Stateless geometric anti-aliasing inside the march loop: each step compares
+// the DE value against the PIXEL cone radius Rc = t·tanθ and computes a cone
+// occlusion (1 − d/Rc)/2. Contiguous runs of partial occlusion form "hit
+// groups" (surfaces partially covering the pixel); each group is shaded ONCE
+// at a backtracked safe position, the ray continues PAST surfaces via a step
+// floor of 0.5·Rc until the cone is fully occluded, and the groups composite
+// front-to-back through a 6×6 subpixel visibility bitmask. No history buffer
+// — ideal for per-frame parameter animation (no ghosting, unlike TAA).
+//
+// Function_constant 12 (aux-style bool, absent → false): golden/generic
+// pipelines compile to EXACTLY the pre-CTSS kernel. Over-relaxation is
+// disabled inside the CTSS march (ω>1 stepping and pass-through cone
+// occlusion tracking don't compose); the cone-prepass seed remains valid —
+// the prepass stop margin (≥3×epsBase·t per tile ray) exceeds the pixel cone
+// radius (~1.2·fovTan/h·t), so no soft hit can precede the seed.
+constant bool thresh_ctss_defined [[function_constant(12)]];
+constant bool THRESH_CTSS = is_function_constant_defined(thresh_ctss_defined)
+    ? thresh_ctss_defined : false;
+
+// DEVIATIONS from the reference, forced by escape-time fractal DEs:
+// (1) The reference terminates at FULL cone occlusion (occ > 0.99 ⇔
+//     d < −0.98·Rc) — impossible here: escape-time DEs are effectively
+//     UNSIGNED (≈0 inside the set, never deeply negative), so that stop
+//     never fires and rays tunnel through the fractal collecting interior
+//     noise. We terminate on the CLASSIC epsilon acceptance instead
+//     (d < epsBase·t — identical convergence semantics and shading position
+//     as the plain march) and grant the terminal sample full remaining
+//     visibility (occ = 1), which is the correct opaque-surface semantics.
+// (2) The march's acceptance epsilon (epsBase·t ≈ 1.5e-3·t) is FATTER than
+//     the true pixel cone at our resolutions (~0.9e-3·t at 768p) — with the
+//     raw pixel cone, termination would fire before the cone was touched
+//     and no partial coverage would ever accumulate. The CTSS cone is
+//     therefore max(pixel cone, 2·epsBase)·t: wide enough that grazing
+//     surfaces register partial coverage before the terminal acceptance.
+
+// Maximum shaded hit groups per pixel (reference default 8; 4 keeps register
+// pressure and worst-case shading cost bounded on edge-everywhere fractals —
+// overflow visibility is absorbed by the background weight).
+#define THRESH_CTSS_MAX_SAMPLES 4
+// Cone-occlusion thresholds (reference render_defs.cginc; STOP replaced by
+// the classic-epsilon termination — deviation (1) above).
+#define THRESH_CTSS_OCC_EPS  0.01f
+#define THRESH_CTSS_OCC_SOFT (0.0f - THRESH_CTSS_OCC_EPS)
+#define THRESH_CTSS_OCC_HARD (0.5f - THRESH_CTSS_OCC_EPS)
+// CTSS cone radius floor in units of epsBase — deviation (2) above.
+#define THRESH_CTSS_EPS_CONE_MULT 2.0f
+// Step floor as a fraction of the local cone radius (lets the ray cross
+// surfaces to find what's behind partial coverage).
+#define THRESH_CTSS_STEP_FLOOR 0.5f
+#define THRESH_CTSS_MIN_WEIGHT 0.01f
+// Backtracked group-entry depth: a position guaranteed hit-free between the
+// previous and current samples (reference CONE_BACKTRACE_T).
+#define THRESH_CTSS_BACKTRACE(t, tanT) ((t) * (1.0f - (tanT) / (1.0f + (tanT))))
+// 2·PIXEL_SIZE_MULT_BALANCED — pixel angular size → cone tanθ (the cone sits
+// between inscribed and circumscribed in the pixel, reference render_defs).
+#define THRESH_CTSS_PIXEL_MULT 1.171573f
+
+static inline uint ctssShiftMask(uint x, int n)
+{
+    return (n >= 0) ? (x << uint(n)) : (x >> uint(-n));
+}
+
+// 32-bit ~6×6 subpixel coverage mask for a partially covering surface: the
+// surface is modeled as a half-plane in the pixel with screen-projected
+// normal `nor` and signed offset from the cone occlusion. Bit layout packs
+// rows of 4,6,6,6,6,4 bits (corners omitted). Faithful port of the reference
+// getVisibilityMask.
+static inline uint ctssVisibilityMask(float coneOcclusion, float2 nor)
+{
+    const float minN = 0.001f;
+    float2 n = normalize(float2(
+        clamp(fabs(nor.x), minN, 1.0f) * (nor.x < 0.0f ? -1.0f : 1.0f),
+        clamp(fabs(nor.y), minN, 1.0f) * (nor.y < 0.0f ? -1.0f : 1.0f)));
+    const float hh = 2.0f * coneOcclusion - 1.0f;   // signed surface offset
+    const float a = -n.x / n.y;                     // edge line slope
+    const float b = hh * (n.y * n.y + n.x * n.x) / n.y;
+    const float s = 0.5f / a;
+    const float visR = (n.x > 0.0f) ? -1.0f : 0.0f;
+    const uint mask4 = 0x1Eu;
+    const uint mask6 = 0x3Fu;
+    uint m = 0u;
+    // Rows at y = 2i/5 − 1: solve the edge line for x, convert coverage to a
+    // bit shift of a full row.
+    int sh;
+    sh = int(6.0f * (saturate((-1.0f            - b) * s + 0.5f) + visR));
+    m |= (ctssShiftMask(mask6, sh) & mask4) << 27;
+    sh = int(6.0f * (saturate((2.0f/5.0f - 1.0f - b) * s + 0.5f) + visR));
+    m |= (ctssShiftMask(mask6, sh) & mask6) << 22;
+    sh = int(6.0f * (saturate((4.0f/5.0f - 1.0f - b) * s + 0.5f) + visR));
+    m |= (ctssShiftMask(mask6, sh) & mask6) << 16;
+    sh = int(6.0f * (saturate((6.0f/5.0f - 1.0f - b) * s + 0.5f) + visR));
+    m |= (ctssShiftMask(mask6, sh) & mask6) << 10;
+    sh = int(6.0f * (saturate((8.0f/5.0f - 1.0f - b) * s + 0.5f) + visR));
+    m |= (ctssShiftMask(mask6, sh) & mask6) << 4;
+    sh = int(6.0f * (saturate((10.0f/5.0f - 1.0f - b) * s + 0.5f) + visR));
+    m |= (ctssShiftMask(mask6, sh) & mask4) >> 1;
+    return m;
+}
 
 // Stats instrumentation: the per-pixel atomic step-count add is telemetry,
 // not image data — a variant that bakes FALSE drops one device atomic per
@@ -1115,6 +1251,235 @@ struct ThreshMarchResult {
     uint   steps;   // march steps taken (the caller adds to the stats atomic)
 };
 
+// Hit-point shading shared by the classic march (one hit per pixel) and the
+// CTSS march (one shade per hit group): normal is computed by the CALLER
+// (CTSS also needs it for the visibility mask). Verbatim extraction of the
+// pre-CTSS marchShade hit branch — classic output is bit-identical.
+static inline float3 threshShadeHit(
+    float3 pos, float t, float3 rd, float3 n, float trap,
+    float maxDist, float aoStrength, float featureScale,
+    constant ThreshFrameUniforms& U,
+    device const float* params,
+    device const ThreshWarpOp* ops,
+    visible_function_table<ThreshDE> deTable,
+    constant ThreshPalette& palette)
+{
+    float3 lightDir = normalize(float3(1.0f, 0.8f, 0.6f));
+    float lambert = max(dot(n, lightDir), 0.0f);
+
+    // Mapping (plan §5.5 stage 1): derive the palette coordinate t_map.
+    // Depth/normal already land in 0..1; orbit trap is wrapped by the
+    // sampler. Blend mixes trap with depth.
+    float depth = clamp(t / max(maxDist, 1e-3f), 0.0f, 1.0f);
+    float facing = clamp(0.5f + 0.5f * dot(n, -rd), 0.0f, 1.0f);
+    int mapMode = threshMapMode(int(params[THRESH_SLOT_MAP_MODE]));
+    float tMap;
+    switch (mapMode) {
+        case 1:  tMap = depth; break;                         // depth
+        case 2:  tMap = facing; break;                        // normal
+        case 3:  tMap = 0.5f * fract(trap) + 0.5f * depth; break;  // blend
+        default: tMap = trap; break;                          // orbit trap
+    }
+
+    float3 albedo = samplePalette(
+        tMap, palette,
+        params[THRESH_SLOT_GRAD_REPEAT],
+        params[THRESH_SLOT_GRAD_OFFSET],
+        params[THRESH_SLOT_GRAD_SMOOTH]);
+    // AO gate: skip the mapScene taps when disabled (a specialized bake of
+    // FALSE, or aoStrength == 0 — cheapAO returns exactly 1.0 there, so
+    // this is bit-identical).
+    float occ = threshAOEnabled(aoStrength)
+        ? cheapAO(pos, n, aoStrength, featureScale, U, params, ops, deTable)
+        : 1.0f;
+    float3 lit = albedo * (lambert + 0.2f) * occ;
+    return applyGrading(lit, params);
+}
+
+// CTSS march body (see the THRESH_CTSS block above for the algorithm and
+// provenance). Called from marchShade when the CTSS function constant is
+// baked; plain sphere tracing (ω clamped ≤ 1) + hit-group tracking +
+// visibility-weighted compositing. `pixelConeTan` is the pixel cone's tanθ
+// from the caller (kernel-specific: output dims / ray-dir derivatives).
+static ThreshMarchResult marchShadeCTSS(
+    float3 ro, float3 rd,
+    constant ThreshFrameUniforms& U,
+    device const float* params,
+    device const ThreshWarpOp* ops,
+    visible_function_table<ThreshDE> deTable,
+    constant ThreshPalette& palette,
+    float startT, float pixelConeTan)
+{
+    const int maxSteps     = threshMaxSteps(int(params[THRESH_SLOT_MAX_STEPS]));
+    const float maxDist    = params[THRESH_SLOT_MAX_DIST];
+    const float stepSafety = params[THRESH_SLOT_STEP_SAFETY];
+    const float aoStrength = params[THRESH_SLOT_AO_STRENGTH];
+    const float epsBase    = U.scaleCtx.y;
+    const float featureScale = 1.0f / max(U.scaleCtx.z, 1e-6f);
+    // CTSS cone: at least 2× the acceptance epsilon (deviation (2) in the
+    // header) so partial coverage accumulates before terminal acceptance.
+    const float tanT = max(pixelConeTan, THRESH_CTSS_EPS_CONE_MULT * epsBase);
+    // No over-relaxation inside CTSS: pass-through occlusion tracking needs
+    // every step's DE sampled, and ω>1 retreats would double-count groups.
+    const float omega = min(stepSafety, 1.0f);
+
+    struct CTSSSample {
+        float3 pos;   // shading position (backtraced entry or safe hard hit)
+        float  tS;    // ray depth of that position
+        float  trap;  // orbit trap recorded with the position
+        float  occ;   // maximum cone occlusion seen over the group
+    };
+    CTSSSample samples[THRESH_CTSS_MAX_SAMPLES];
+    int numSamples = 0;
+    bool groupHasHardHit = false;
+    bool hasHitP = false;
+    bool hardHitP = false;
+    bool hasFullHit = false;
+    bool bad = false;
+    float dP = 0.0f;      // previous DE value
+    float trapP = 0.0f;   // previous orbit trap
+    uint steps = 0;
+
+    float t = startT;
+    float tP = t;
+    for (int i = 0; i < maxSteps; ++i) {
+        if (t > maxDist || numSamples >= THRESH_CTSS_MAX_SAMPLES) { break; }
+        float3 pos = ro + rd * t;
+        float2 dm = mapScene(pos, U, params, ops, deTable);
+        dm.x = applySafetyBubble(dm.x, pos, ro, params);
+        steps += 1;
+        // Non-finite guard by bit pattern (see marchShade).
+        if ((as_type<uint>(dm.x) & 0x7F800000u) == 0x7F800000u) {
+            bad = true; break;
+        }
+        // Poisoned-start recovery (see marchShade): only before any hit
+        // tracking has begun.
+        if (i == 0 && t > 0.0f && dm.x < 0.0f && startT > 0.0f) {
+            t = 0.0f; tP = 0.0f;
+            continue;
+        }
+
+        const float hitEps = epsBase * t;
+        const float coneRad = max(t, 1e-6f) * tanT;
+        const float coneOcc = (1.0f - dm.x / coneRad) * 0.5f;
+        const bool hasHit  = coneOcc > THRESH_CTSS_OCC_SOFT;
+        const bool hardHit = coneOcc > THRESH_CTSS_OCC_HARD;
+        // Terminal acceptance = the CLASSIC march's epsilon test (deviation
+        // (1) in the header: unsigned fractal DEs never fully occlude the
+        // cone, so the reference's occ-based stop cannot be used).
+        const bool fullHit = dm.x < hitEps;
+        const bool hitEntry     = hasHit && !hasHitP;
+        const bool hitExit      = !hasHit && hasHitP;
+        const bool hardHitEntry = hardHit && !hardHitP;
+        hasHitP = hasHit;
+        hardHitP = hardHit;
+
+        // NOTE: fullHit ⇒ hasHit (the acceptance band d < epsBase·t lies
+        // inside the cone band d < 2·epsBase·t·(1+2ε)), so a terminal hit
+        // with no open group still initializes its sample via hitEntry here.
+        if (hasHit) {
+            if (hitEntry) {
+                groupHasHardHit = false;
+                // New group: shade at the backtraced entry (guaranteed
+                // hit-free between the previous and current samples).
+                const float tEntry = THRESH_CTSS_BACKTRACE(t, tanT);
+                samples[numSamples].tS = tEntry;
+                samples[numSamples].pos = ro + rd * tEntry;
+                samples[numSamples].trap = dm.y;
+                samples[numSamples].occ = coneOcc;
+            }
+            samples[numSamples].occ = max(samples[numSamples].occ, coneOcc);
+            if (hardHitEntry && !groupHasHardHit && !fullHit) {
+                groupHasHardHit = true;
+                // Safe pre-hit position: the previous depth advanced by the
+                // step the plain march would take (cannot cross the surface
+                // any further than the march itself would).
+                const float tSafe = tP + dP * omega;
+                samples[numSamples].tS = tSafe;
+                samples[numSamples].pos = ro + rd * tSafe;
+                samples[numSamples].trap = trapP;
+            }
+        }
+        if (fullHit) {
+            // Terminal surface: shade exactly where the classic march would
+            // accept, and claim ALL remaining subpixel visibility (opaque).
+            samples[numSamples].tS = t;
+            samples[numSamples].pos = pos;
+            samples[numSamples].trap = dm.y;
+            samples[numSamples].occ = 1.0f;
+            numSamples += 1;
+            hasFullHit = true;
+            break;
+        }
+        if (hitExit) {
+            numSamples += 1;   // grazing group complete (partial coverage)
+        }
+
+        dP = dm.x;
+        trapP = dm.y;
+        tP = t;
+        // Step floor of 0.5·Rc lets the ray cross partially covering
+        // surfaces instead of converging onto them.
+        t += max(dm.x * omega, THRESH_CTSS_STEP_FLOOR * coneRad);
+    }
+
+    float4 color;
+    float firstT = -1.0f;
+    if (bad) {
+        color = float4(1.0f, 0.0f, 1.0f, 0.0f);              // NaN sentinel
+    } else {
+        // Screen-plane basis for projecting normals into the pixel: any
+        // deterministic orthonormal frame around rd works — the visibility
+        // mask only correlates samples of the SAME pixel.
+        const float3 upRef = (fabs(rd.y) > 0.99f)
+            ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
+        const float3 right = normalize(cross(rd, upRef));
+        const float3 up = cross(right, rd);
+
+        float3 colorTotal = float3(0.0f);
+        float weightTotal = 0.0f;
+        uint visMask = 0u;
+        for (int i = 0; i < numSamples; ++i) {
+            const CTSSSample s = samples[i];
+            // Fresh center DE at the shading position: exact forward-diff
+            // center for the normal + a position-matched orbit trap.
+            float2 d0 = mapScene(s.pos, U, params, ops, deTable);
+            const float nEps = max(epsBase * s.tS, 1e-4f * featureScale);
+            const float3 n = calcNormal(s.pos, nEps, d0.x, U, params, ops, deTable);
+
+            // Group weight = newly visible subpixel bits (front-to-back).
+            float2 n2 = float2(dot(right, n), dot(up, n));
+            n2 = (dot(n2, n2) > 1e-12f) ? normalize(n2) : float2(1.0f, 0.0f);
+            const uint newBits = ctssVisibilityMask(s.occ, n2) & ~visMask;
+            visMask |= newBits;
+            const float weight =
+                max(THRESH_CTSS_MIN_WEIGHT, float(popcount(newBits)) / 32.0f);
+
+            colorTotal += weight * threshShadeHit(
+                s.pos, s.tS, rd, n, d0.y, maxDist, aoStrength, featureScale,
+                U, params, ops, deTable, palette);
+            weightTotal += weight;
+            if (firstT < 0.0f) { firstT = s.tS; }
+        }
+        if (!hasFullHit) {
+            // Background fills the remaining subpixel visibility (miss =
+            // black, matching the classic path; the raster shells override
+            // miss alpha themselves via result.hit).
+            const float bgWeight = 1.0f - float(popcount(visMask)) / 32.0f;
+            weightTotal += bgWeight;
+        }
+        colorTotal /= max(THRESH_CTSS_MIN_WEIGHT, weightTotal);
+        color = float4(colorTotal, 1.0f);
+    }
+
+    ThreshMarchResult result;
+    result.color = color;
+    result.t = (firstT >= 0.0f) ? firstT : maxDist;
+    result.hit = numSamples > 0;
+    result.steps = steps;
+    return result;
+}
+
 static inline ThreshMarchResult marchShade(
     float3 ro, float3 rd,
     constant ThreshFrameUniforms& U,
@@ -1122,8 +1487,16 @@ static inline ThreshMarchResult marchShade(
     device const ThreshWarpOp* ops,
     visible_function_table<ThreshDE> deTable,
     constant ThreshPalette& palette,
-    float startT = 0.0f)   // hierarchical prepass hands a tile-safe depth
+    float startT = 0.0f,        // hierarchical prepass hands a tile-safe depth
+    float pixelConeTan = 0.0f)  // pixel cone tanθ (CTSS; 0 → eps fallback)
 {
+    // CTSS variant (function constant 12): compile-time branch — baked
+    // false/absent leaves this function EXACTLY the pre-CTSS kernel.
+    if (THRESH_CTSS) {
+        return marchShadeCTSS(ro, rd, U, params, ops, deTable, palette,
+                              startT, pixelConeTan);
+    }
+
     // Engine params from the reserved slots of the FULL param table.
     const int maxSteps     = threshMaxSteps(int(params[THRESH_SLOT_MAX_STEPS]));
     const float maxDist    = params[THRESH_SLOT_MAX_DIST];
@@ -1219,36 +1592,9 @@ static inline ThreshMarchResult marchShade(
         // at the hit. It is full-iteration while the taps are reduced — a
         // small constant bias that mostly normalizes away; costs zero taps.
         float3 n = calcNormal(pos, nEps, hitRadius, U, params, ops, deTable);
-        float3 lightDir = normalize(float3(1.0f, 0.8f, 0.6f));
-        float lambert = max(dot(n, lightDir), 0.0f);
-
-        // Mapping (plan §5.5 stage 1): derive the palette coordinate t_map.
-        // Depth/normal already land in 0..1; orbit trap is wrapped by the
-        // sampler. Blend mixes trap with depth.
-        float depth = clamp(t / max(maxDist, 1e-3f), 0.0f, 1.0f);
-        float facing = clamp(0.5f + 0.5f * dot(n, -rd), 0.0f, 1.0f);
-        int mapMode = threshMapMode(int(params[THRESH_SLOT_MAP_MODE]));
-        float tMap;
-        switch (mapMode) {
-            case 1:  tMap = depth; break;                         // depth
-            case 2:  tMap = facing; break;                        // normal
-            case 3:  tMap = 0.5f * fract(trap) + 0.5f * depth; break;  // blend
-            default: tMap = trap; break;                          // orbit trap
-        }
-
-        float3 albedo = samplePalette(
-            tMap, palette,
-            params[THRESH_SLOT_GRAD_REPEAT],
-            params[THRESH_SLOT_GRAD_OFFSET],
-            params[THRESH_SLOT_GRAD_SMOOTH]);
-        // AO gate: skip the 5 mapScene taps when disabled (a specialized bake
-        // of FALSE, or aoStrength == 0 — cheapAO returns exactly 1.0 there, so
-        // this is bit-identical).
-        float occ = threshAOEnabled(aoStrength)
-            ? cheapAO(pos, n, aoStrength, featureScale, U, params, ops, deTable)
-            : 1.0f;
-        float3 lit = albedo * (lambert + 0.2f) * occ;
-        color = float4(applyGrading(lit, params), 1.0f);
+        color = float4(threshShadeHit(pos, t, rd, n, trap, maxDist,
+                                      aoStrength, featureScale,
+                                      U, params, ops, deTable, palette), 1.0f);
     } else {
         color = float4(0.0f, 0.0f, 0.0f, 1.0f);              // miss: black
     }
@@ -1341,8 +1687,13 @@ kernel void march_offscreen(
     const float3 rd = threshRayDir(pixel, float(w), float(h),
                                    aspect, fovTan, U.camQuat);
 
+    // CTSS pixel cone: vertical pixel angular size 2·fovTan/h, scaled to the
+    // balanced in-pixel cone (constant-folded away when CTSS is not baked).
+    const float pixelConeTan =
+        THRESH_CTSS ? (THRESH_CTSS_PIXEL_MULT * fovTan / float(h)) : 0.0f;
+
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
-                                     tileStart);
+                                     tileStart, pixelConeTan);
 
     // Per-thread step count added ONCE into the device stats counter
     // (baked off in benchmark variants — pure telemetry).
@@ -1383,34 +1734,41 @@ kernel void march_offscreen(
 
 // ---------------------- hierarchical cone prepass ---------------------------
 //
-// One thread per 8x8 output tile: cone-march the tile's central ray with an
-// acceptance radius covering the tile's whole angular footprint (coneK·t) and
-// write the safe start depth. Fully parallel — no intra-group serialization;
-// the fine kernel reads the result (function constant 8 gates both sides).
-// dims buffer (private contract with OffscreenRenderer, buffer 8): the FULL
-// output w/h — the coarse texture's own dims are rounded up and cannot
-// reproduce exact ray directions.
+// One thread per tile: cone-march the tile's central ray with an acceptance
+// radius covering the tile's whole angular footprint (coneK·t) and write the
+// safe start depth. Fully parallel — no intra-group serialization; the fine
+// kernel reads the FINEST level's result (function constant 8 gates both
+// sides). ONE compiled kernel serves every level of the hierarchy: tile size,
+// coarse step budget, and DE iteration LOD are runtime (ThreshConePrepassParams
+// at buffer 8), and a multi-level chain seeds each level from the coarser one
+// at texture 5. cp.hasInput == 0 (the finest single-level default) reproduces
+// the block-9 pass exactly.
+//
+// prevTex is ALWAYS bound (Metal requires it) but read only when hasInput != 0;
+// level 0 binds its own output as an unread dummy.
 kernel void march_cone_prepass(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
-    constant uint2& fullDims                 [[buffer(THRESH_BUFFER_CONE_DIMS)]],
+    constant ThreshConePrepassParams& cp     [[buffer(THRESH_BUFFER_CONE_DIMS)]],
     texture2d<float, access::write> coneTex  [[texture(THRESH_TEXTURE_CONE)]],
+    texture2d<float, access::read> prevTex   [[texture(THRESH_TEXTURE_CONE_PREV)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
     const uint cw = coneTex.get_width();
     const uint ch = coneTex.get_height();
     if (gid.x >= cw || gid.y >= ch) { return; }
 
-    const float w = float(fullDims.x);
-    const float h = float(fullDims.y);
+    const float w = float(cp.fullDims.x);
+    const float h = float(cp.fullDims.y);
     const float aspect = w / h;
     const float fovTan = U.camPosFov.w;
     const float3 ro = U.camPosFov.xyz;
+    const float ts = float(cp.tileSize);
 
-    const float2 base = float2(gid) * float(THRESH_CONE_TILE);
-    const float2 centerPx = base + 0.5f * float(THRESH_CONE_TILE);
+    const float2 base = float2(gid) * ts;
+    const float2 centerPx = base + 0.5f * ts;
     const float3 rdC = threshRayDir(centerPx, w, h, aspect, fovTan, U.camQuat);
 
     // Angular spread bound: max deviation of the tile's corner rays (±1 px
@@ -1418,8 +1776,7 @@ kernel void march_cone_prepass(
     float coneK = 0.0f;
     for (int cy = 0; cy <= 1; ++cy) {
         for (int cx = 0; cx <= 1; ++cx) {
-            const float2 px = base
-                + float2(cx, cy) * (float(THRESH_CONE_TILE) + 2.0f) - 1.0f;
+            const float2 px = base + float2(cx, cy) * (ts + 2.0f) - 1.0f;
             const float3 rdX = threshRayDir(px, w, h, aspect, fovTan, U.camQuat);
             coneK = max(coneK, length(rdX - rdC));
         }
@@ -1428,14 +1785,21 @@ kernel void march_cone_prepass(
 
     const float maxDist = params[THRESH_SLOT_MAX_DIST];
     const float epsBase = U.scaleCtx.y;
-    float t = 0.0f;
-    for (int i = 0; i < 48; ++i) {
+    // Multi-level seed: the coarser level's containing tile (exactly 2× the
+    // pixels here, so gid>>1) already cone-marched this empty space with a
+    // WIDER, conservative cone — resume from its safe depth.
+    float t = (cp.hasInput != 0) ? prevTex.read(gid >> 1).x : 0.0f;
+    for (uint i = 0u; i < cp.stepBudget; ++i) {
         float3 pp = ro + rdC * t;
-        float d = applySafetyBubble(mapScene(pp, U, params, ops, deTable).x, pp, ro, params);
+        float d = applySafetyBubble(
+            mapScene(pp, U, params, ops, deTable, cp.iterScale).x, pp, ro, params);
         // Bit-pattern non-finite test — survives mathMode .fast (see march).
         if ((as_type<uint>(d) & 0x7F800000u) == 0x7F800000u) {
             t = 0.0f; break;                             // fall back: no skip
         }
+        // Per-DE coarse distrust seam (all built-ins bake 1.0 → folds away;
+        // see the THRESH_CONE_FUDGE note above and perf-notes block 16).
+        d *= THRESH_CONE_FUDGE;
         // Largest Δt keeping the WHOLE advanced cone segment inside the
         // empty sphere: Δ + coneK·(t+Δ) ≤ d.
         const float slack = d - coneK * t;
@@ -1443,7 +1807,10 @@ kernel void march_cone_prepass(
         // threshold lets edge pixels immediate-hit at the tile-shared depth —
         // 8×8-quantized silhouettes). The margin (Cone Stability) leaves the
         // per-pixel march refinement room; larger = less shimmer, slightly
-        // slower.
+        // slower. Measured (block 16): margin, not seed back-off, is the
+        // right conservativeness lever — "discard the last test" (Fulcrum)
+        // retreats a whole cruise step and re-taxes warped scenes ~18% for
+        // less shimmer reduction than margin 12 buys at ~8%.
         if (slack <= threshConeMargin() * epsBase * t) { break; }
         t += slack * 0.9f / (1.0f + coneK);
         if (t > maxDist) { t = maxDist; break; }
@@ -1538,8 +1905,19 @@ fragment ThreshFragmentOut thresh_march_fragment(
         startT = coneTex.read(tile, uint(in.ampIndex)).x;
     }
 
+    // CTSS pixel cone from screen-space derivatives of the view ray: under
+    // foveation the logical-NDC step per PHYSICAL pixel widens toward the
+    // periphery, so the cone (and the AA it buys) widens with it. THRESH_CTSS
+    // is a function constant — the derivative sits in uniform control flow
+    // and the whole computation is DCE'd when not baked.
+    float pixelConeTan = 0.0f;
+    if (THRESH_CTSS) {
+        pixelConeTan = 0.5f * THRESH_CTSS_PIXEL_MULT
+            * length(dfdy(normalize(dirLocal)));
+    }
+
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
-                                     startT);
+                                     startT, pixelConeTan);
     if (threshStatsEnabled()) {
         atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
     }
@@ -1623,8 +2001,19 @@ kernel void march_view_compute(
         startT = coneTex.read(tile, gid.z).x;
     }
 
+    // CTSS pixel cone: angular distance between this pixel's ray and the
+    // next row's ray through the same view projection (compute mirror of the
+    // fragment path's derivative; constant-folded away when not baked).
+    float pixelConeTan = 0.0f;
+    if (THRESH_CTSS) {
+        const float2 ndcNext = float2(ndc.x, ndc.y - 2.0f / float(h));
+        const float3 dirNext = threshViewDirLocal(view.invProj, ndcNext);
+        pixelConeTan = 0.5f * THRESH_CTSS_PIXEL_MULT
+            * length(normalize(dirNext) - normalize(dirLocal));
+    }
+
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
-                                     startT);
+                                     startT, pixelConeTan);
     if (threshStatsEnabled()) {
         atomic_fetch_add_explicit(&stats[0], m.steps, memory_order_relaxed);
     }
@@ -1651,13 +2040,19 @@ kernel void march_view_compute(
 // grid: (coneW, coneH, viewCount). views[gid.z] is this thread's view. In the
 // dedicated (non-amplified) layout the encoder binds the views buffer at the
 // per-view offset, so gid.z stays 0 and views[0] is that eye.
+// Multi-level for the per-view path is even simpler than the compute path:
+// a texel IS the tile (NDC-space), so the level's granularity is just the
+// coneTex resolution — no tileSize needed. The params buffer still carries
+// stepBudget / iterScale / hasInput; fullDims/tileSize are unused here.
 kernel void march_cone_prepass_view(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
     device const ThreshViewUniforms* views   [[buffer(THRESH_BUFFER_VIEWS)]],
+    constant ThreshConePrepassParams& cp     [[buffer(THRESH_BUFFER_CONE_DIMS)]],
     texture2d_array<float, access::write> coneTex [[texture(THRESH_TEXTURE_CONE)]],
+    texture2d_array<float, access::read> prevTex  [[texture(THRESH_TEXTURE_CONE_PREV)]],
     uint3 gid                                [[thread_position_in_grid]])
 {
     const uint cw = coneTex.get_width();
@@ -1691,13 +2086,18 @@ kernel void march_cone_prepass_view(
 
     const float maxDist = params[THRESH_SLOT_MAX_DIST];
     const float epsBase = U.scaleCtx.y;
-    float t = 0.0f;
-    for (int i = 0; i < 48; ++i) {
+    // Multi-level seed from the coarser level's containing texel (this view's
+    // slice; coarser level is exactly half the resolution, so gid.xy>>1).
+    float t = (cp.hasInput != 0) ? prevTex.read(gid.xy >> 1, gid.z).x : 0.0f;
+    for (uint i = 0u; i < cp.stepBudget; ++i) {
         float3 pp = ro + rdC * t;
-        float d = applySafetyBubble(mapScene(pp, U, params, ops, deTable).x, pp, ro, params);
+        float d = applySafetyBubble(
+            mapScene(pp, U, params, ops, deTable, cp.iterScale).x, pp, ro, params);
         if ((as_type<uint>(d) & 0x7F800000u) == 0x7F800000u) {
             t = 0.0f; break;                             // non-finite: no skip
         }
+        // Distrust seam (1.0 for all built-ins — see march_cone_prepass).
+        d *= THRESH_CONE_FUDGE;
         const float slack = d - coneK * t;
         if (slack <= threshConeMargin() * epsBase * t) { break; }  // Cone Stability
         t += slack * 0.9f / (1.0f + coneK);

@@ -338,7 +338,12 @@ if opts.specialize, program == nil {
             // THRESHOLD_LOD_FALLOFF=<int>, default off — an approximation
             // lever, so it is opt-in even on the perf pipeline until the
             // A/B (perf block 15) settles a default.
-            lodFalloff: flags["THRESHOLD_LOD_FALLOFF"].flatMap(Int.init))
+            lodFalloff: flags["THRESHOLD_LOD_FALLOFF"].flatMap(Int.init),
+            // Cone-traced supersampling: THRESHOLD_SPEC_CTSS=1 to enable.
+            // Opt-in (not on()-defaulted) — it changes the image by design
+            // and its fractal-scene cost is still being characterized
+            // (perf block 17).
+            ctss: flags["THRESHOLD_SPEC_CTSS"] == "1" ? true : nil)
         specialized = try context.makeSpecializedMarch(
             deFunctionName: descriptor.mslFunctionName, spec: spec)
         if !opts.quiet {
@@ -457,10 +462,23 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
         UInt32(ops.count), descriptor.index,
         UInt32(params.count), UInt32(deParamOffset))
 
-    let request = RenderRequest(
+    var request = RenderRequest(
         uniforms: uniforms, params: params, ops: ops,
         palette: scene.palette?.stops ?? [],
         width: opts.width, height: opts.height)
+    // Multi-level / low-LOD prepass A/B knobs (block 18). The prepass runtime
+    // config rides on request.tuning; the CLI otherwise leaves tuning at its
+    // block-9 defaults (levels 1, budget 48, iterScale 1).
+    let envAB = ProcessInfo.processInfo.environment
+    if let v = envAB["THRESHOLD_CONE_LEVELS"].flatMap(Int.init) {
+        request.tuning.conePrepassLevels = v
+    }
+    if let v = envAB["THRESHOLD_CONE_STEPBUDGET"].flatMap(Int.init) {
+        request.tuning.conePrepassStepBudget = v
+    }
+    if let v = envAB["THRESHOLD_CONE_ITERSCALE"].flatMap(Float.init) {
+        request.tuning.conePrepassIterScale = v
+    }
     return try renderer.render(request, program: program,
                                specialized: specialized, readback: readback)
 }

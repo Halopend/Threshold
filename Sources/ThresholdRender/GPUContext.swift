@@ -239,6 +239,10 @@ public final class GPUContext: @unchecked Sendable {
             var v = cone
             constants.setConstantValue(&v, type: .bool, index: 8)
         }
+        if let ctss = spec?.ctss {
+            var v = ctss
+            constants.setConstantValue(&v, type: .bool, index: 12)
+        }
         return constants
     }
 
