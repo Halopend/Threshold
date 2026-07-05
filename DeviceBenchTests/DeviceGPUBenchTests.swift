@@ -13,11 +13,15 @@
 // get a real Metal device. If it ever runs without one, the test FAILS (it does
 // not silently skip), so a green-but-empty run can't hide a mis-hosted setup.
 //
-// WHAT THIS MEASURES (and does not): the GPU KERNEL cost of one march — a
-// relative comparator across optimization rounds. It is NOT the true delivered
-// frame cost: the real AVP frame renders two FOVEATED per-eye views through the
-// compositor, none of which this offscreen single-texture dispatch reproduces.
-// The GPU clock is also not pinned (DVFS/thermal float absolute ms), so compare
+// WHAT THIS MEASURES (and does not): the GPU KERNEL cost of a frame — a
+// relative comparator across optimization rounds. It sweeps a MATRIX of
+// (per-eye resolution × eye count) in one run (the matrix is baked in code
+// because shell env vars do NOT forward to an on-device test process). A stereo
+// frame renders BOTH eye views and sums their GPU time, so fps is a stereo-frame
+// rate. It is still NOT the true delivered frame cost: the real AVP per-eye
+// views are FOVEATED (peripheral pixels cost less), so two FULL views here is an
+// UPPER BOUND on the raymarch cost, and the compositor adds overhead on top. The
+// GPU clock is also not pinned (DVFS/thermal float absolute ms), so compare
 // deltas on the same warm device; for absolute numbers pin a performance state
 // in Instruments' Metal Application instrument.
 //
@@ -37,22 +41,29 @@ private func envInt(_ key: String, _ fallback: Int) -> Int {
     ProcessInfo.processInfo.environment[key].flatMap(Int.init) ?? fallback
 }
 
-/// The distribution plus enough provenance for CI to diff runs and to PROVE the
-/// numbers came from AVP silicon (deviceName) rather than a Mac/simulator GPU.
-private struct DeviceBenchReport: Codable {
+/// One matrix cell: the distribution for a given (per-eye resolution × eyes).
+private struct RunEntry: Codable {
+    let size: Int
+    let views: Int
+    let result: FrameBenchmark.Result
+}
+
+/// Full sweep + provenance — deviceName PROVES the numbers came from AVP silicon
+/// (not a Mac/simulator GPU); `runs` is one entry per matrix cell.
+private struct SweepReport: Codable {
     let deviceName: String
-    let width: Int
-    let height: Int
     let deKey: String
     let maxSteps: Int
-    let result: FrameBenchmark.Result
+    let frames: Int
+    let warmup: Int
+    let runs: [RunEntry]
 }
 
 @Suite("Device GPU bench", .serialized)
 struct DeviceGPUBenchTests {
 
     @Test
-    func mandelbulbGPUCost() throws {
+    func mandelbulbGPUSweep() throws {
         // FAIL, don't skip, when there's no Metal device — see file header.
         guard let mtl = MTLCreateSystemDefaultDevice() else {
             Issue.record("""
@@ -63,45 +74,66 @@ struct DeviceGPUBenchTests {
             return
         }
 
-        let size = envInt("THRESHOLD_BENCH_SIZE", 1024)
         let frames = envInt("THRESHOLD_BENCH_FRAMES", 120)
         let warmup = envInt("THRESHOLD_BENCH_WARMUP", 20)
         let maxSteps = envInt("THRESHOLD_BENCH_MAXSTEPS", 256)
 
+        // Sweep matrix: one MONO reference, then a STEREO per-eye-resolution ramp
+        // toward AVP-native (~1920² per eye) and up to the Mac suite's 2048² top
+        // end. Baked here because shell env does not reach the on-device process.
+        let matrix: [(size: Int, views: Int)] = [
+            (1024, 1), (1024, 2), (1512, 2), (1920, 2), (2048, 2),
+        ]
+
         let context = try GPUContext()
         let renderer = try OffscreenRenderer(context: context)
 
-        // Public-API mandelbulb request — same scene the render smoke test uses
-        // (camera (0,0,3) → origin, fov 60°, power-8 bulb = deIndex 1), scaled to
-        // `size`. No warp ops: this benchmarks the bare march kernel.
+        // Public-API mandelbulb scene (camera (0,0,3) → origin, fov 60°, power-8
+        // bulb = deIndex 1, no warp ops). Eyes step ±halfIPD along +X and
+        // re-converge; the separation barely moves cost, it just keeps the two
+        // eye dispatches from being byte-identical.
         var engine = EngineParams()
         engine.maxSteps = Float(maxSteps)
         let (params, deParamOffset) = ParamTableLayout.build(engine: engine, deParams: [8.0])
-        let uniforms = CameraMath.makeUniforms(
-            cameraPos: SIMD3(0, 0, 3), target: .zero,
-            fovYRadians: Float.pi / 3,
-            opCount: 0, deIndex: 1,
-            paramCount: params.count, deParamOffset: deParamOffset)
-        let request = RenderRequest(
-            uniforms: uniforms, params: params, ops: [],
-            width: size, height: size)
-
-        // Warmup then measured frames through the identical path. readback:false
-        // skips the pixel copy so we time GPU work only; gpuMilliseconds comes
-        // from commandBuffer.gpuEndTime − gpuStartTime (device-measured).
-        let result = try FrameBenchmark.run(warmup: warmup, frames: frames) { _, _ in
-            try renderer.render(request, readback: false).stats
+        let halfIPD: Float = 0.03
+        func request(size: Int, eyeX: Float) -> RenderRequest {
+            RenderRequest(
+                uniforms: CameraMath.makeUniforms(
+                    cameraPos: SIMD3(eyeX, 0, 3), target: .zero,
+                    fovYRadians: Float.pi / 3,
+                    opCount: 0, deIndex: 1,
+                    paramCount: params.count, deParamOffset: deParamOffset),
+                params: params, ops: [], width: size, height: size)
         }
 
-        let report = DeviceBenchReport(
-            deviceName: mtl.name, width: size, height: size,
-            deKey: "mandelbulb", maxSteps: maxSteps, result: result)
+        var runs: [RunEntry] = []
+        for cfg in matrix {
+            let eyeXs: [Float] = cfg.views >= 2 ? [-halfIPD, halfIPD] : [0]
+            let requests = eyeXs.map { request(size: cfg.size, eyeX: $0) }
+            // Each measured frame dispatches every eye view and sums their GPU
+            // time; readback:false skips the pixel copy so we time GPU work only.
+            let result = try FrameBenchmark.run(warmup: warmup, frames: frames) { _, _ in
+                var gpuMs = 0.0
+                var steps: UInt64 = 0
+                for request in requests {
+                    let s = try renderer.render(request, readback: false).stats
+                    gpuMs += s.gpuMilliseconds
+                    steps += s.totalSteps
+                }
+                return MarchStats(totalSteps: steps, gpuMilliseconds: gpuMs)
+            }
+            runs.append(RunEntry(size: cfg.size, views: cfg.views, result: result))
+            // One line per cell — lands in the xcodebuild log / .xcresult.
+            print("DEVICE-BENCH device=\(mtl.name) \(cfg.size)x\(cfg.size)×\(cfg.views)view "
+                  + "maxSteps=\(maxSteps): " + result.summaryLine)
+            #expect(result.medianMs > 0, "GPU frame time must be positive on real hardware")
+            #expect(result.totalSteps > 0, "the raymarch must accumulate steps")
+        }
 
-        // (1) Human-readable line — lands in the xcodebuild log and .xcresult.
-        print("DEVICE-BENCH device=\(mtl.name) \(size)x\(size) maxSteps=\(maxSteps): "
-              + result.summaryLine)
-
-        // (2) JSON into the host app's container for `devicectl device copy from`.
+        // JSON (one object, runs[]) into the host container for devicectl pull.
+        let report = SweepReport(
+            deviceName: mtl.name, deKey: "mandelbulb", maxSteps: maxSteps,
+            frames: frames, warmup: warmup, runs: runs)
         if let docs = FileManager.default.urls(
             for: .documentDirectory, in: .userDomainMask).first {
             let url = docs.appendingPathComponent("threshold-device-bench.json")
@@ -115,9 +147,6 @@ struct DeviceGPUBenchTests {
             }
         }
 
-        // Sanity: the run actually produced GPU work on real hardware.
-        #expect(result.measuredFrames == frames)
-        #expect(result.medianMs > 0, "GPU frame time must be positive on real hardware")
-        #expect(result.totalSteps > 0, "the raymarch must accumulate steps")
+        #expect(runs.count == matrix.count)
     }
 }

@@ -56,7 +56,7 @@ fi
 
 mkdir -p "$RESULTS"
 CSV=$RESULTS/history.csv
-[[ -f $CSV ]] || echo "time,rev,note,scene,maxSteps,frames,resolution,medianMs,meanMs,p95Ms,minMs,maxMs,fps,goal" > "$CSV"
+[[ -f $CSV ]] || echo "time,rev,note,scene,maxSteps,frames,resolution,medianMs,meanMs,p95Ms,minMs,maxMs,fps,goal,platform,views" > "$CSV"
 
 rev=$(git rev-parse --short HEAD 2>/dev/null || echo "no-git")
 dirty=$(git diff --quiet 2>/dev/null && echo "" || echo "+dirty")
@@ -92,12 +92,12 @@ print(f\"{d['medianMs']:.2f} {d['meanMs']:.2f} {d['p95Ms']:.2f} \"
   printf "%-12s %10s %8s %8s %8s %8s %10s\n" \
     "${res}x${res}" "$median" "$fps" "$mean" "$p95" "$maxv" "$goal"
   csv_note=${NOTE//\"/\"\"}
-  echo "$stamp,$rev$dirty,\"$csv_note\",bench-mandelbox,$MAX_STEPS,$FRAMES,$res,$median,$mean,$p95,$minv,$maxv,$fps,$goal" >> "$CSV"
+  echo "$stamp,$rev$dirty,\"$csv_note\",bench-mandelbox,$MAX_STEPS,$FRAMES,$res,$median,$mean,$p95,$minv,$maxv,$fps,$goal,mac,1" >> "$CSV"
   row_json+="\"$res\":{\"medianMs\":$median,\"meanMs\":$mean,\"p95Ms\":$p95,\"minMs\":$minv,\"maxMs\":$maxv,\"fps\":$fps},"
 done
 
 note_json=${NOTE//\\/\\\\}; note_json=${note_json//\"/\\\"}
-echo "{\"time\":\"$stamp\",\"rev\":\"$rev$dirty\",\"note\":\"$note_json\",\"scene\":\"bench-mandelbox\",\"maxSteps\":$MAX_STEPS,\"frames\":$FRAMES,\"resolutions\":{${row_json%,}}}" \
+echo "{\"time\":\"$stamp\",\"rev\":\"$rev$dirty\",\"platform\":\"mac\",\"note\":\"$note_json\",\"scene\":\"bench-mandelbox\",\"maxSteps\":$MAX_STEPS,\"frames\":$FRAMES,\"resolutions\":{${row_json%,}}}" \
   >> "$RESULTS/history.jsonl"
 echo ""
 echo "logged → $CSV"

@@ -60,17 +60,18 @@ struct CatalogTests {
         let d = try catalog.register(spec("t.scalar2"))
 
         // withEngineDefaults registers scale (firstContentSlot..+1) + camera
-        // rig (firstContentSlot+2..+4) params first, so five content slots are
-        // taken before t.scalar1.
-        #expect(a == firstContentSlot + 5)
-        #expect(b == firstContentSlot + 6)  // +6, +7, +8
-        #expect(c == firstContentSlot + 9)  // +9, +10, +11, +12
-        #expect(d == firstContentSlot + 13)
+        // rig (firstContentSlot+2..+10: yaw/pitch/dolly + pan(float3) +
+        // twist(float3)) first, so eleven content slots are taken before
+        // t.scalar1.
+        #expect(a == firstContentSlot + 11)
+        #expect(b == firstContentSlot + 12)  // +12, +13, +14
+        #expect(c == firstContentSlot + 15)  // +15, +16, +17, +18
+        #expect(d == firstContentSlot + 19)
 
         let layout = catalog.freeze(dynamicArenaSlots: 0)
-        #expect(layout.entry(for: ParamKey("t.vec3"))?.slotRange == (firstContentSlot + 6)..<(firstContentSlot + 9))
-        #expect(layout.entry(for: ParamKey("t.vec4"))?.slotRange == (firstContentSlot + 9)..<(firstContentSlot + 13))
-        #expect(layout.slotCount == firstContentSlot + 14)
+        #expect(layout.entry(for: ParamKey("t.vec3"))?.slotRange == (firstContentSlot + 12)..<(firstContentSlot + 15))
+        #expect(layout.entry(for: ParamKey("t.vec4"))?.slotRange == (firstContentSlot + 15)..<(firstContentSlot + 19))
+        #expect(layout.slotCount == firstContentSlot + 20)
     }
 
     @Test("freeze appends the dynamic arena after the static slots")
@@ -120,10 +121,10 @@ struct CatalogTests {
         let catalog = Catalog.withEngineDefaults()
         try catalog.register(spec("t.x"))
         let layout = catalog.freeze()
-        // Scale (firstContentSlot..+1) + camera rig (firstContentSlot+2..+4)
-        // params occupy the front of the content range, so t.x lands at
-        // firstContentSlot + 5.
-        #expect(layout.slot(for: ParamKey("t.x")) == firstContentSlot + 5)
+        // Scale (firstContentSlot..+1) + camera rig (firstContentSlot+2..+10:
+        // yaw/pitch/dolly + pan + twist) occupy the front of the content range,
+        // so t.x lands at firstContentSlot + 11.
+        #expect(layout.slot(for: ParamKey("t.x")) == firstContentSlot + 11)
         #expect(layout.slot(for: .engineStepSafety) == 2)
         #expect(layout.slot(for: ParamKey("t.missing")) == nil)
         #expect(layout.entry(for: ParamKey("t.x"))?.kind == .float)

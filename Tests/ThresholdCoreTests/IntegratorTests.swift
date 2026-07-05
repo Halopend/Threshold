@@ -34,6 +34,78 @@ struct IntegratorTests {
         #expect(abs(engine.readIntegratorPhase(slot: phaseSlot)! - 0.5) < 1e-5)
     }
 
+    // MARK: - Dead-beat rate injection (HandTracker's grab-scale technique)
+    //
+    // HandTracker drives scale.zoom's true magnification (not a camera-distance
+    // lever — see CameraRig.swift/HandTracker.swift doc) by publishing, each
+    // frame, exactly the RATE needed on the .gesture lane so the phase lands on
+    // a target sequence with zero lag: rate = (target - applied)/dt, tracking
+    // `applied` locally so repeated frames never overshoot or drift. These
+    // tests prove the underlying integrator mechanism supports that technique
+    // exactly, independent of visionOS/HandTracker.
+
+    /// A wide-range integrator (mirrors `scale.zoom`'s −64…64, not
+    /// `color.huePhase`'s wrapping 0…1) so a dead-beat target sequence that
+    /// dips negative doesn't hit a wrap boundary unrelated to what's tested.
+    private func makeZoomLikeEngine(clock: FixedStepClock) throws -> ModulationEngine {
+        try makeEngine(
+            [
+                spec("scale.zoomSpeed", range: -10...10, default: 0),
+                spec("scale.zoom", range: -64...64, default: 0,
+                     integratorRateKey: ParamKey("scale.zoomSpeed")),
+            ],
+            clock: clock)
+    }
+
+    @Test("Dead-beat rate writes land the phase exactly on a target sequence")
+    func deadBeatRateTracksArbitraryTargets() throws {
+        let clock = FixedStepClock(step: 0.1)
+        let engine = try makeZoomLikeEngine(clock: clock)
+        let rateSlot = firstContentSlot
+        let phaseSlot = firstContentSlot + 1
+
+        var applied: Float = 0
+        func driveToward(_ target: Float) {
+            let dt: Float = 0.1
+            let rate = (target - applied) / dt
+            engine.write(lane: .gesture, slot: rateSlot, value: rate)
+            applied += rate * dt
+            clock.advance()
+        }
+
+        // An arbitrary, non-monotonic target sequence (mirrors a grab's
+        // scaleRatio going up, down, then holding) — the phase must land on
+        // EVERY target exactly, not just converge eventually.
+        for target: Float in [0.02, 0.05, 0.05, -0.01, 0.10, 0.10, 0.0] {
+            driveToward(target)
+            #expect(abs(engine.resolve().values[phaseSlot] - target) < 1e-5,
+                    "phase must land exactly on \(target) with zero lag")
+        }
+    }
+
+    @Test("Publishing rate 0 on release stops the phase from drifting further")
+    func zeroRateOnReleaseHaltsThePhase() throws {
+        let clock = FixedStepClock(step: 0.1)
+        let engine = try makeZoomLikeEngine(clock: clock)
+        let rateSlot = firstContentSlot
+        let phaseSlot = firstContentSlot + 1
+
+        // Grab drives the phase to 0.3, then "releases" — HandTracker's
+        // contract is to publish rate 0 EVERY subsequent frame (never just
+        // stop publishing), since a stale nonzero gesture-lane write persists
+        // forever (LaneMailbox/ModulationEngine never auto-zeroes it).
+        engine.write(lane: .gesture, slot: rateSlot, value: 3.0)  // 0.3 over 0.1s
+        clock.advance()
+        #expect(abs(engine.resolve().values[phaseSlot] - 0.3) < 1e-5)
+
+        engine.write(lane: .gesture, slot: rateSlot, value: 0)
+        for _ in 0..<5 {
+            clock.advance()
+            #expect(abs(engine.resolve().values[phaseSlot] - 0.3) < 1e-5,
+                    "phase must hold at its released value, not keep drifting")
+        }
+    }
+
     @Test("The rate is an ordinary lane-resolved param")
     func rateIsLaneResolved() throws {
         let clock = FixedStepClock(step: 0.1)

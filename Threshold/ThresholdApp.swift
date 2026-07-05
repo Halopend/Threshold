@@ -540,7 +540,8 @@ final class VisionAppModel {
         self.loader = try ExternalDELoader(context: context)
 
         let hands = HandTracker(
-            layout: layout, mailbox: session.laneMailbox, signals: signals)
+            layout: layout, mailbox: session.laneMailbox, signals: signals,
+            snapshots: session.snapshots)
         self.hands = hands
         // Hands poll on the render loop's cadence, stamped with session time
         // (CompositorSession.onFrame contract) — set BEFORE the layer attaches.

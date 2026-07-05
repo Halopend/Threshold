@@ -83,21 +83,49 @@ struct CameraRigTests {
         #expect(simd_length(pose.orientation - SIMD4<Float>(0, 0, 0, 1)) < 1e-5)
     }
 
-    @Test func twistRotatesAboutTheTarget() {
+    @Test func twistRotatesAboutTheWorldOrigin() {
+        // This base pose looks straight at the origin (position (0,0,3),
+        // forward -Z), so its orbit `target` COINCIDES with the origin —
+        // insufficient on its own to distinguish "pivots at target" from
+        // "pivots at origin". See `twistPivotsAtOriginNotAtAnOffTargetPoint`
+        // below for the case that actually tells them apart.
         let base = CameraDTO(position: [0, 0, 3], orientation: [0, 0, 0, 1],
                              fovYRadians: .pi / 3)
         // Rotation-vector of magnitude π about world-up: swings the camera from
-        // +Z to −Z about the origin target (like a π yaw), same distance.
+        // +Z to −Z about the origin (like a π yaw), same distance.
         let pose = CameraRig.pose(
             base: base, yaw: 0, pitch: 0, dolly: 1,
             twist: SIMD3(0, .pi, 0))
         #expect(abs(pose.position.x) < 1e-4)
         #expect(abs(pose.position.y) < 1e-4)
         #expect(abs(pose.position.z + 3) < 1e-4)
-        // Still framing the target: forward points back toward +Z.
+        // Still framing the origin: forward points back toward +Z.
         let q = simd_quatf(vector: pose.orientation)
         let forward = q.act(SIMD3(0, 0, -1))
         #expect(simd_length(forward - SIMD3(0, 0, 1)) < 1e-4)
+    }
+
+    @Test func twistPivotsAtOriginNotAtAnOffTargetPoint() {
+        // A base pose that does NOT look through the origin: positioned at
+        // (5, 0, 0), facing +X (away from the origin), so `target` (derived
+        // from base position + forward*distance) sits at (10, 0, 0) — nowhere
+        // near the origin. If twist pivoted at `target` (the old, stale-pivot
+        // behavior), the camera would swing around (10,0,0); pivoting at the
+        // world origin, it must swing around (0,0,0) instead.
+        let facingPlusX = simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 1, 0))
+        let base = CameraDTO(
+            position: [5, 0, 0],
+            orientation: [facingPlusX.vector.x, facingPlusX.vector.y,
+                          facingPlusX.vector.z, facingPlusX.vector.w],
+            fovYRadians: .pi / 3)
+        // Half-turn twist about world-up: a point at (5,0,0) rotated π about
+        // the ORIGIN lands at (-5,0,0); about `target` (10,0,0) it would land
+        // at (15,0,0) instead.
+        let pose = CameraRig.pose(
+            base: base, yaw: 0, pitch: 0, dolly: 1,
+            twist: SIMD3(0, .pi, 0))
+        #expect(simd_length(pose.position - SIMD3<Float>(-5, 0, 0)) < 1e-4,
+                "twist must pivot at the world origin, not the stale orbit target")
     }
 
     @Test func zeroPanAndTwistLeaveTheOrbitPoseUnchanged() {

@@ -64,7 +64,11 @@ extension Catalog {
             key: .cameraPan, label: "Pan",
             kind: .float3, range: -64...64,
             defaultValue: [0, 0, 0],
-            composition: .additive, smoothing: .continuous,
+            // Instant on every lane: grab/translate need true 1:1 tracking —
+            // a 0.15s continuous-smoothing tau (the catalog default) reads as
+            // ~150ms of exponential lag behind the hand, killing the direct-
+            // manipulation feel. Nothing else consumes this param yet.
+            composition: .additive, smoothing: .instant,
             persistence: .scene,
             capabilities: [.musicBindable, .gestureBindable, .animatable],
             group: .camera))
@@ -72,7 +76,8 @@ extension Catalog {
             key: .cameraTwist, label: "Twist",
             kind: .float3, range: -8...8,
             defaultValue: [0, 0, 0],
-            composition: .additive, smoothing: .continuous,
+            // Instant — see cameraPan.
+            composition: .additive, smoothing: .instant,
             persistence: .scene,
             capabilities: [.musicBindable, .gestureBindable, .animatable],
             group: .camera))
@@ -99,10 +104,21 @@ public enum CameraRig {
     /// quaternions fall back to identity — same policy as the encoders.
     ///
     /// `pan` (world-space translation) and `twist` (a rotation-vector — axis
-    /// scaled by angle — applied about the orbit target) are the two-hand grab's
-    /// extra degrees of freedom: grab produces an arbitrary translation +
-    /// arbitrary-axis rotation that yaw/pitch/dolly cannot express. Both default
-    /// to zero, so the four-argument orbit callers are unchanged.
+    /// scaled by angle) are the two-hand grab's extra degrees of freedom: grab
+    /// produces an arbitrary translation + arbitrary-axis rotation that
+    /// yaw/pitch/dolly cannot express. Both default to zero, so the
+    /// four-argument orbit callers are unchanged.
+    ///
+    /// `twist` pivots about the WORLD ORIGIN, not the orbit `target` —
+    /// deliberately different from yaw/pitch, which orbit the look-at target
+    /// derived from the scene's authored base pose. The fractal is always
+    /// evaluated relative to world origin (`RaymarchCore.metal`'s `mapScene`
+    /// applies `worldP * modelScale` with no other placement offset), so
+    /// origin is the only pivot that stays meaningful across repeated
+    /// grab/release/pan cycles — `target` is re-derived from the FROZEN base
+    /// pose every call and goes stale the moment the camera has moved since
+    /// authoring (e.g. after a translate), which would rotate the world
+    /// around a disconnected point instead of wherever the camera actually is.
     public static func pose(
         base: CameraDTO, yaw: Float, pitch: Float, dolly: Float,
         pan: SIMD3<Float> = .zero, twist: SIMD3<Float> = .zero
@@ -137,12 +153,13 @@ public enum CameraRig {
         var position = target + rot.act(p0 - target) * safeDolly
         var orientation = rot * q0
 
-        // Free twist about the target (grab): rotate both the camera position
-        // and its orientation by the rotation-vector `twist`.
+        // Free twist about the WORLD ORIGIN (grab): rotate both the camera
+        // position and its orientation by the rotation-vector `twist`. See the
+        // doc comment above for why this pivots at the origin, not `target`.
         let twistAngle = simd_length(twist)
         if twistAngle > 1e-6 && twistAngle.isFinite {
             let tq = simd_quatf(angle: twistAngle, axis: twist / twistAngle)
-            position = target + tq.act(position - target)
+            position = tq.act(position)
             orientation = tq * orientation
         }
         // Free pan (grab): world-space translation of the camera.

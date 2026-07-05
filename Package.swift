@@ -52,7 +52,10 @@ let package = Package(
         // into the SignalTable. Hand tracking/gestures land here later.
         .target(
             name: "ThresholdInputs",
-            dependencies: ["ThresholdCore"]
+            // ThresholdRender for SnapshotSlot — HandTracker reads the live
+            // resolved scale.zoom value to convert hand-meter deltas into
+            // world units at the current zoom depth (CameraRig.swift doc).
+            dependencies: ["ThresholdCore", "ThresholdRender"]
         ),
         // Headless CLI renderer + perf/regression harness (macOS).
         .executableTarget(
