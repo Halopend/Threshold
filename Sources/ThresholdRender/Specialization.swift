@@ -217,12 +217,16 @@ extension GPUContext {
             + abiHeaderSource + "\n" + core
 
         let options = MTLCompileOptions()
-        // Specialized variants are the PERF pipeline: default to .fast
-        // (adds -ffinite-math-only over .relaxed — the march's non-finite
-        // sentinel guard is a bit-pattern test precisely so it survives
-        // this). The generic pipeline stays .safe and remains the golden/
-        // CPU-equivalence reference; THRESHOLD_MATH_MODE overrides both.
-        options.mathMode = mathMode ?? GPUContext.mathModeOverride ?? .fast
+        // Specialized variants are the PERF pipeline. MEASURED 2026-07-06
+        // (interleaved A/B, 2048², Apple M-family): .relaxed is 15–38% FASTER
+        // than .fast on the fold-heavy DEs (kleinian −38%, mandelbox −31%,
+        // mandelbulb −15%) AND more accurate. .fast's extra -ffinite-math-only /
+        // flush-denormals over .relaxed pessimizes this GPU rather than helping —
+        // .relaxed keeps the FMA fusion (the real win) without the aggressive
+        // assumptions. The march's non-finite sentinel is a bit-pattern test, so
+        // it survives either mode. The generic pipeline stays .safe (the golden/
+        // CPU-equivalence reference); THRESHOLD_MATH_MODE=fast|safe overrides.
+        options.mathMode = mathMode ?? GPUContext.mathModeOverride ?? .relaxed
         do {
             return try device.makeLibrary(source: source, options: options)
         } catch {
@@ -344,13 +348,18 @@ extension GPUContext {
     /// Build the specialized PER-VIEW COMPUTE march (march_view_compute) for
     /// the compute backend, plus the per-view cone prepass when
     /// `spec.coneMarch` is set. Format-independent (the encoder owns the
-    /// intermediate textures), unlike the raster builder.
+    /// intermediate textures), unlike the raster builder. `auxOutputs` bakes
+    /// THRESH_AUX true — the temporal-reconstruction input variant (jittered
+    /// ray-gen + world-t/motion writes); the prepass never carries it (no aux
+    /// args there).
     func makeSpecializedViewCompute(
-        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec
+        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec,
+        auxOutputs: Bool = false, seed: Bool = false
     ) throws -> SpecializedViewCompute {
         let pipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "march_view_compute",
-            deFunctions: builtinDEFunctions, spec: spec)
+            deFunctions: builtinDEFunctions, auxOutputs: auxOutputs, spec: spec,
+            seed: seed)
         let table = try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized view-compute(\(deFunctionName)) DE table")

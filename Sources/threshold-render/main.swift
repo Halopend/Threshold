@@ -380,6 +380,9 @@ let envStepMultiplier = ProcessInfo.processInfo.environment["THRESHOLD_STEP_MULT
     .flatMap(Float.init)
 let envEpsScale = ProcessInfo.processInfo.environment["THRESHOLD_EPS_SCALE"]
     .flatMap(Float.init) ?? 1
+// Per-frame DE/camera/bubble trace to stderr — off unless THRESHOLD_DEBUG is
+// set (it floods --bench / suite output otherwise).
+let envDebug = ProcessInfo.processInfo.environment["THRESHOLD_DEBUG"] != nil
 
 /// `readback: false` skips the pixel copy for timing-only bench frames.
 @MainActor
@@ -424,7 +427,9 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
     let dbgDE = program != nil
             ? externalDEParamValues(descriptor, envelope: scene)
             : deParamValues(descriptor, layout: layout, resolved: resolved)
-    FileHandle.standardError.write("DBG de=\(descriptor.key) deParams=\(dbgDE) cam=\(camera.position) iters=\(engineParams.iterations) bubble(en=\(engineParams.bubbleEnabled),r=\(engineParams.bubbleRadius),bl=\(engineParams.bubbleBlend))\n".data(using: .utf8)!)
+    if envDebug {
+        FileHandle.standardError.write("DBG de=\(descriptor.key) deParams=\(dbgDE) cam=\(camera.position) iters=\(engineParams.iterations) bubble(en=\(engineParams.bubbleEnabled),r=\(engineParams.bubbleRadius),bl=\(engineParams.bubbleBlend))\n".data(using: .utf8)!)
+    }
     let (params, deParamOffset) = ParamTableLayout.build(
         engine: engineParams,
         deParams: dbgDE)

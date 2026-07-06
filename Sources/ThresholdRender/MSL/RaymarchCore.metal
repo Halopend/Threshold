@@ -1367,6 +1367,20 @@ constant bool THRESH_AUX = is_function_constant_defined(thresh_aux_defined)
 #define THRESH_TEXTURE_DEPTH   1
 #define THRESH_TEXTURE_MOTION  2
 
+// Temporal seeding (temporal-reconstruction plan phase A2): warm-start the
+// primary march from the RESOLVED history's hit distance instead of the cone
+// start. Gated by its own function constant so every non-seeded variant
+// compiles to exactly the pre-A2 code, and REQUIRES THRESH_AUX (the host only
+// bakes seed on aux twins — prevViews and the jittered ray both come from
+// that path). Texture 5 is the resolve history-aux READ side for this frame
+// (r = world hit t, miss = −1; g = sample count) at ACCUMULATION resolution —
+// a private contract with ViewComputeEncoder/TemporalReconstructor, same
+// standing as buffer 7. fc 11 stays reserved for phase-B tile budgets.
+constant bool thresh_seed_defined [[function_constant(12)]];
+constant bool THRESH_SEED = is_function_constant_defined(thresh_seed_defined)
+    ? thresh_seed_defined : false;
+#define THRESH_TEXTURE_SEED 5
+
 // Pixel-center → world ray direction for the compute path's pinhole model
 // (one derivation for the per-pixel rays AND the tile prepass ray).
 static inline float3 threshRayDir(float2 pixel, float w, float h,
@@ -1668,7 +1682,23 @@ fragment ThreshFragmentOut thresh_march_fragment(
 //
 // Texture 4 (depth out) is a private contract with ViewComputeEncoder — same
 // standing as THRESH_TEXTURE_CONE.
+//
+// THRESH_AUX variant (temporal reconstruction, plan phase A): the SAME gate
+// the Mac offscreen kernel uses. Adds jittered ray-gen (aux buffer 7 — only
+// `jitter.xy` is read on this path; the prev-camera fields are the pinhole
+// model's, superseded here by prevViews), the previous frame's view uniforms
+// (buffer 9 — private contract with ViewComputeEncoder), and two march-
+// resolution outputs the resolve kernel consumes:
+//   texture 1 (r32Float): world-space hit t, MISS = −1 sentinel (immune to a
+//     modulated max-dist param, and makes the hit↔miss flip test a sign
+//     check). NOTE this differs from the Mac aux texture-1 contract
+//     (t/maxDist for MetalFX) — TemporalResolve un-normalizes via tScale
+//     when the Mac branch reuses it.
+//   texture 2 (rg16Float): motion, previous − current, in MARCH pixels,
+//     y-down, both ends UNJITTERED; a miss reprojects the far point so
+//     rotation tracks the background (same convention as the Mac kernel).
 #define THRESH_TEXTURE_VIEW_DEPTH 4
+#define THRESH_BUFFER_PREV_VIEWS  9
 
 kernel void march_view_compute(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
@@ -1682,6 +1712,16 @@ kernel void march_view_compute(
     texture2d_array<float, access::write> outDepth [[texture(THRESH_TEXTURE_VIEW_DEPTH)]],
     texture2d_array<float, access::read> coneTex   [[texture(THRESH_TEXTURE_CONE),
                                                      function_constant(THRESH_CONE)]],
+    constant ThreshAuxUniforms& aux          [[buffer(THRESH_BUFFER_AUX),
+                                               function_constant(THRESH_AUX)]],
+    device const ThreshViewUniforms* prevViews [[buffer(THRESH_BUFFER_PREV_VIEWS),
+                                                 function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::write> outT [[texture(THRESH_TEXTURE_DEPTH),
+                                                 function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::write> outMotion [[texture(THRESH_TEXTURE_MOTION),
+                                                      function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::sample> seedAux [[texture(THRESH_TEXTURE_SEED),
+                                                     function_constant(THRESH_SEED)]],
     uint3 gid                                [[thread_position_in_grid]])
 {
     const uint w = outColor.get_width();
@@ -1692,24 +1732,98 @@ kernel void march_view_compute(
 
     // Pixel center → NDC (y up) — the compute mirror of the fragment's
     // interpolated `in.ndc` for this pixel; then the SAME two-point
-    // unproject through this view's projection.
+    // unproject through this view's projection. The aux jitter shifts the
+    // sample point within the pixel (the resolve kernel knows the offset and
+    // removes it while accumulating history into sub-pixel detail).
+    float2 pixel = float2(gid.xy) + 0.5f;
+    if (THRESH_AUX) { pixel -= aux.jitter.xy; }
     const float2 ndc = float2(
-        (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
-        1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+        pixel.x / float(w) * 2.0f - 1.0f,
+        1.0f - pixel.y / float(h) * 2.0f);
     float3 dirLocal = threshViewDirLocal(view.invProj, ndc);
     const float roomScale = max(view.originScale.w, 1e-6f);
     const float3 ro = view.originScale.xyz;
     const float3 rd = quatRotate(view.orient, dirLocal);
 
-    // Hierarchical start: same logical-NDC tile map as the fragment.
+    // Hierarchical start: same logical-NDC tile map as the fragment. The
+    // UNJITTERED pixel picks the tile — a jittered lookup could cross into a
+    // neighbor tile whose cone start is not guaranteed for this ray (the
+    // shimmer margin covers sub-pixel wobble only within the owning tile).
     float startT = 0.0f;
     if (THRESH_CONE) {
-        const float2 tuv = clamp(ndc * 0.5f + 0.5f, 0.0f, 1.0f);
+        const float2 centerNdc = float2(
+            (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
+            1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+        const float2 tuv = clamp(centerNdc * 0.5f + 0.5f, 0.0f, 1.0f);
         const uint cw = coneTex.get_width();
         const uint ch = coneTex.get_height();
         const uint2 tile = uint2(min(uint(tuv.x * float(cw)), cw - 1u),
                                  min(uint(tuv.y * float(ch)), ch - 1u));
         startT = coneTex.read(tile, gid.z).x;
+    }
+
+    // Temporal seeding (phase A2): the resolved history already knows roughly
+    // where this ray hits — start the march just short of it. Candidates are
+    // the same-ACC-texel resolved t (exact for a static camera) and the 2×2
+    // history footprint at the PREVIOUS view's reprojection of that point
+    // (covers camera motion); the MIN of all five is the only safe choice
+    // near silhouettes. Any miss (−1) among them disqualifies the seed —
+    // surfaces must be able to morph INTO empty space, so miss-adjacent rays
+    // always re-march from the cone start (this is why hit-dominated frames
+    // are where seeding pays). The seed backs off by t·max(4·epsBase, 0.02)
+    // and must still beat the cone start to be worth a validation tap.
+    if (THRESH_SEED) {
+        const float2 accSize = float2(seedAux.get_width(), seedAux.get_height());
+        const float2 accP = (float2(gid.xy) + 0.5f)
+            * (accSize / float2(float(w), float(h)));
+        const uint2 accTexel = uint2(clamp(
+            accP, float2(0.0f), accSize - 1.0f));
+        const float t0 = seedAux.read(accTexel, gid.z).x;
+        float seedT = -1.0f;
+        if (t0 >= 0.0f) {
+            // Reproject the candidate surface point into the previous view's
+            // accumulation grid (the matrix mirror of the motion write below)
+            // and gather its bilinear footprint.
+            const ThreshViewUniforms sPrev = prevViews[gid.z];
+            const float sPrevRoom = max(sPrev.originScale.w, 1e-6f);
+            const float3 sLocal = quatRotate(
+                float4(-sPrev.orient.xyz, sPrev.orient.w),
+                (ro + rd * t0) - sPrev.originScale.xyz) / sPrevRoom;
+            const float4 sClip = sPrev.proj * float4(sLocal, 1.0f);
+            if (sClip.w > 1e-6f) {
+                const float2 sNdc = sClip.xy / sClip.w;
+                const float2 sUV = float2((sNdc.x + 1.0f) * 0.5f,
+                                          (1.0f - sNdc.y) * 0.5f);
+                if (all(sUV >= 0.0f) && all(sUV <= 1.0f)) {
+                    constexpr sampler kSeedGather(
+                        coord::normalized, address::clamp_to_edge,
+                        filter::nearest);
+                    const float4 g = seedAux.gather(kSeedGather, sUV, gid.z);
+                    const float tMin = min(
+                        t0, min(min(g.x, g.y), min(g.z, g.w)));
+                    if (tMin >= 0.0f) { seedT = tMin; }
+                }
+            }
+        }
+        if (seedT >= 0.0f) {
+            const float epsBase = U.scaleCtx.y;
+            const float seedStart = seedT * (1.0f - max(4.0f * epsBase, 0.02f));
+            if (seedStart > startT) {
+                // Restart valve: ONE DE tap at the seed. Unless the scene is
+                // clearly still open there (distance above the march's own
+                // hit epsilon at that t), the surface morphed toward us and
+                // the seed is a lie — restart from the cone start and count
+                // it. The !(d > eps) form also catches NaN.
+                const float d = mapScene(ro + rd * seedStart,
+                                         U, params, ops, deTable).x;
+                if (d > epsBase * seedStart) {
+                    startT = seedStart;
+                } else if (threshStatsEnabled()) {
+                    atomic_fetch_add_explicit(&stats[1], 1u,
+                                              memory_order_relaxed);
+                }
+            }
+        }
     }
 
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
@@ -1726,6 +1840,37 @@ kernel void march_view_compute(
     outDepth.write(
         float4(clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f), 0.0f, 0.0f, 0.0f),
         gid.xy, gid.z);
+
+    if (THRESH_AUX) {
+        // World-space hit t; miss = −1 (see the contract comment above).
+        outT.write(float4(m.hit ? m.t : -1.0f, 0.0f, 0.0f, 0.0f),
+                   gid.xy, gid.z);
+
+        // Motion: where this frame's surface point sat LAST frame in march
+        // pixels — the same world point projected through the PREVIOUS
+        // frame's view (matrix mirror of the Mac pinhole formula). Miss uses
+        // the far point along the ray so rotation tracks the background.
+        // The CURRENT end is the JITTERED pixel — the position this sample
+        // actually images at — so a static camera yields motion 0 exactly
+        // (the resolve reprojects into the unjittered accumulation grid; a
+        // center-based end would smear history by −jitter every frame).
+        const ThreshViewUniforms prev = prevViews[gid.z];
+        const float prevRoomScale = max(prev.originScale.w, 1e-6f);
+        const float3 world = ro + rd * m.t;
+        const float3 local = quatRotate(
+            float4(-prev.orient.xyz, prev.orient.w),
+            world - prev.originScale.xyz) / prevRoomScale;
+        float2 motion = float2(0.0f);
+        const float4 pclip = prev.proj * float4(local, 1.0f);
+        if (pclip.w > 1e-6f) {
+            const float2 pndc = pclip.xy / pclip.w;
+            const float2 prevPixel = float2(
+                (pndc.x + 1.0f) * 0.5f * float(w),
+                (1.0f - pndc.y) * 0.5f * float(h));
+            motion = prevPixel - pixel;
+        }
+        outMotion.write(float4(motion, 0.0f, 0.0f), gid.xy, gid.z);
+    }
 }
 
 // -------------------- per-view hierarchical cone prepass --------------------

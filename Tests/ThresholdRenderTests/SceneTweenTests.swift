@@ -45,12 +45,12 @@ struct SceneTweenTests {
     func cameraEasesAndLands() {
         var r = Rig()
         let startZ = r.step().request.uniforms.camPosFov.z
-        #expect(abs(startZ - 3) < 1e-4, "default camera z = 3")
+        #expect(abs(startZ - 2.6) < 1e-4, "default camera z = 2.6 (off-axis default pose)")
 
         r.commands.publish(.applyScene(sceneWithCameraZ(10),
                                        transition: SceneTransition(duration: 0.5)))
         let midZ = r.step().request.uniforms.camPosFov.z
-        #expect(midZ > 3 && midZ < 10, "camera eases from 3 toward 10, got \(midZ)")
+        #expect(midZ > 2.6 && midZ < 10, "camera eases from 2.6 toward 10, got \(midZ)")
 
         for _ in 0..<45 { r.step() }  // past 0.5 s (45 frames = 0.75 s)
         #expect(abs(r.step().request.uniforms.camPosFov.z - 10) < 1e-3,

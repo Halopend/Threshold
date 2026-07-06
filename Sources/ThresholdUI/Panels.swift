@@ -769,7 +769,13 @@ public struct StatsSection: View {
             // governor only modulates below them.
             Toggle("Auto Quality", isOn: $autoQuality)
                 .onChange(of: autoQuality) { _, on in
+                    // visionOS: governorDefault keeps the reconstruction-aware
+                    // resolution floor (0.35 vs 0.5) when re-arming from UI.
+                    #if os(visionOS)
+                    mirror.setQualityGovernor(on ? CompositorSession.governorDefault : nil)
+                    #else
                     mirror.setQualityGovernor(on ? .platformDefault : nil)
+                    #endif
                 }
             // Render Quality: the USER'S CEILING (ADR-003). With Auto Quality
             // on, the governor adapts below it to hold fps; off, this is the
@@ -851,6 +857,11 @@ public struct PipelineSection: View {
             }
             if !mirror.diagnostics.bakedConstants.isEmpty {
                 LabeledContent("Baked", value: mirror.diagnostics.bakedConstants)
+                    .font(.caption)
+            }
+            if mirror.diagnostics.reconstruction != "off" {
+                LabeledContent("Reconstruction",
+                               value: mirror.diagnostics.reconstruction.uppercased())
                     .font(.caption)
             }
             // (Render Quality lives in the Session card next to Auto

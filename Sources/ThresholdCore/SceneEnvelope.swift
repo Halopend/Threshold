@@ -106,8 +106,18 @@ public struct CameraDTO: Sendable, Equatable, Codable {
     public var orientation: [Float]
     public var fovYRadians: Float
 
+    /// Off-axis 3/4 view looking at the origin from slightly below (distance
+    /// ≈ 3, ~31° upward pitch about X — a pure vertical tilt, so left/right
+    /// symmetry is preserved). A dead-on `[0,0,3]` view sits on the symmetry
+    /// axis of the space-filling folds (pseudo-Kleinian), where the DE stays
+    /// sub-threshold and every ray creeps → the fractal renders BLACK; nudging
+    /// the camera off that axis breaks the degeneracy so a fresh pick / reset
+    /// always shows a surface. It also frames the compact bulbs/box more
+    /// flatteringly than face-on. Orientation is a verified look-at-origin
+    /// quaternion (x,y,z,w) for position (0,-1.6,2.6).
     public static let `default` = CameraDTO(
-        position: [0, 0, 3], orientation: [0, 0, 0, 1], fovYRadians: Float.pi / 3)
+        position: [0, -1.6, 2.6], orientation: [0.27234, 0, 0, 0.9622],
+        fovYRadians: Float.pi / 3)
 
     public init(position: [Float], orientation: [Float], fovYRadians: Float) {
         precondition(position.count == 3 && orientation.count == 4)

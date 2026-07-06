@@ -220,11 +220,19 @@ public final class GPUContext: @unchecked Sendable {
     /// when requested. Shared by the compute (makeLinkedPipeline) and raster
     /// (makeSpecializedRaster) paths so the two never drift.
     static func specConstantValues(
-        auxOutputs: Bool, spec: MarchSpec?
+        auxOutputs: Bool, spec: MarchSpec?, seed: Bool = false
     ) -> MTLFunctionConstantValues {
         let constants = MTLFunctionConstantValues()
         var aux = auxOutputs
         constants.setConstantValue(&aux, type: .bool, index: 0)
+        // Temporal seeding (function_constant 12, phase A2): only ever baked
+        // TRUE on aux twins — the seed path needs prevViews + jittered rays.
+        // Left unset otherwise so every non-seeded variant compiles to the
+        // constant's false default (pre-A2 code, bit-identical).
+        if seed {
+            var s = true
+            constants.setConstantValue(&s, type: .bool, index: 12)
+        }
         if let spec {
             func setInt(_ value: Int, _ index: Int) {
                 var v = Int32(value)
@@ -250,7 +258,7 @@ public final class GPUContext: @unchecked Sendable {
     static func makeLinkedPipeline(
         device: MTLDevice, library: MTLLibrary, kernelName: String,
         deFunctions: [MTLFunction], auxOutputs: Bool = false,
-        spec: MarchSpec? = nil
+        spec: MarchSpec? = nil, seed: Bool = false
     ) throws -> MTLComputePipelineState {
         // The march + cone-prepass kernels reference function constants (THRESH_AUX
         // always; the bakes/cone gate in the specialized library), so they take
@@ -261,7 +269,8 @@ public final class GPUContext: @unchecked Sendable {
         ]
         let kernel: MTLFunction
         if constantKernels.contains(kernelName) {
-            let constants = specConstantValues(auxOutputs: auxOutputs, spec: spec)
+            let constants = specConstantValues(
+                auxOutputs: auxOutputs, spec: spec, seed: seed)
             do {
                 kernel = try library.makeFunction(
                     name: kernelName, constantValues: constants)
@@ -275,11 +284,19 @@ public final class GPUContext: @unchecked Sendable {
             throw RenderError.missingFunction(kernelName)
         }
         let desc = MTLComputePipelineDescriptor()
-        desc.label = auxOutputs ? "\(kernelName) aux" : kernelName
+        desc.label = kernelName + (auxOutputs ? " aux" : "") + (seed ? " seed" : "")
         desc.computeFunction = kernel
         let linked = MTLLinkedFunctions()
         linked.functions = deFunctions
         desc.linkedFunctions = linked
+        // NOTE (measured 2026-07-06, refuted): pinning
+        // `desc.maxTotalThreadsPerThreadgroup = 64` to bake the 8×8 occupancy
+        // upfront REGRESSES this Mac GPU — mandelbulb +96% / kleinian +58% on
+        // its own; +10% / +4% even with threadGroupSizeIsMultipleOfThreadExecutionWidth.
+        // The default (compiler allocates for 1024) is fastest: the march isn't
+        // register-spill-bound at the GPU's chosen occupancy, so capping it only
+        // constrains the scheduler. Left OUT deliberately; re-measure on AVP
+        // before revisiting.
         do {
             return try device.makeComputePipelineState(
                 descriptor: desc, options: [], reflection: nil)

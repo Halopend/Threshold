@@ -13,5 +13,5 @@
     "de.kleinian.crossRadius": [0.84],
     "engine.iterations": [12]
   },
-  "camera": { "position": [0, 0, 2.5], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+  "camera": { "position": [0, -1.6, 2.6], "orientation": [0.27234, 0, 0, 0.9622], "fovYRadians": 1.0472 }
 }

@@ -8,3 +8,4 @@ DerivedData/
 bench-results/
 .bench-history/
 Build/
+build/

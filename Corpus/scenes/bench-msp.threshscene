@@ -1,0 +1,4 @@
+{ "version": 1, "name": "bench-msp", "fractalTypeKey": "mandelboxSphereProjection",
+  "params": { "de.mandelboxSphereProjection.projBlend": [0.9], "engine.iterations": [9],
+              "engine.bubble.enabled": [1], "engine.bubble.radius": [1.8], "engine.bubble.blend": [0.5] },
+  "camera": { "position": [0, -1.6, 2.6], "orientation": [0.27234, 0, 0, 0.9622], "fovYRadians": 1.0471975 } }

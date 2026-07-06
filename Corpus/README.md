@@ -42,8 +42,8 @@ swift build --build-system native --product threshold-render
 | `mengerSponge`              | menger-sponge, colorful spheres              | pending |
 | `quaternionJulia`           | quaternion-julia                             | pending |
 | `mandelbulbJulia`           | mandelbulb-julia                             | pending |
-| `kleinian`                  | kleinian                                     | pending — renders blank¹ |
-| `mandelboxSphereProjection` | mandelbox-sphere-projection, boxflower2      | pending — blank at defaults¹ |
+| `kleinian`                  | kleinian (off-axis camera¹)                  | pending |
+| `mandelboxSphereProjection` | mandelbox-sphere-projection (bubble on²), boxflower2 | pending |
 
 **Goldens are intentionally not recorded yet** (as of 2026-07-06):
 
@@ -52,9 +52,21 @@ swift build --build-system native --product threshold-render
   *geometry* is pixel-identical and deterministic, only the shading shifted.
   They are left as-is until the color pipeline settles; refresh them with
   `--update all` once it does, and the suite goes green.
-- ¹ `kleinian` and `mandelboxSphereProjection` render pure black at their
-  default parameters in the current build (GPU DE shape-fix pending; the
-  "MSP scenes still black" bug). `boxflower2` shows MSP *is* fine with other
-  params. Their scene inputs are staged here so recording a golden is a
-  one-liner (`--update kleinian`) the moment their shaders render a surface —
-  re-check the staged camera framing then.
+
+All 7 scenes now render (verified by the suite — no `EMPTY?` rows). Two of them
+needed non-default scene setup, and NEITHER is a shader/CLI bug — the DE math
+is correct (the DE-equivalence tests pass) and the CLI feeds the march
+identically to the Mac GUI:
+
+- ¹ `kleinian` (Knighty's pseudo-Kleinian) is **space-filling**: a dead-on
+  `[0,0,z]` camera sits on the folds' symmetry axis where the DE stays
+  sub-threshold and every ray *creeps* (renders black at any distance). An
+  **off-axis** camera breaks that degeneracy and it renders. This is also why
+  `CameraDTO.default` was moved off-axis (SceneEnvelope.swift) so a fresh pick
+  / reset is never black.
+- ² `mandelboxSphereProjection`'s once-applied sphere projection has a genuine
+  r→0 singularity near the origin, so the DE explodes and rays 1-step-miss.
+  Enabling the **safety bubble** (`engine.bubble.enabled=1`) carves that region
+  out and it renders — at ANY `projBlend` (Blue hero renders at 0.98). The bare
+  `--de mandelboxSphereProjection` (bubble off by default) is still black; a
+  scene must turn the bubble on, as this one and the legacy MSP scenes do.

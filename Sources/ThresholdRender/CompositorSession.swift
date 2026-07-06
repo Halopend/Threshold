@@ -104,6 +104,80 @@ public final class CompositorSession: @unchecked Sendable {
             .flatMap(RenderBackend.init(rawValue:)) ?? .fragment
     }
 
+    /// UserDefaults key for the temporal-reconstruction mode on the compute
+    /// backend ("off" | "stabilize" | "taau"; default off). `THRESHOLD_RECON`
+    /// overrides it for dev/bench runs. Read at render-loop start — flipping
+    /// it applies the next time the immersive space opens, same contract as
+    /// the backend picker.
+    public static let reconstructionKey = "threshold.render.reconstruction"
+
+    /// Temporal-reconstruction mode, the UI-facing mirror of the internal
+    /// `TemporalReconstructor.Mode` (raw values match the UserDefaults /
+    /// `THRESHOLD_RECON` strings). Compute backend only — the fragment path's
+    /// rate-map-warped space can't host per-pixel reprojection.
+    public enum Reconstruction: String, Sendable, CaseIterable {
+        /// Phase-0 present only: spatial upsample + sharpen, no history.
+        case off
+        /// Accumulate at MARCH resolution — steadies the image at the same
+        /// sharpness (the conservative choice).
+        case stabilize
+        /// Accumulate at OUTPUT resolution — jittered samples recover real
+        /// sub-pixel detail at low march scales (the ambitious choice).
+        case taau
+
+        public var label: String {
+            switch self {
+            case .off: return "Off"
+            case .stabilize: return "Stabilize"
+            case .taau: return "TAAU"
+            }
+        }
+    }
+
+    /// The persisted reconstruction choice (default: off). The render loop
+    /// arms it at start; `THRESHOLD_RECON` overrides for dev/bench runs.
+    public static var selectedReconstruction: Reconstruction {
+        UserDefaults.standard.string(forKey: reconstructionKey)
+            .flatMap(Reconstruction.init(rawValue:)) ?? .off
+    }
+
+    /// The reconstruction mode the next render loop will arm.
+    static var reconstructionMode: TemporalReconstructor.Mode {
+        if let env = ProcessInfo.processInfo.environment["THRESHOLD_RECON"],
+           let mode = TemporalReconstructor.Mode(rawValue: env) {
+            return mode
+        }
+        return TemporalReconstructor.Mode(
+            rawValue: selectedReconstruction.rawValue) ?? .off
+    }
+
+    /// UserDefaults key for temporal seeding (phase A2) on the reconstruction
+    /// path — default ON (it only ever engages inside an armed temporal
+    /// mode). `THRESHOLD_RECON_SEED=0` is the dev/bench kill switch.
+    public static let reconSeedKey = "threshold.render.reconSeed"
+
+    /// Whether the next render loop arms temporal seeding.
+    public static var reconSeedEnabled: Bool {
+        if let env = ProcessInfo.processInfo.environment["THRESHOLD_RECON_SEED"] {
+            return env != "0"
+        }
+        if UserDefaults.standard.object(forKey: reconSeedKey) == nil {
+            return true   // default ON — absent key means never touched
+        }
+        return UserDefaults.standard.bool(forKey: reconSeedKey)
+    }
+
+    /// The governor config the shell arms at attach. Temporal reconstruction
+    /// holds quality at lower march scales, so its floor drops to 0.35 — the
+    /// whole point of the reconstruction (plan §toggles/governor).
+    public static var governorDefault: QualityGovernorConfig {
+        var config = QualityGovernorConfig.platformDefault
+        if selectedBackend == .compute, reconstructionMode != .off {
+            config.minRenderScale = 0.35
+        }
+        return config
+    }
+
     /// Compositor render-quality CEILING (visionOS 26). This is the Vision Pro
     /// counterpart of the Mac render-scale lever's top: `maxRenderQuality` is
     /// set once and governs the drawable color-texture MEMORY allocation; the
@@ -226,6 +300,19 @@ public final class CompositorSession: @unchecked Sendable {
                     computeRecon = try TemporalReconstructor(
                         context: context,
                         colorFormat: layer.configuration.colorFormat)
+                    // Temporal mode (phase A) + seeding (A2): armed once per
+                    // loop, same apply-on-reopen contract as the backend
+                    // picker.
+                    computeRecon?.mode = Self.reconstructionMode
+                    computeRecon?.seedingEnabled = Self.reconSeedEnabled
+                    if let recon = computeRecon, recon.mode != .off {
+                        ThresholdLog.session.notice(
+                            """
+                            temporal reconstruction armed: \
+                            \(recon.mode.rawValue, privacy: .public)\
+                            \(recon.seedingEnabled ? "+seed" : "", privacy: .public)
+                            """)
+                    }
                 } catch {
                     ThresholdLog.session.error(
                         """
@@ -276,6 +363,14 @@ public final class CompositorSession: @unchecked Sendable {
         let foveated = layer.configuration.isFoveationEnabled
         var pendingRenderQuality = Self.maxRenderQuality
         var lastAppliedRenderQuality: Float = -1
+
+        // Temporal reconstruction per-frame state: the previous ENCODED
+        // frame's views (motion/reprojection reference — history was written
+        // by that frame, so the pair stays consistent across dropped frames)
+        // and the reset funnel's change detectors.
+        var previousViews: [ThreshViewUniforms]? = nil
+        var lastOctave: Int32? = nil
+        var lastHistoryEpoch: UInt32? = nil
 
         // Profiling seam (RenderTelemetry.swift). Until now the visionOS render
         // path had NO os_signpost coverage — a Metal System Trace / os_signpost
@@ -387,6 +482,20 @@ public final class CompositorSession: @unchecked Sendable {
             // configuration render quality").
             pendingRenderQuality = min(sessionFrame.request.renderScale, Self.maxRenderQuality)
 
+            // Reset funnel (temporal reconstruction): an octave rebase moves
+            // the world by a power of two and a history-epoch bump means a
+            // structurally different world — either way yesterday's history
+            // lies. Mirrors the Mac path's noteOctave.
+            if let recon = computeRecon, recon.mode != .off {
+                if (lastOctave != nil && lastOctave != sessionFrame.scaleOctave)
+                    || (lastHistoryEpoch != nil
+                        && lastHistoryEpoch != sessionFrame.historyEpoch) {
+                    recon.requestHistoryReset()
+                }
+                lastOctave = sessionFrame.scaleOctave
+                lastHistoryEpoch = sessionFrame.historyEpoch
+            }
+
             let originFromDevice =
                 deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
             if anchorPosition == nil, deviceAnchor != nil {
@@ -425,7 +534,9 @@ public final class CompositorSession: @unchecked Sendable {
                         request, views: views, drawable: drawable,
                         layered: layered, gpu: computeGPU,
                         recon: computeRecon,
+                        prevViews: previousViews,
                         commandBuffer: commandBuffer)
+                    previousViews = views
                 }
                 drawable.encodePresent(commandBuffer: commandBuffer)
                 commandBuffer.commit()
@@ -468,7 +579,13 @@ public final class CompositorSession: @unchecked Sendable {
                 diagnostics: RenderDiagnostics(
                     pipeline: backend == .compute ? .viewCompute : .raster,
                     renderScale: scale,
-                    upscaling: scale < 0.999)))
+                    upscaling: scale < 0.999,
+                    reconstruction: {
+                        guard let recon = computeRecon, recon.mode != .off
+                        else { return "off" }
+                        return recon.mode.rawValue
+                            + (recon.seedingEnabled ? "+seed" : "")
+                    }())))
         }
         ThresholdLog.session.notice("compositor render loop exited (stop requested)")
     }
@@ -526,6 +643,7 @@ public final class CompositorSession: @unchecked Sendable {
         layered: Bool,
         gpu: ViewComputeEncoder,
         recon: TemporalReconstructor?,
+        prevViews: [ThreshViewUniforms]?,
         commandBuffer: MTLCommandBuffer
     ) {
         var colorTargets: [(texture: MTLTexture, slice: Int)] = []
@@ -545,7 +663,7 @@ public final class CompositorSession: @unchecked Sendable {
         gpu.encode(
             request, views: views,
             colorTargets: colorTargets, depthTargets: depthTargets,
-            commandBuffer: commandBuffer, recon: recon)
+            commandBuffer: commandBuffer, recon: recon, prevViews: prevViews)
     }
 
     // MARK: Hand-driven ops
