@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "pseudo kleinian",
+  "fractalTypeKey": "kleinian",
+  "params": {
+    "de.kleinian.minX": [-0.3252],
+    "de.kleinian.minY": [-0.7862],
+    "de.kleinian.minZ": [-0.0948],
+    "de.kleinian.sphereFold": [0.69],
+    "de.kleinian.maxX": [0.35],
+    "de.kleinian.maxY": [1.0],
+    "de.kleinian.maxZ": [1.22],
+    "de.kleinian.crossRadius": [0.84],
+    "engine.iterations": [12]
+  },
+  "camera": { "position": [0, 0, 2.5], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

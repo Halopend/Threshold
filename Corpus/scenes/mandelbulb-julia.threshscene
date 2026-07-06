@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "mandelbulb julia",
+  "fractalTypeKey": "mandelbulbJulia",
+  "params": {
+    "de.mandelbulbJulia.power": [8],
+    "de.mandelbulbJulia.cX": [0.2],
+    "de.mandelbulbJulia.cY": [-0.15],
+    "de.mandelbulbJulia.cZ": [0.35],
+    "engine.iterations": [12]
+  },
+  "camera": { "position": [0, 0, 3], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

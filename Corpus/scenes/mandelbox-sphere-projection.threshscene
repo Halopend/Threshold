@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "mandelbox sphere projection",
+  "fractalTypeKey": "mandelboxSphereProjection",
+  "params": {
+    "de.mandelboxSphereProjection.scale": [2],
+    "de.mandelboxSphereProjection.minRadius": [0.25],
+    "de.mandelboxSphereProjection.fixedRadius": [1],
+    "de.mandelboxSphereProjection.foldLimit": [1],
+    "de.mandelboxSphereProjection.projBlend": [0.98],
+    "de.mandelboxSphereProjection.projRadius": [1],
+    "engine.iterations": [14]
+  },
+  "camera": { "position": [0, 0, 14], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}
