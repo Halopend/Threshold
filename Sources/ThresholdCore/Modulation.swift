@@ -39,11 +39,26 @@ struct Bitset {
         return (words[i >> 6] >> UInt64(i & 63)) & 1 == 1
     }
 
+    /// Out-of-range indices are DROPPED, loudly in debug (assertion) and
+    /// silently in release — the same defense-in-depth stance as
+    /// `forEachSetBit`'s phantom-bit clamp. Every legitimate caller sits
+    /// behind a `slot < slotCount` precondition already; this guard exists so
+    /// a stray index arriving through any future unguarded path corrupts
+    /// NOTHING (an unchecked `words[i >> 6]` write next to other engine
+    /// storage is exactly the corruption shape of the live Bitset crashes).
     mutating func insert(_ i: Int) {
+        guard i >= 0, i < bitCount else {
+            assertionFailure("Bitset.insert(\(i)) out of range 0..<\(bitCount)")
+            return
+        }
         words[i >> 6] |= 1 << UInt64(i & 63)
     }
 
     mutating func remove(_ i: Int) {
+        guard i >= 0, i < bitCount else {
+            assertionFailure("Bitset.remove(\(i)) out of range 0..<\(bitCount)")
+            return
+        }
         words[i >> 6] &= ~(1 << UInt64(i & 63))
     }
 
@@ -144,8 +159,20 @@ public final class LaneMailbox: Sendable {
     /// engine owns this call). Allocation-free.
     public func drainInto(_ engine: ModulationEngine) {
         state.withLock { s in
+            let slotCount = engine.layout.slotCount
             for i in 0..<s.count {
                 let w = s.buffer[(s.head + i) % s.buffer.count]
+                // Ingress validation: the mailbox accepts writes from ANY
+                // thread with no slot knowledge, so a stale/garbage slot
+                // (old scene, remapped catalog, torn producer) must be
+                // dropped HERE — loudly in debug — rather than fed to
+                // `write`, whose precondition would kill the render thread.
+                guard w.slot >= 0, w.slot < slotCount else {
+                    assertionFailure(
+                        "LaneMailbox: dropped write to slot \(w.slot) "
+                        + "(lane \(w.lane), slotCount \(slotCount))")
+                    continue
+                }
                 engine.write(lane: w.lane, slot: w.slot, value: w.value)
             }
             s.head = 0
