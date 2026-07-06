@@ -41,10 +41,22 @@ public enum EngineSlot: Int, CaseIterable, Sendable, Codable, Hashable {
     case bubbleRadius = 17   // THRESH_SLOT_BUBBLE_RADIUS
     case bubbleShape = 18    // THRESH_SLOT_BUBBLE_SHAPE
     case bubbleBlend = 19    // THRESH_SLOT_BUBBLE_BLEND
+    // Atmosphere (legacy Effects ▸ Static) — must match THRESH_SLOT_GLOW/
+    // BLOOM/FOG_* in the ABI header. All disabled by default so authored/
+    // golden scenes are byte-identical.
+    case glowEnabled = 20    // THRESH_SLOT_GLOW_ENABLED
+    case glowIntensity = 21  // THRESH_SLOT_GLOW_INTENSITY
+    case bloomEnabled = 22   // THRESH_SLOT_BLOOM_ENABLED
+    case bloomStrength = 23  // THRESH_SLOT_BLOOM_STRENGTH
+    case fogEnabled = 24     // THRESH_SLOT_FOG_ENABLED
+    case fogIntensity = 25   // THRESH_SLOT_FOG_INTENSITY
+    case fogColorR = 26      // THRESH_SLOT_FOG_COLOR_R
+    case fogColorG = 27      // THRESH_SLOT_FOG_COLOR_G
+    case fogColorB = 28      // THRESH_SLOT_FOG_COLOR_B
 
     /// Slots `0..<reservedCount` are engine-reserved; normal registration
     /// starts at `reservedCount`. Mirrors `THRESH_SLOT_ENGINE_COUNT`.
-    public static let reservedCount = 20
+    public static let reservedCount = 29
 }
 
 // MARK: - Engine param keys
@@ -73,6 +85,15 @@ extension ParamKey {
     public static let colorBrightness = ParamKey("color.brightness")
     public static let colorGamma = ParamKey("color.gamma")
     public static let colorTonemap = ParamKey("color.tonemap")
+    // Atmosphere (legacy Effects ▸ Static): glow, bloom, fog + fog tint.
+    public static let atmosphereGlowEnabled = ParamKey("atmosphere.glow.enabled")
+    public static let atmosphereGlowIntensity = ParamKey("atmosphere.glow.intensity")
+    public static let atmosphereBloomEnabled = ParamKey("atmosphere.bloom.enabled")
+    public static let atmosphereBloomStrength = ParamKey("atmosphere.bloom.strength")
+    public static let atmosphereFogEnabled = ParamKey("atmosphere.fog.enabled")
+    public static let atmosphereFogIntensity = ParamKey("atmosphere.fog.intensity")
+    /// Fog tint (float3, linear rgb) — occupies fogColorR..fogColorB.
+    public static let atmosphereFogColor = ParamKey("atmosphere.fog.color")
 }
 
 // MARK: - Errors
@@ -135,18 +156,21 @@ public final class Catalog {
         return slot
     }
 
-    /// Place a SCALAR engine param at a fixed reserved slot (< 16) so the GPU
-    /// kernel can read it without knowing catalog registration order.
+    /// Place an engine param at a fixed reserved slot so the GPU kernel can
+    /// read it without knowing catalog registration order. Multi-slot params
+    /// (e.g. the float3 fog tint) occupy `slot ..< slot + kind.slotWidth`.
     /// - Throws: `CatalogError.duplicateKey`, `CatalogError.engineSlotOccupied`.
     public func registerEngine(_ spec: ParamSpec, atSlot slot: Int) throws {
+        let width = spec.kind.slotWidth
         precondition(
-            slot >= 0 && slot < EngineSlot.reservedCount,
-            "engine slots are 0..<\(EngineSlot.reservedCount), got \(slot)"
+            slot >= 0 && slot + width <= EngineSlot.reservedCount,
+            "engine slots are 0..<\(EngineSlot.reservedCount), got \(slot)..<\(slot + width)"
         )
-        precondition(spec.kind.slotWidth == 1, "engine params must be scalar: \(spec.key)")
         guard indexByKey[spec.key] == nil else { throw CatalogError.duplicateKey(spec.key) }
-        guard !occupiedEngineSlots.contains(slot) else { throw CatalogError.engineSlotOccupied(slot) }
-        occupiedEngineSlots.insert(slot)
+        for s in slot..<(slot + width) {
+            guard !occupiedEngineSlots.contains(s) else { throw CatalogError.engineSlotOccupied(s) }
+        }
+        for s in slot..<(slot + width) { occupiedEngineSlots.insert(s) }
         indexByKey[spec.key] = entries.count
         entries.append(CatalogEntry(slot: slot, spec: spec))
     }
@@ -310,6 +334,55 @@ public final class Catalog {
                       composition: .replace, smoothing: .continuous,
                       persistence: .scene, group: .color),
             atSlot: EngineSlot.tonemap.rawValue)
+
+        // Atmosphere (legacy Effects ▸ Static): glow, bloom, fog + fog tint.
+        // Per-pixel in the kernel (applyAtmosphere), composed between the color
+        // scheme and the tone curve. All OFF by default (…Enabled = 0,
+        // intensities 0) so authored/golden scenes are byte-identical. The
+        // intensity/strength scalars are music/animation bindable like the
+        // color lanes; the enables are structural `.replace` toggles.
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereGlowEnabled, label: "Glow",
+                      kind: .enumeration(caseCount: 2), range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.glowEnabled.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereGlowIntensity, label: "Glow Intensity",
+                      range: 0...2, default: 0.3,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
+            atSlot: EngineSlot.glowIntensity.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereBloomEnabled, label: "Bloom",
+                      kind: .enumeration(caseCount: 2), range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.bloomEnabled.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereBloomStrength, label: "Bloom Strength",
+                      range: 0...2, default: 0.2,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
+            atSlot: EngineSlot.bloomStrength.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereFogEnabled, label: "Fog",
+                      kind: .enumeration(caseCount: 2), range: 0...1, default: 0,
+                      composition: .replace, persistence: .scene, group: .color),
+            atSlot: EngineSlot.fogEnabled.rawValue)
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereFogIntensity, label: "Fog Density",
+                      range: 0...1, default: 0.32,
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
+            atSlot: EngineSlot.fogIntensity.rawValue)
+        // Fog tint (float3, linear rgb) at slots 26..28. Legacy default is a
+        // very dark blue; irrelevant until fog is enabled.
+        try! catalog.registerEngine(
+            ParamSpec(key: .atmosphereFogColor, label: "Fog Tint",
+                      kind: .float3, range: 0...1,
+                      defaultValue: [0.01, 0.015, 0.02],
+                      composition: .replace, smoothing: .continuous,
+                      persistence: .scene, group: .color),
+            atSlot: EngineSlot.fogColorR.rawValue)
         // Zoom (plan §6.3): rate + integrator phase feeding ScaleContext.
         try! catalog.registerScaleParams()
         // Camera rig (plan §8.3): orbit/dolly offsets over the scene pose.

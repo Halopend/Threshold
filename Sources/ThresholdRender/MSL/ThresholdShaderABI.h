@@ -146,7 +146,21 @@ typedef struct ThreshFrameUniforms {
 #define THRESH_SLOT_BUBBLE_RADIUS  17  // carve radius in fractal units
 #define THRESH_SLOT_BUBBLE_SHAPE   18  // 0..1 sphere→cube morph; 2..6 platonic solids
 #define THRESH_SLOT_BUBBLE_BLEND   19  // strength / temporal blend 0..1 (legacy "blend")
-#define THRESH_SLOT_ENGINE_COUNT  20
+// Atmosphere (legacy Effects ▸ Static): glow, bloom, fog + fog tint. All are
+// per-pixel in the march kernel (the legacy "bloom" is a single-pass bright-
+// area halo, NOT a separable blur), composed between the color scheme and the
+// tone curve. Disabled by default (…_ENABLED = 0, intensities 0) so authored
+// and golden scenes are byte-identical. See applyAtmosphere in RaymarchCore.
+#define THRESH_SLOT_GLOW_ENABLED   20  // 1 = accumulate + blend near-miss glow
+#define THRESH_SLOT_GLOW_INTENSITY 21  // 0..2, per-step near-miss glow gain
+#define THRESH_SLOT_BLOOM_ENABLED  22  // 1 = bright-area additive bloom halo
+#define THRESH_SLOT_BLOOM_STRENGTH 23  // 0..2, bloom threshold + gain
+#define THRESH_SLOT_FOG_ENABLED    24  // 1 = distance fog toward the fog tint
+#define THRESH_SLOT_FOG_INTENSITY  25  // 0..1, exponential fog density
+#define THRESH_SLOT_FOG_COLOR_R    26  // fog tint (linear rgb), r
+#define THRESH_SLOT_FOG_COLOR_G    27  // fog tint, g
+#define THRESH_SLOT_FOG_COLOR_B    28  // fog tint, b
+#define THRESH_SLOT_ENGINE_COUNT  29
 
 // Color mapping mode: how the palette coordinate t in [0,1] is derived per
 // pixel (plan §5.5 stage 1). Values persist in scenes — never renumber.

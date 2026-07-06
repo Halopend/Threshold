@@ -106,20 +106,21 @@ struct LegacyCorpusTests {
         let data = try Data(
             contentsOf: scenesDir.appendingPathComponent("Blue hero.threshscene"))
         let envelope = try SceneCodec.decode(data)
-        // Blue hero is a legacy mandelboxSphereProjection scene: its top-level
-        // minDistance/foldingLimit/sphereRadius/fractalScale are catalog
-        // DEFAULTS (0.8/1/0.5/2.8) — the real shape lives in formulaParamValues
-        // [0.702063, 3.6218371, 2.8280883, 4.9319124, 1, 1, …] = [minRadius²,
-        // foldLimit, fixedRadius, scale, projBlend, projRadius]. (Migrating this
-        // as base mandelbox would have rendered a DEFAULT box — the bug the
-        // dedicated DE fixes.)
+        // Blue hero is a legacy mandelboxSphereProjection scene. Verified
+        // against the shipping app (LegacyMigration's MSP block): the Mandelbox
+        // SHAPE lives in the SAME top-level fields as any mandelbox —
+        // fractalScale (2.8), foldingLimit (1), sphereRadius (0.5, the
+        // one-radius fold's minRadius; fixedRadius ≡ 1) — and only the
+        // projection blend/radius come from formulaParamValues[4]/[5]. (An
+        // earlier reading took the shape from formula[0..3]; it produced a
+        // degenerate box — Mono rendered black.)
         let key = "mandelboxSphereProjection"
         #expect(envelope.fractalTypeKey == key)
-        #expect(envelope.params["de.\(key).scale"] == [4.9319124])
-        #expect(envelope.params["de.\(key).foldLimit"] == [3.6218371])
-        #expect(envelope.params["de.\(key).fixedRadius"] == [2.8280883])
+        #expect(envelope.params["de.\(key).scale"] == [2.8])
+        #expect(envelope.params["de.\(key).foldLimit"] == [1])
+        #expect(envelope.params["de.\(key).fixedRadius"] == [1])
         let minRadius = try #require(envelope.params["de.\(key).minRadius"]?.first)
-        #expect(abs(minRadius - Float(0.702063).squareRoot()) < 1e-5)
+        #expect(abs(minRadius - 0.5) < 1e-5)
         #expect(envelope.params["de.\(key).projBlend"] == [1])
         #expect(envelope.params["de.\(key).projRadius"] == [1])
         // scale(1) × detailScale(1.4763585) → zoom octaves, in
@@ -214,7 +215,7 @@ struct LegacyCorpusTests {
         #expect(anyBindings, "corpus maps target saturation/iterations/fractalScale — some must map")
     }
 
-    @Test("mandelboxSphereProjection maps to the dedicated DE with shape + projection from formulaParamValues")
+    @Test("mandelboxSphereProjection maps to the dedicated DE: shape from top-level fields, projection from formulaParamValues[4]/[5]")
     func sphereProjectionDedicatedType() throws {
         for file in try corpusFiles() {
             let raw = try JSONDecoder().decode(
@@ -230,21 +231,26 @@ struct LegacyCorpusTests {
             let name = Comment(rawValue: file.lastPathComponent)
             let envelope = try SceneCodec.decode(try Data(contentsOf: file))
             let key = "mandelboxSphereProjection"
-            // The legacy MSP type kept its Mandelbox SHAPE in formulaParamValues
-            // [0..3] (minRadius², foldingLimit, sphereRadius, scale) and the
-            // projection in [4]/[5] — NOT in the top-level fields (defaults).
+            // Verified against the shipping app (LegacyMigration's MSP block):
+            // a legacy MSP scene keeps its Mandelbox SHAPE in the SAME
+            // top-level fields as any mandelbox — fractalScale, foldingLimit,
+            // sphereRadius (the one-radius fold's minRadius; fixedRadius ≡ 1) —
+            // and only the projection blend/radius come from
+            // formulaParamValues[4]/[5].
+            func top(_ field: String) -> Float? {
+                if case .number(let n)? = tree[field] { return Float(n) }
+                return nil
+            }
             #expect(envelope.fractalTypeKey == key, name)
-            if let scale = f(3) {
+            if let scale = top("fractalScale") {
                 #expect(envelope.params["de.\(key).scale"]?.first == scale, name)
             }
-            if let mr2 = f(0), mr2 > 0 {
+            if let sphereR = top("sphereRadius") {
                 let minRadius = try #require(envelope.params["de.\(key).minRadius"]?.first, name)
-                #expect(abs(minRadius - mr2.squareRoot()) < 1e-5, name)
+                #expect(abs(minRadius - sphereR) < 1e-5, name)
             }
-            if let fixedR = f(2) {
-                #expect(envelope.params["de.\(key).fixedRadius"]?.first == fixedR, name)
-            }
-            if let foldLimit = f(1) {
+            #expect(envelope.params["de.\(key).fixedRadius"] == [1], name)
+            if let foldLimit = top("foldingLimit") {
                 #expect(envelope.params["de.\(key).foldLimit"]?.first == foldLimit, name)
             }
             if let blend = f(4) {

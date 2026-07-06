@@ -1,0 +1,393 @@
+{
+  "abiVersion" : 3,
+  "bindings" : [
+    {
+      "component" : 0,
+      "id" : "1946CFB6-EB91-412D-B2B8-E31ED33A5E09",
+      "lane" : 5,
+      "mapping" : {
+        "curve" : {
+          "linear" : {
+
+          }
+        },
+        "deadzone" : 0,
+        "inputHi" : 1,
+        "inputLo" : -1,
+        "outputHi" : 1,
+        "outputLo" : 0
+      },
+      "param" : "color.gradient.offset",
+      "policy" : "latched",
+      "scale" : 1,
+      "signal" : "lfo.a"
+    }
+  ],
+  "camera" : {
+    "fovYRadians" : 1.0471975,
+    "orientation" : [
+      0,
+      0,
+      0,
+      1
+    ],
+    "position" : [
+      0,
+      0,
+      3
+    ]
+  },
+  "fractalTypeKey" : "mengerSponge",
+  "integratorPhases" : {
+    "de.mandelbulb.rotationPhase" : 0,
+    "scale.zoom" : 0
+  },
+  "lfos" : [
+    {
+      "bias" : 0,
+      "components" : [
+        {
+          "amplitude" : 1,
+          "phase" : 1,
+          "rateHz" : 2.4170082,
+          "wave" : "noise"
+        },
+        {
+          "amplitude" : 1,
+          "phase" : 0,
+          "rateHz" : 0.4621437,
+          "wave" : "sine"
+        }
+      ],
+      "enabled" : true,
+      "id" : "5455B534-2611-4594-BDD3-AA8B3599C93A",
+      "name" : "A",
+      "slot" : "lfo.a"
+    },
+    {
+      "bias" : 0,
+      "components" : [
+        {
+          "amplitude" : 1,
+          "phase" : 0,
+          "rateHz" : 0.3,
+          "wave" : "sine"
+        }
+      ],
+      "enabled" : true,
+      "id" : "BF0D0A79-521B-4EBC-94C7-08D4580A7F34",
+      "name" : "B",
+      "slot" : "lfo.b"
+    },
+    {
+      "bias" : 0,
+      "components" : [
+        {
+          "amplitude" : 1,
+          "phase" : 0,
+          "rateHz" : 0.3,
+          "wave" : "sine"
+        }
+      ],
+      "enabled" : true,
+      "id" : "7BD62EEE-DE2A-4D5E-8B8F-1ADA88B8FA94",
+      "name" : "C",
+      "slot" : "lfo.c"
+    }
+  ],
+  "palette" : {
+    "stops" : [
+      {
+        "blue" : 0.06,
+        "green" : 0.02,
+        "position" : 0,
+        "red" : 0.02
+      },
+      {
+        "blue" : 0.3,
+        "green" : 0.12,
+        "position" : 0.3,
+        "red" : 0.55
+      },
+      {
+        "blue" : 0.18,
+        "green" : 0.55,
+        "position" : 0.6,
+        "red" : 0.95
+      },
+      {
+        "blue" : 0.55,
+        "green" : 0.9,
+        "position" : 0.85,
+        "red" : 0.98
+      },
+      {
+        "blue" : 0.95,
+        "green" : 0.98,
+        "position" : 1,
+        "red" : 0.9
+      }
+    ]
+  },
+  "params" : {
+    "atmosphere.bloom.enabled" : [
+      0
+    ],
+    "atmosphere.bloom.strength" : [
+      0.20000000298023224
+    ],
+    "atmosphere.fog.color" : [
+      0.009999999776482582,
+      0.014999999664723873,
+      0.019999999552965164
+    ],
+    "atmosphere.fog.enabled" : [
+      0
+    ],
+    "atmosphere.fog.intensity" : [
+      0.3199999928474426
+    ],
+    "atmosphere.glow.enabled" : [
+      0
+    ],
+    "atmosphere.glow.intensity" : [
+      0.30000001192092896
+    ],
+    "camera.dolly" : [
+      1
+    ],
+    "camera.orbitPitch" : [
+      0
+    ],
+    "camera.orbitYaw" : [
+      0
+    ],
+    "color.brightness" : [
+      2
+    ],
+    "color.contrast" : [
+      1.1661458015441895
+    ],
+    "color.gamma" : [
+      3.6418099403381348
+    ],
+    "color.gradient.offset" : [
+      0.3064670264720917
+    ],
+    "color.gradient.repeat" : [
+      16
+    ],
+    "color.gradient.smoothing" : [
+      0
+    ],
+    "color.mapMode" : [
+      1
+    ],
+    "color.saturation" : [
+      2
+    ],
+    "color.tonemap" : [
+      1
+    ],
+    "color.vibrance" : [
+      1
+    ],
+    "de.kleinian.crossRadius" : [
+      0.8399999737739563
+    ],
+    "de.kleinian.maxX" : [
+      0.3499999940395355
+    ],
+    "de.kleinian.maxY" : [
+      1
+    ],
+    "de.kleinian.maxZ" : [
+      1.2200000286102295
+    ],
+    "de.kleinian.minX" : [
+      -0.32519999146461487
+    ],
+    "de.kleinian.minY" : [
+      -0.7861999869346619
+    ],
+    "de.kleinian.minZ" : [
+      -0.09480000287294388
+    ],
+    "de.kleinian.sphereFold" : [
+      0.6899999976158142
+    ],
+    "de.mandelbox.fixedRadius" : [
+      1
+    ],
+    "de.mandelbox.foldLimit" : [
+      1
+    ],
+    "de.mandelbox.minRadius" : [
+      0.25
+    ],
+    "de.mandelbox.scale" : [
+      2
+    ],
+    "de.mandelboxSphereProjection.fixedRadius" : [
+      1
+    ],
+    "de.mandelboxSphereProjection.foldLimit" : [
+      1
+    ],
+    "de.mandelboxSphereProjection.minRadius" : [
+      0.25
+    ],
+    "de.mandelboxSphereProjection.projBlend" : [
+      0.9800000190734863
+    ],
+    "de.mandelboxSphereProjection.projRadius" : [
+      1
+    ],
+    "de.mandelboxSphereProjection.scale" : [
+      2
+    ],
+    "de.mandelbulb.power" : [
+      8
+    ],
+    "de.mandelbulb.rotationSpeed" : [
+      0
+    ],
+    "de.mandelbulbJulia.cX" : [
+      0.20000000298023224
+    ],
+    "de.mandelbulbJulia.cY" : [
+      -0.15000000596046448
+    ],
+    "de.mandelbulbJulia.cZ" : [
+      0.3499999940395355
+    ],
+    "de.mandelbulbJulia.power" : [
+      8
+    ],
+    "de.mengerSponge.offsetX" : [
+      2.5051615238189697
+    ],
+    "de.mengerSponge.offsetY" : [
+      1.5245535373687744
+    ],
+    "de.mengerSponge.offsetZ" : [
+      0.9270368218421936
+    ],
+    "de.mengerSponge.scale" : [
+      2.0281808376312256
+    ],
+    "de.quaternionJulia.cW" : [
+      0
+    ],
+    "de.quaternionJulia.cX" : [
+      -0.20000000298023224
+    ],
+    "de.quaternionJulia.cY" : [
+      0.800000011920929
+    ],
+    "de.quaternionJulia.cZ" : [
+      0
+    ],
+    "de.quaternionJulia.threshold" : [
+      10
+    ],
+    "engine.aoStrength" : [
+      0.6537388563156128
+    ],
+    "engine.bubble.blend" : [
+      1
+    ],
+    "engine.bubble.enabled" : [
+      1
+    ],
+    "engine.bubble.radius" : [
+      1.7666747570037842
+    ],
+    "engine.bubble.shape" : [
+      0
+    ],
+    "engine.iterations" : [
+      38.38759231567383
+    ],
+    "engine.maxDist" : [
+      64
+    ],
+    "engine.shadowSoft" : [
+      8
+    ],
+    "scale.zoomSpeed" : [
+      0
+    ]
+  },
+  "version" : 1,
+  "warpStack" : [
+    {
+      "a" : [
+        2,
+        0,
+        0,
+        0
+      ],
+      "b" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "flags" : 0,
+      "kind" : 15,
+      "strength" : 1.6328125
+    },
+    {
+      "a" : [
+        1,
+        0,
+        0,
+        0
+      ],
+      "b" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "flags" : 0,
+      "kind" : 5,
+      "strength" : 0.94527495
+    },
+    {
+      "a" : [
+        1,
+        0,
+        0,
+        0
+      ],
+      "b" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "flags" : 0,
+      "kind" : 12,
+      "strength" : 2
+    },
+    {
+      "a" : [
+        1,
+        0,
+        0,
+        0
+      ],
+      "b" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "flags" : 0,
+      "kind" : 5,
+      "strength" : 0.18318059
+    }
+  ]
+}

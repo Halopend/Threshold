@@ -10,18 +10,37 @@
 // ordering (newer MetalFX SDKs clear tracked texture state on reset) — and
 // fixing its one measured flaw: scaler construction is EXPENSIVE (measured
 // 0.2–2 s first-build on this machine) and the old app paid it on the render
-// thread. Here builds run off-thread (SpecializationCache's pattern): until
-// the requested size lands, `prepare` returns the nearest READY size, or nil
-// (→ full-res direct render). A governor descent costs zero hitches.
+// thread. Here builds run off-thread: until the requested size lands,
+// `prepare` returns the nearest READY size, or nil (→ full-res direct
+// render). A governor descent costs zero hitches.
 //
 // Thread shape: `prepare`/`encode` are called by the render thread; builds
-// complete on a detached task. All state lives under one Mutex.
+// run on ONE private serial queue, coalesced latest-wins. All state lives
+// under one Mutex.
+//
+// Builds must NOT run on the Swift cooperative pool (the original port's
+// Task.detached did): `makeTemporalScaler` BLOCKS its thread for the whole
+// 0.2–2 s compile, the key is per pixel size, and a Render Quality drag or
+// live window resize produces a fresh size per event — enough concurrent
+// blocked builds to occupy every cooperative thread (pool width == core
+// count, and it never grows). Once that happens no Task.detached anywhere
+// in the app runs again — DE compiles, pipeline specialization — and under
+// Xcode's Metal diagnostics (GPU capture / HUD / API validation interpose
+// this exact call and can wedge it in dispatch_group_wait FOREVER) the pool
+// never recovers: live-verified 10/10 cooperative threads stuck in
+// makeTemporalScaler while the app read as "controls frozen". A build storm
+// now costs one queue: the newest requested size wins, stale requests are
+// skipped, and a wedged build strands only this queue's thread — `stalled`
+// logging makes that visible instead of silent.
 
 #if os(macOS) || os(iOS)
 
+import Dispatch
+import Foundation
 import Metal
 import MetalFX
 import Synchronization
+import ThresholdCore
 
 final class TemporalUpscaler: Sendable {
     /// MetalFX temporal scaling supports at most 3× per dimension.
@@ -71,19 +90,36 @@ final class TemporalUpscaler: Sendable {
 
     private struct State {
         var entries: [Key: Entry] = [:]
-        var building: Set<Key> = []
         var useCounter = 0
         /// The key `prepare` last returned — `encode` consumes its reset flag.
         var activeKey: Key?
         /// The most recent requested output size; a completed build for a
         /// stale output (mid-resize) is discarded on arrival.
         var currentOutput = SIMD2<Int>(0, 0)
+        /// The newest missing key (latest-wins: a drag's intermediate sizes
+        /// overwrite each other here; only what's still wanted gets built).
+        var wanted: Key?
+        /// Whether the builder loop is live on `buildQueue`.
+        var draining = false
+        /// The key the builder is compiling right now — `prepare` skips
+        /// re-requesting it, and ages it to detect a wedged build.
+        var inFlight: Key?
+        /// Consecutive `prepare` calls (≈ frames) the SAME key has been in
+        /// flight. Past `stalledBuildFrameLimit` it logs once — the signature
+        /// of Xcode's Metal diagnostics wedging makeTemporalScaler.
+        var inFlightAge = 0
+        var reportedStall = false
     }
 
     private let device: MTLDevice
     private let colorFormat: MTLPixelFormat
     private let state = Mutex<State>(State())
     private let maxPoolSize = 4
+    /// The one thread scaler builds may occupy (see header).
+    private let buildQueue = DispatchQueue(
+        label: "com.polinate.threshold.mfx-build", qos: .userInitiated)
+    /// ~5–10 s at 60–120 fps before an in-flight build is reported stalled.
+    private static let stalledBuildFrameLimit = 600
 
     /// nil when this device can't do MetalFX temporal scaling — the caller
     /// renders at full resolution instead (the governor's scale is moot).
@@ -111,7 +147,7 @@ final class TemporalUpscaler: Sendable {
 
         let key = Key(inW: inputWidth, inH: inputHeight,
                       outW: outputWidth, outH: outputHeight)
-        let (pass, shouldBuild): (Pass?, Bool) = state.withLock { s in
+        let (pass, startDrain, reportStall): (Pass?, Bool, Bool) = state.withLock { s in
             s.useCounter += 1
             // A changed output size (window resize) strands every pooled
             // entry's full-resolution textures — drop them all.
@@ -121,6 +157,16 @@ final class TemporalUpscaler: Sendable {
                 s.entries.removeAll()
             }
 
+            // Age the in-flight build; report a wedge exactly once per build.
+            var reportStall = false
+            if s.inFlight != nil {
+                s.inFlightAge += 1
+                if s.inFlightAge == Self.stalledBuildFrameLimit, !s.reportedStall {
+                    s.reportedStall = true
+                    reportStall = true
+                }
+            }
+
             if var entry = s.entries[key] {
                 entry.lastUsed = s.useCounter
                 // Revisited after rendering another size: its history is
@@ -128,10 +174,20 @@ final class TemporalUpscaler: Sendable {
                 entry.needsReset = entry.needsReset || s.activeKey != key
                 s.entries[key] = entry
                 s.activeKey = key
-                return (entry.pass, false)
+                return (entry.pass, false, reportStall)
             }
 
-            let shouldBuild = s.building.insert(key).inserted
+            // Miss: latest-wins — overwrite whatever stale size a fast drag
+            // left here. Skip only when the builder is ALREADY on this key.
+            var startDrain = false
+            if s.inFlight != key {
+                s.wanted = key
+                if !s.draining {
+                    s.draining = true
+                    startDrain = true
+                }
+            }
+
             // Nearest ready fallback: the entry whose input area is closest
             // to the request (same output — everything pooled matches).
             let target = inputWidth * inputHeight
@@ -145,32 +201,79 @@ final class TemporalUpscaler: Sendable {
                 entry.needsReset = entry.needsReset || s.activeKey != nearest.key
                 s.entries[nearest.key] = entry
                 s.activeKey = nearest.key
-                return (entry.pass, shouldBuild)
+                return (entry.pass, startDrain, reportStall)
             }
             s.activeKey = nil
-            return (nil, shouldBuild)
+            return (nil, startDrain, reportStall)
         }
 
-        if shouldBuild {
-            Task.detached(priority: .userInitiated) { [self] in
-                let built = build(key: key)
-                state.withLock { s in
-                    s.building.remove(key)
-                    // Discard a build that raced a resize (stale output).
-                    guard let built,
-                          s.currentOutput == SIMD2(key.outW, key.outH)
-                    else { return }
-                    s.entries[key] = Entry(
-                        pass: built, lastUsed: s.useCounter, needsReset: true)
-                    if s.entries.count > maxPoolSize,
-                       let evict = s.entries.filter({ $0.key != s.activeKey })
-                           .min(by: { $0.value.lastUsed < $1.value.lastUsed }) {
-                        s.entries.removeValue(forKey: evict.key)
-                    }
+        if reportStall {
+            ThresholdLog.render.error(
+                """
+                temporal scaler build stalled (>\(Self.stalledBuildFrameLimit) \
+                frames in makeTemporalScaler) — Xcode Metal diagnostics \
+                (GPU capture / HUD / API validation) can wedge it; rendering \
+                continues at nearest/full resolution
+                """)
+        }
+        if startDrain {
+            buildQueue.async { [self] in drainBuilds() }
+        }
+        return pass
+    }
+
+    /// The builder loop (buildQueue only): take the newest wanted key, build
+    /// it, publish, repeat until nothing is wanted. Builds superseded
+    /// mid-compile still publish — a valid size for this output is a useful
+    /// nearest-fallback — but a key whose OUTPUT went stale (resize) is
+    /// dropped without paying for the build.
+    private func drainBuilds() {
+        while true {
+            let next: Key? = state.withLock { s in
+                guard let key = s.wanted,
+                      s.currentOutput == SIMD2(key.outW, key.outH) else {
+                    s.wanted = nil
+                    s.draining = false
+                    s.inFlight = nil
+                    s.inFlightAge = 0
+                    return nil
+                }
+                s.wanted = nil
+                s.inFlight = key
+                s.inFlightAge = 0
+                s.reportedStall = false
+                return key
+            }
+            guard let key = next else { return }
+
+            let started = ProcessInfo.processInfo.systemUptime
+            let built = build(key: key)
+            let seconds = ProcessInfo.processInfo.systemUptime - started
+            if seconds > 5 {
+                ThresholdLog.render.error(
+                    """
+                    temporal scaler build took \(Int(seconds))s \
+                    (\(key.inW)x\(key.inH)→\(key.outW)x\(key.outH)) — \
+                    expected 0.2–2s; Metal diagnostics slow this dramatically
+                    """)
+            }
+
+            state.withLock { s in
+                s.inFlight = nil
+                s.inFlightAge = 0
+                // Discard a build that raced a resize (stale output).
+                guard let built,
+                      s.currentOutput == SIMD2(key.outW, key.outH)
+                else { return }
+                s.entries[key] = Entry(
+                    pass: built, lastUsed: s.useCounter, needsReset: true)
+                if s.entries.count > maxPoolSize,
+                   let evict = s.entries.filter({ $0.key != s.activeKey })
+                       .min(by: { $0.value.lastUsed < $1.value.lastUsed }) {
+                    s.entries.removeValue(forKey: evict.key)
                 }
             }
         }
-        return pass
     }
 
     /// Encode the upscale for the pass `prepare` just returned (render

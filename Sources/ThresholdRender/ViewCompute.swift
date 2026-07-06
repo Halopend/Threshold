@@ -99,7 +99,8 @@ final class ViewComputeEncoder {
         colorTargets: [(texture: MTLTexture, slice: Int)],
         depthTargets: [(texture: MTLTexture, slice: Int)],
         commandBuffer: MTLCommandBuffer,
-        overrideSpecialized: SpecializedViewCompute? = nil
+        overrideSpecialized: SpecializedViewCompute? = nil,
+        recon: TemporalReconstructor? = nil
     ) -> Bool {
         guard !views.isEmpty, views.count == colorTargets.count,
               depthTargets.count == colorTargets.count,
@@ -109,8 +110,21 @@ final class ViewComputeEncoder {
               request.uniforms.meta.w < request.uniforms.meta.z,
               Int(request.uniforms.meta.y) < context.deFunctionCount
         else { return false }
-        let w = first.texture.width
-        let h = first.texture.height
+        let outW = first.texture.width
+        let outH = first.texture.height
+        // The resolution lever (feature march.renderScale): with a
+        // reconstructor, march into reduced multiple-of-8 intermediates and
+        // present-upscale into the drawable-sized blit source. Without one
+        // (parity tests, recon disabled) — or at scale 1, where marchSize
+        // returns nil — every byte of this path is the pre-lever encode.
+        // Ray-gen is resolution-independent (NDC from texture dims), so the
+        // reduced march sees the same field of view.
+        let marchSize: (width: Int, height: Int)? = recon == nil ? nil
+            : TemporalReconstructor.marchSize(
+                outputWidth: outW, outputHeight: outH,
+                scale: request.renderScale)
+        let w = marchSize?.width ?? outW
+        let h = marchSize?.height ?? outH
         let slices = views.count
 
         var uniforms = request.uniforms
@@ -233,16 +247,33 @@ final class ViewComputeEncoder {
             threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
         encoder.endEncoding()
 
+        // Present: at reduced march size, upsample+sharpen into
+        // drawable-sized intermediates; at full size the march textures ARE
+        // the blit source (no extra pass, byte-identical to the pre-lever
+        // path). A failed present allocation drops the frame — the same
+        // contract as every other allocation above.
+        var blitColor = color
+        var blitDepth = depth
+        if marchSize != nil, let recon {
+            guard let presented = recon.encodePresent(
+                commandBuffer: commandBuffer, slot: ringSlot,
+                srcColor: color, srcDepth: depth,
+                outputWidth: outW, outputHeight: outH, slices: slices)
+            else { return false }
+            blitColor = presented.color
+            blitDepth = presented.depth
+        }
+
         // Blit intermediates → drawable textures, one slice per view.
         guard let copy = commandBuffer.makeBlitCommandEncoder() else { return false }
         copy.label = "view-compute present copy"
         for (i, target) in colorTargets.enumerated() {
             copy.copy(
-                from: color, sourceSlice: i, sourceLevel: 0,
+                from: blitColor, sourceSlice: i, sourceLevel: 0,
                 to: target.texture, destinationSlice: target.slice,
                 destinationLevel: 0, sliceCount: 1, levelCount: 1)
             copy.copy(
-                from: depth, sourceSlice: i, sourceLevel: 0,
+                from: blitDepth, sourceSlice: i, sourceLevel: 0,
                 to: depthTargets[i].texture, destinationSlice: depthTargets[i].slice,
                 destinationLevel: 0, sliceCount: 1, levelCount: 1)
         }

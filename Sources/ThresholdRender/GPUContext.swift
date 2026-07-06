@@ -8,6 +8,7 @@
 
 import Foundation
 import Metal
+import Synchronization
 import ThresholdShaderABI
 import ThresholdShaderIR
 
@@ -67,6 +68,10 @@ public final class GPUContext: @unchecked Sendable {
     /// Built-in DE `[[visible]]` functions in table order — the base set every
     /// pipeline links; external programs link these + their own function.
     let builtinDEFunctions: [MTLFunction]
+    /// Lazily-compiled reconstruction/present library (TemporalResolve.metal)
+    /// — see resolveLibrary(). A Mutex-guarded cache keeps the Sendable audit
+    /// honest: the `let` box never changes, the guarded value is written once.
+    private let resolveLibraryCache = Mutex<MTLLibrary?>(nil)
 
     let marchPipeline: MTLComputePipelineState
     /// `march_offscreen` with THRESH_AUX baked true: writes depth + motion
@@ -301,6 +306,40 @@ public final class GPUContext: @unchecked Sendable {
             table.setFunction(handle, index: index)
         }
         return table
+    }
+}
+
+// MARK: - Reconstruction library (module-internal)
+
+extension GPUContext {
+    /// The reconstruction/present library (MSL/TemporalResolve.metal),
+    /// compiled on FIRST use and cached — the offscreen/CLI/bench/test paths
+    /// that never construct a TemporalReconstructor never pay the compile.
+    /// Same contract as the march library: the byte-identical ABI header copy
+    /// is prepended, same math mode. Kernels/bindings in it are private
+    /// contracts with TemporalReconstructor.swift, not published ABI.
+    func resolveLibrary() throws -> MTLLibrary {
+        try resolveLibraryCache.withLock { cached in
+            if let cached { return cached }
+            guard let url = Bundle.module.url(
+                forResource: "TemporalResolve", withExtension: "metal",
+                subdirectory: "MSL")
+            else { throw RenderError.missingResource("MSL/TemporalResolve.metal") }
+            let resolveSource = try String(contentsOf: url, encoding: .utf8)
+            let options = MTLCompileOptions()
+            options.mathMode = Self.mathModeOverride ?? .safe
+            let library: MTLLibrary
+            do {
+                library = try device.makeLibrary(
+                    source: abiHeaderSource + "\n" + resolveSource,
+                    options: options)
+            } catch {
+                throw RenderError.shaderCompileFailed(
+                    "TemporalResolve: \(String(describing: error))")
+            }
+            cached = library
+            return library
+        }
     }
 }
 

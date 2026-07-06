@@ -34,6 +34,7 @@ enum AudioSignalPublisher {
 
 #if canImport(AVFAudio)
 import AVFAudio
+import os
 import Synchronization
 
 /// Owns an `AVAudioEngine` input-node tap that feeds `AudioDSP` in
@@ -124,6 +125,7 @@ public final class AudioAnalyzer {
             throw error
         }
         isRunning = true
+        ThresholdLog.audio.notice("audio capture started (\(Int(sampleRate))Hz input)")
     }
 
     /// Remove the tap and stop the engine. Idempotent. Publishes one silent
@@ -135,6 +137,7 @@ public final class AudioAnalyzer {
         engine.stop()
         isRunning = false
         sink.publishSilence()
+        ThresholdLog.audio.notice("audio capture stopped")
     }
 }
 

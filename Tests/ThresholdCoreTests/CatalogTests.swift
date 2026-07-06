@@ -16,7 +16,10 @@ struct CatalogTests {
         #expect(EngineSlot.iterations.rawValue == 3)
         #expect(EngineSlot.aoStrength.rawValue == 4)
         #expect(EngineSlot.shadowSoft.rawValue == 5)
-        #expect(EngineSlot.reservedCount == 20)
+        // Atmosphere (legacy Effects ▸ Static) extended the reserved block
+        // from 20 → 29 (glow ×2, bloom ×2, fog ×2 + float3 tint).
+        #expect(EngineSlot.reservedCount == 29)
+        #expect(EngineSlot.fogColorB.rawValue == 28)
     }
 
     @Test("withEngineDefaults registers the six engine params at fixed slots with march defaults")

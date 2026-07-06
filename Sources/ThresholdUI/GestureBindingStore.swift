@@ -9,6 +9,7 @@
 
 import Foundation
 import Observation
+import os
 import ThresholdCore
 
 /// A named snapshot of a whole binding set (global + all per-fractal tables).
@@ -44,15 +45,27 @@ public final class GestureBindingStore {
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        if let data = defaults.data(forKey: Self.defaultsKey),
-           let decoded = try? JSONDecoder().decode(GestureBindingSet.self, from: data) {
-            self.set = decoded
+        // No data = first launch (fine, quiet). Data that won't decode =
+        // the user's bindings are being reset — that must be in the log.
+        if let data = defaults.data(forKey: Self.defaultsKey) {
+            if let decoded = try? JSONDecoder().decode(GestureBindingSet.self, from: data) {
+                self.set = decoded
+            } else {
+                ThresholdLog.io.error(
+                    "gesture binding store undecodable — resetting to defaults")
+                self.set = GestureBindingSet()
+            }
         } else {
             self.set = GestureBindingSet()
         }
-        if let data = defaults.data(forKey: Self.presetsKey),
-           let decoded = try? JSONDecoder().decode([GestureBindingPreset].self, from: data) {
-            self.presets = decoded
+        if let data = defaults.data(forKey: Self.presetsKey) {
+            if let decoded = try? JSONDecoder().decode([GestureBindingPreset].self, from: data) {
+                self.presets = decoded
+            } else {
+                ThresholdLog.io.error(
+                    "gesture binding presets undecodable — resetting to empty")
+                self.presets = []
+            }
         } else {
             self.presets = []
         }
@@ -138,6 +151,9 @@ public final class GestureBindingStore {
     private func persist() {
         if let data = try? JSONEncoder().encode(set) {
             defaults.set(data, forKey: Self.defaultsKey)
+        } else {
+            ThresholdLog.io.error(
+                "gesture bindings encode failed — edits will not survive relaunch")
         }
         onChange?()
     }
@@ -145,6 +161,9 @@ public final class GestureBindingStore {
     private func persistPresets() {
         if let data = try? JSONEncoder().encode(presets) {
             defaults.set(data, forKey: Self.presetsKey)
+        } else {
+            ThresholdLog.io.error(
+                "gesture presets encode failed — edits will not survive relaunch")
         }
     }
 }

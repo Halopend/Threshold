@@ -177,6 +177,8 @@ public final class InteractiveSession: @unchecked Sendable {
                 stop(): render thread did not exit after 5s — likely blocked \
                 mid-frame (GPU stall?); abandoning join (thread leaked)
                 """)
+        } else {
+            ThresholdLog.session.notice("render session stopped (joined cleanly)")
         }
     }
 
@@ -261,10 +263,14 @@ public final class InteractiveSession: @unchecked Sendable {
         link.delegate = proxy
         link.add(to: .current, forMode: .default)
 
+        ThresholdLog.session.notice(
+            "render session up (device: \(self.context.device.name, privacy: .public))")
+
         while !stopRequested.load(ordering: .acquiring) {
             CFRunLoopRun()
         }
 
+        ThresholdLog.session.notice("render session exiting (stop requested)")
         link.invalidate()
         if let source {
             CFRunLoopRemoveSource(runLoop, source, .defaultMode)
@@ -414,6 +420,21 @@ final class SessionGPUEncoder {
     /// Consecutive `inflight` timeouts (render-thread confined; resets on
     /// recovery). Rate-limits the stall logging.
     private var stalls: UInt64 = 0
+    /// Dropped-frame count (render-thread confined). Every silent early exit
+    /// in `encode()` routes through `drop(_:)` so a repeatedly-failing encode
+    /// is visible in the log instead of reading as a frozen image.
+    private var drops: UInt64 = 0
+
+    /// Count + rate-limit-log one dropped frame (the first few, then every
+    /// 60th), and return the value `encode()`'s early exits return.
+    private func drop(_ reason: String) -> RenderDiagnostics {
+        drops += 1
+        if drops <= 5 || drops % 60 == 0 {
+            ThresholdLog.render.error(
+                "frame dropped (#\(self.drops)): \(reason, privacy: .public)")
+        }
+        return lastDiagnostics
+    }
     /// Direct-call DE pipeline variants (Specialization.swift). `lookup` is
     /// non-blocking: frames render generic until a variant compiles.
     private let specializations: SpecializationCache
@@ -504,18 +525,21 @@ final class SessionGPUEncoder {
     func encode(_ request: RenderRequest, program: ExternalDEProgram? = nil,
                 to drawable: CAMetalDrawable, resetHistory: Bool = false) -> RenderDiagnostics {
         let texture = drawable.texture
-        guard texture.width > 0, texture.height > 0 else { return lastDiagnostics }
+        guard texture.width > 0, texture.height > 0 else {
+            return drop("zero-size drawable")
+        }
         let uniforms: ThreshFrameUniforms
         switch EncodePreamble.validatedUniforms(
             request, deFunctionCount: program?.deFunctionCount ?? context.deFunctionCount) {
         case .success(let u): uniforms = u
-        case .failure: return lastDiagnostics
+        case .failure(let reason):
+            return drop("uniform validation failed: \(String(describing: reason))")
         }
 
         guard let paramsBuffer = try? context.makeFloatBuffer(
                   request.params, label: "session param table"),
               let opsBuffer = try? context.makeOpsBuffer(request.ops)
-        else { return lastDiagnostics }
+        else { return drop("param/ops buffer allocation failed") }
 
         // Pace the loop to the GPU: block until a frame slot frees. BOUNDED —
         // an unbounded wait here is how a GPU fault used to freeze the app
@@ -550,7 +574,7 @@ final class SessionGPUEncoder {
         defer { if !committed { inflight.signal() } }
 
         guard let commandBuffer = CommandBufferHealth.makeCommandBuffer(on: queue)
-        else { return lastDiagnostics }
+        else { return drop("makeCommandBuffer returned nil") }
         commandBuffer.label = "session frame"
 
         let statsBuffer = statsRing[ringCursor]
@@ -559,7 +583,8 @@ final class SessionGPUEncoder {
 
         // Zero the step counter on the ring slot's reuse (blit fill: ordered
         // on the queue, no CPU/GPU race).
-        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return lastDiagnostics }
+        guard let blit = commandBuffer.makeBlitCommandEncoder()
+        else { return drop("stats-zero blit encoder allocation failed") }
         blit.label = "session stats zero"
         blit.fill(buffer: statsBuffer, range: 0..<MemoryLayout<UInt32>.stride, value: 0)
         blit.endEncoding()
@@ -634,6 +659,17 @@ final class SessionGPUEncoder {
                 diagnostics.pipeline = auxOutputs ? .genericAux : .generic
             }
         }
+        // Pipeline transitions are rare and load-bearing (specialized variant
+        // landed, external DE engaged, MetalFX toggled) — one breadcrumb each.
+        if diagnostics.pipeline != lastDiagnostics.pipeline {
+            let baked = diagnostics.bakedConstants.isEmpty
+                ? "" : " [\(diagnostics.bakedConstants)]"
+            ThresholdLog.render.info(
+                """
+                pipeline: \(self.lastDiagnostics.pipeline.rawValue, privacy: .public) \
+                → \(diagnostics.pipeline.rawValue, privacy: .public)\(baked, privacy: .public)
+                """)
+        }
         lastDiagnostics = diagnostics
 
         // Hierarchical cone prepass (perf block 9, ported from the offscreen
@@ -691,7 +727,8 @@ final class SessionGPUEncoder {
             lastDiagnostics = diagnostics
         }
 
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return lastDiagnostics }
+        guard let encoder = commandBuffer.makeComputeCommandEncoder()
+        else { return drop("march encoder allocation failed") }
         encoder.label = "session march"
         // SYNC-POINT: render binding contract — same buffer indices / palette
         // layout / pipeline precedence as OffscreenRenderer and ViewPassEncoder,
@@ -756,7 +793,8 @@ final class SessionGPUEncoder {
                 jitterPixels: jitter,
                 forceReset: resetHistory)
             // Same size and format — a plain copy into the drawable.
-            guard let copy = commandBuffer.makeBlitCommandEncoder() else { return lastDiagnostics }
+            guard let copy = commandBuffer.makeBlitCommandEncoder()
+            else { return drop("MetalFX copy encoder allocation failed") }
             copy.label = "session fx copy"
             copy.copy(from: fx.output, to: texture)
             copy.endEncoding()

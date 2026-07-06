@@ -58,6 +58,7 @@ public enum ControlTab: String, CaseIterable, Sendable {
                 SubTab("palette", "Palette", "paintpalette.fill"),
                 SubTab("mapping", "Mapping", "swatchpalette.fill"),
                 SubTab("grading", "Grading", "camera.filters"),
+                SubTab("atmosphere", "Atmosphere", "cloud.fog.fill"),
             ]
         case .motion:
             return [
@@ -269,6 +270,8 @@ public struct ControlSidebar: View {
                         .colorBrightness, .colorGamma, .colorTonemap,
                     ],
                     mirror: mirror, layout: layout)
+            case "atmosphere":
+                AtmosphereSection(mirror: mirror, layout: layout)
             default:
                 PaletteSection(mirror: mirror, layout: layout)
             }
@@ -1291,6 +1294,86 @@ struct StopRow: View {
             get: { Double(stop.position) },
             set: { mirror.setPalette(PaletteEdit.setPosition(mirror.palette, at: index, to: Float($0))) }
         )
+    }
+}
+
+// MARK: - AtmosphereSection
+
+/// Legacy Effects ▸ Static, ported: glow, bloom, fog + fog tint. Each effect
+/// is a toggle over its `…Enabled` slot with its intensity slider (and the
+/// fog tint color well) revealed while on. All engine params on the fixed
+/// atmosphere slots — the shader composes them per-pixel (applyAtmosphere).
+public struct AtmosphereSection: View {
+    let mirror: ParameterMirror
+    let layout: CatalogLayout
+
+    public init(mirror: ParameterMirror, layout: CatalogLayout) {
+        self.mirror = mirror
+        self.layout = layout
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            SectionHeader("Atmosphere", icon: "cloud.fog.fill")
+
+            effect(enabled: .atmosphereGlowEnabled, label: "Glow",
+                   intensity: .atmosphereGlowIntensity)
+            effect(enabled: .atmosphereBloomEnabled, label: "Bloom",
+                   intensity: .atmosphereBloomStrength)
+            effect(enabled: .atmosphereFogEnabled, label: "Fog",
+                   intensity: .atmosphereFogIntensity) {
+                if let base = layout.slot(for: .atmosphereFogColor) {
+                    HStack(spacing: DS.Spacing.sm) {
+                        Text("Tint")
+                            .frame(width: RowMetrics.labelWidth, alignment: .leading)
+                        ColorPicker("", selection: fogTintBinding(base: base),
+                                    supportsOpacity: false)
+                            .labelsHidden()
+                        Spacer()
+                    }
+                }
+            }
+        }
+        .moduleCard(.orange)
+    }
+
+    /// One effect: an enable toggle plus, while on, its intensity slider and
+    /// any extra controls (the fog tint).
+    @ViewBuilder
+    private func effect<Extra: View>(
+        enabled: ParamKey, label: String, intensity: ParamKey,
+        @ViewBuilder extra: () -> Extra = { EmptyView() }
+    ) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+            if let enabledSlot = layout.slot(for: enabled) {
+                Toggle(label, isOn: SwiftUI.Binding(
+                    get: { mirror.displayValue(slot: enabledSlot) != 0 },
+                    set: { mirror.updateEdit(slot: enabledSlot, target: $0 ? 1 : 0) }))
+                if mirror.displayValue(slot: enabledSlot) != 0 {
+                    if let entry = layout.entry(for: intensity) {
+                        ParameterRow(entry: entry, mirror: mirror)
+                    }
+                    extra()
+                }
+            }
+        }
+    }
+
+    /// Fog tint ↔ the three contiguous linear-rgb slots at `base`.
+    private func fogTintBinding(base: Int) -> SwiftUI.Binding<Color> {
+        SwiftUI.Binding(
+            get: {
+                Color(.sRGBLinear,
+                      red: Double(mirror.displayValue(slot: base)),
+                      green: Double(mirror.displayValue(slot: base + 1)),
+                      blue: Double(mirror.displayValue(slot: base + 2)))
+            },
+            set: { newColor in
+                let r = newColor.resolve(in: EnvironmentValues())
+                mirror.updateEdit(slot: base, target: r.linearRed)
+                mirror.updateEdit(slot: base + 1, target: r.linearGreen)
+                mirror.updateEdit(slot: base + 2, target: r.linearBlue)
+            })
     }
 }
 

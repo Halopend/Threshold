@@ -76,5 +76,15 @@ public enum RenderFeatureTable {
             id: "march.conePrepass",
             paths: [.offscreen, .interactive, .compositor],
             requiredOnAll: false),
+        // Reduced-resolution march + reconstruction/present upscale (the
+        // temporal-reconstruction plan, phase 0+). Interactive realizes it
+        // through MetalFX temporal; the compositor's COMPUTE backend through
+        // TemporalReconstructor (recon_present now, temporal_resolve later).
+        // Perf overlay: correct to omit (offscreen/goldens march at 1.0 by
+        // contract; the fragment backend scales the drawable itself).
+        RenderFeature(
+            id: "march.renderScale",
+            paths: [.interactive, .compositor],
+            requiredOnAll: false),
     ]
 }

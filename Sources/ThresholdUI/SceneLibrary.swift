@@ -9,6 +9,7 @@
 // and save-current closures from the shell instead of touching the session.
 
 import Foundation
+import os
 import SwiftUI
 import ThresholdCore
 import ThresholdShaderIR
@@ -147,7 +148,13 @@ public final class SceneLibrary {
             .filter { $0.pathExtension == "threshscene" }
             .compactMap { url -> SceneLibraryItem? in
                 guard let data = try? Data(contentsOf: url),
-                      let envelope = try? SceneCodec.decode(data) else { return nil }
+                      let envelope = try? SceneCodec.decode(data) else {
+                    // The file exists but won't decode — say so, or the scene
+                    // just silently vanishes from the library.
+                    ThresholdLog.io.error(
+                        "unreadable scene skipped: \(url.lastPathComponent, privacy: .public)")
+                    return nil
+                }
                 let modified = (try? url.resourceValues(
                     forKeys: [.contentModificationDateKey]))?.contentModificationDate
                     ?? .distantPast
@@ -175,10 +182,17 @@ public final class SceneLibrary {
             let url = directory.appendingPathComponent(
                 Self.filename(for: name), isDirectory: false)
             try SceneCodec.encode(named).write(to: url)
+            ThresholdLog.io.info(
+                "scene saved: \(url.lastPathComponent, privacy: .public)")
             refresh()
             return url
         } catch {
             lastError = "save failed: \(error.localizedDescription)"
+            ThresholdLog.io.error(
+                """
+                scene save failed ('\(name, privacy: .public)'): \
+                \(String(describing: error), privacy: .public)
+                """)
             return nil
         }
     }
@@ -186,8 +200,15 @@ public final class SceneLibrary {
     public func delete(_ item: SceneLibraryItem) {
         do {
             try FileManager.default.removeItem(at: item.url)
+            ThresholdLog.io.info(
+                "scene deleted: \(item.url.lastPathComponent, privacy: .public)")
         } catch {
             lastError = "delete failed: \(error.localizedDescription)"
+            ThresholdLog.io.error(
+                """
+                scene delete failed (\(item.url.lastPathComponent, privacy: .public)): \
+                \(String(describing: error), privacy: .public)
+                """)
         }
         refresh()
     }

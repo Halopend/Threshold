@@ -106,6 +106,7 @@ public final class HandTracker: @unchecked Sendable {
         Task { [arSession, provider] in
             do {
                 try await arSession.run([provider])
+                ThresholdLog.hands.notice("hand tracking running")
             } catch {
                 ThresholdLog.hands.error(
                     """
@@ -118,6 +119,7 @@ public final class HandTracker: @unchecked Sendable {
 
     public func stop() {
         arSession.stop()
+        ThresholdLog.hands.notice("hand tracking stopped")
     }
 
     /// Per-frame poll: publish hand signals and gesture-lane writes.

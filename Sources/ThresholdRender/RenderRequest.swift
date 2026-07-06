@@ -142,6 +142,15 @@ public struct EngineParams: Sendable {
     public var bubbleRadius: Float = 1.8
     public var bubbleShape: Float = 0
     public var bubbleBlend: Float = 0.25
+    // Atmosphere (legacy Effects ▸ Static): glow, bloom, fog + fog tint. All
+    // off by default so authored/golden scenes are byte-identical.
+    public var glowEnabled: Float = 0
+    public var glowIntensity: Float = 0.3
+    public var bloomEnabled: Float = 0
+    public var bloomStrength: Float = 0.2
+    public var fogEnabled: Float = 0
+    public var fogIntensity: Float = 0.32
+    public var fogColor: SIMD3<Float> = SIMD3(0.01, 0.015, 0.02)
 
     public init() {}
 
@@ -169,6 +178,15 @@ public struct EngineParams: Sendable {
         table[Int(THRESH_SLOT_BUBBLE_RADIUS)] = bubbleRadius
         table[Int(THRESH_SLOT_BUBBLE_SHAPE)] = bubbleShape
         table[Int(THRESH_SLOT_BUBBLE_BLEND)] = bubbleBlend
+        table[Int(THRESH_SLOT_GLOW_ENABLED)] = glowEnabled
+        table[Int(THRESH_SLOT_GLOW_INTENSITY)] = glowIntensity
+        table[Int(THRESH_SLOT_BLOOM_ENABLED)] = bloomEnabled
+        table[Int(THRESH_SLOT_BLOOM_STRENGTH)] = bloomStrength
+        table[Int(THRESH_SLOT_FOG_ENABLED)] = fogEnabled
+        table[Int(THRESH_SLOT_FOG_INTENSITY)] = fogIntensity
+        table[Int(THRESH_SLOT_FOG_COLOR_R)] = fogColor.x
+        table[Int(THRESH_SLOT_FOG_COLOR_G)] = fogColor.y
+        table[Int(THRESH_SLOT_FOG_COLOR_B)] = fogColor.z
         return table
     }
 }

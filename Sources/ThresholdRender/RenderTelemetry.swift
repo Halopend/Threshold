@@ -46,7 +46,10 @@ enum Mono {
 final class FrameProfiler {
     private let telemetry: RenderTelemetry
     private let summaryEvery: Int
-    /// When true, also logs a summary line; signposts are always emitted.
+    /// Opted-in profiling (THRESHOLD_PROFILE): summaries/hitches log at
+    /// persisted .default level plus the optional file sink. When false they
+    /// still stream at .info — visible in `log stream --info` and captured
+    /// in a sysdiagnose, free on disk. Signposts are always emitted.
     private let logSummaries: Bool
     /// Optional file sink for the summary lines. os_log is ideal under
     /// Instruments, but a headless/sandboxed capture can't always read the
@@ -116,14 +119,18 @@ final class FrameProfiler {
         if interEMA > 0, inter > max(interEMA * 1.5, interEMA + 4.0) {
             hitchesInWindow += 1
             telemetry.signposter.emitEvent("hitch", "\(inter, format: .fixed(precision: 2))ms")
+            let line = String(
+                format: "HITCH frame %llu inter=%.2fms (ema %.2f) step=%.3f "
+                    + "drawable=%.3f encode=%.3f gpuPrev=%.2f gpuBefore=%.2f",
+                frameIndex, inter, interEMA, stepMs, drawableMs, encodeMs,
+                gpuMs, lastGpuMs)
             if logSummaries {
-                let line = String(
-                    format: "HITCH frame %llu inter=%.2fms (ema %.2f) step=%.3f "
-                        + "drawable=%.3f encode=%.3f gpuPrev=%.2f gpuBefore=%.2f",
-                    frameIndex, inter, interEMA, stepMs, drawableMs, encodeMs,
-                    gpuMs, lastGpuMs)
                 telemetry.log.log("\(line, privacy: .public)")
                 emitToFile(line)
+            } else {
+                // Not opted in: still stream it at .info (memory ring only)
+                // so `log stream --info` always shows hitches live.
+                telemetry.log.info("\(line, privacy: .public)")
             }
         }
         interEMA = interEMA == 0 ? inter : interEMA * 0.9 + inter * 0.1
@@ -137,7 +144,7 @@ final class FrameProfiler {
         sumGpu += gpuMs
         maxInterFrame = max(maxInterFrame, inter)
 
-        guard logSummaries, frames >= summaryEvery else { return }
+        guard frames >= summaryEvery else { return }
         let n = Double(frames)
         let cpu = (sumStep + sumEncode + sumDrawable) / n
         let avgInter = sumInterFrame / n
@@ -147,22 +154,20 @@ final class FrameProfiler {
         // gap, it's CPU/sync-bound.
         let gpuAvg = sumGpu / n
         let bound = gpuAvg > cpu * 1.5 ? "GPU-bound" : (cpu > gpuAvg * 1.5 ? "CPU-bound" : "mixed")
-        emitToFile(String(
+        let line = String(
             format: "frame %llu %dpx realFps=%.1f inter=%.2fms(max %.2f) "
                 + "step=%.3f drawable=%.3f encode=%.3f gpu=%.2f hitches=%d -> %@",
             frameIndex, pixels, realFps, avgInter, maxInterFrame,
-            sumStep / n, sumDrawable / n, sumEncode / n, gpuAvg, hitchesInWindow, bound))
-        telemetry.log.log("""
-            frame \(frameIndex, privacy: .public) \(Int(sqrt(Double(pixels))), privacy: .public)²px \
-            realFps=\(realFps, format: .fixed(precision: 1), privacy: .public) \
-            inter=\(avgInter, format: .fixed(precision: 2), privacy: .public)ms \
-            (max \(self.maxInterFrame, format: .fixed(precision: 2), privacy: .public)) \
-            step=\(self.sumStep / n, format: .fixed(precision: 3), privacy: .public) \
-            drawable=\(self.sumDrawable / n, format: .fixed(precision: 3), privacy: .public) \
-            encode=\(self.sumEncode / n, format: .fixed(precision: 3), privacy: .public) \
-            gpu=\(gpuAvg, format: .fixed(precision: 2), privacy: .public) \
-            hitches=\(self.hitchesInWindow, privacy: .public) → \(bound, privacy: .public)
-            """)
+            sumStep / n, sumDrawable / n, sumEncode / n, gpuAvg, hitchesInWindow, bound)
+        if logSummaries {
+            // Opted in (THRESHOLD_PROFILE): persisted notice + optional file.
+            emitToFile(line)
+            telemetry.log.log("\(line, privacy: .public)")
+        } else {
+            // Default: .info — always available live (`log stream --info`)
+            // and in a sysdiagnose, never written to disk in normal runs.
+            telemetry.log.info("\(line, privacy: .public)")
+        }
         frames = 0
         sumInterFrame = 0; sumStep = 0; sumEncode = 0; sumDrawable = 0; sumGpu = 0
         maxInterFrame = 0

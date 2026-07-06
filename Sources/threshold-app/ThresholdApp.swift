@@ -22,6 +22,11 @@ final class AppModel {
     let signals: SignalTable
     let mirror: ParameterMirror
     let audio: AudioAnalyzer
+    /// Camera gestures → gesture-lane writes (plan §8.3): drag = orbit,
+    /// scroll/pinch = dolly, arrows/WASD via `keyboardNav`. Same wiring as
+    /// the Xcode shell (Threshold/ThresholdApp.swift).
+    let camera: CameraInteraction
+    let keyboardNav = KeyboardCameraNav()
     /// Whether the mic is currently feeding the audio.* signals (Music tab
     /// toggle). Routing is independent — see `setAudioEnabled`.
     var audioEnabled = false
@@ -44,10 +49,25 @@ final class AppModel {
         InteractiveSession.configure(layer: surface.layer)
 
         let context = try GPUContext()
+        ThresholdLog.session.notice(
+            """
+            app model init (GPU: \(context.device.name, privacy: .public), \
+            \(layout.slotCount) param slots)
+            """)
         let session = InteractiveSession(
             context: context, layout: layout, layer: surface.layer,
             signals: signals, initialScene: nil)
         self.session = session
+
+        self.camera = CameraInteraction(layout: layout, mailbox: session.laneMailbox)
+        // All camera mouse input is forwarded NATIVELY from the render view:
+        // a SwiftUI DragGesture over the AppKit Metal view is unreliable
+        // (AppKit wins mouse hit-testing), which is why drag-orbit had
+        // silently stopped responding. Scroll was always native; drag now
+        // matches.
+        surface.onScroll = { [camera] deltaY in camera.scroll(deltaY: deltaY) }
+        surface.onDragChanged = { [camera] t in camera.dragChanged(translation: t) }
+        surface.onDragEnded = { [camera] t in camera.dragEnded(translation: t) }
 
         self.mirror = ParameterMirror(
             layout: layout, snapshots: session.snapshots, commands: session.commands)
@@ -55,9 +75,13 @@ final class AppModel {
         self.audio = AudioAnalyzer(signals: signals)
     }
 
+    let watchdog = HangWatchdog()
+
     func start() {
         session.start()
         mirror.startPolling()
+        watchdog.start()
+        keyboardNav.install(camera: camera)
         // Quality governor ON by default (ADR-003): without it, any scene
         // heavier than the refresh budget misses vsyncs and the app reads as
         // "stuttering" out of the box (docs/perf-notes.md, stutter block).
@@ -72,6 +96,9 @@ final class AppModel {
     }
 
     func stop() {
+        ThresholdLog.session.notice("app stopping")
+        keyboardNav.remove()
+        watchdog.stop()
         audio.stop()
         mirror.stopPolling()
         session.stop()
@@ -195,6 +222,15 @@ struct MainView: View {
             RenderSurfaceView(surface: model.surface)
                 .frame(minWidth: 480, minHeight: 480)
                 .layoutPriority(1)
+                // Orbit (drag) + dolly (scroll) are forwarded NATIVELY by the
+                // render NSView (AppModel.init) — a SwiftUI DragGesture over an
+                // AppKit view stops receiving mouse events. Trackpad pinch has
+                // its own event stream, so it stays a SwiftUI gesture.
+                .simultaneousGesture(
+                    MagnifyGesture()
+                        .onChanged { model.camera.magnifyChanged($0.magnification) }
+                        .onEnded { model.camera.magnifyEnded($0.magnification) }
+                )
 
             // The sidebar scrolls itself (tab strip stays fixed on top). Audio
             // input lives in Motion ▸ Music now (AudioActions), so the shell no

@@ -79,6 +79,11 @@ public enum ReferenceDEs {
     /// scale+offset (Shaders.metal MAP_ITERATION_PROJ). The projection does not
     /// touch the running derivative, matching the app.
     ///
+    /// Distance is the FULL Rrmin mandelbox estimate
+    /// `(|z| − (|s|−1))/dr − |s|^(1−iterations)` — not the plain `|z|/dr` the
+    /// base mandelbox uses — mirroring the tunnelling fix in
+    /// `de_mandelboxSphereProjection` (RaymarchCore.metal).
+    ///
     /// - Parameter params: `[scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]`.
     public static func mandelboxSphereProjection(
         _ p: SIMD3<Float>,
@@ -115,7 +120,14 @@ public enum ReferenceDEs {
             trap = min(trap, length(z))
             if dot(z, z) > 1e8 { break }
         }
-        return SIMD2(length(z) / abs(dr), trap)
+        // Full Rrmin estimate, mirroring de_mandelboxSphereProjection: the
+        // (|s|-1) and |s|^(1-iter) corrections drive the estimate negative
+        // inside the surface where the per-fold projection explodes dr — the
+        // plain |z|/dr stays tiny-positive there and the march never lands.
+        let absScale = abs(scale)
+        let dist = (length(z) - (absScale - 1)) / dr
+            - powf(absScale, Float(1 - iterations))
+        return SIMD2(dist, trap)
     }
 
     /// Standard power-N Mandelbulb DE (triplex power formula).

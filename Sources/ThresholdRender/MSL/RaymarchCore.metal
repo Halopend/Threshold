@@ -924,16 +924,21 @@ static inline float3 acesFilmic(float3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0f, 1.0f);
 }
 
-// The fixed post-process grade (plan §5.5 stage 3). Identity at the default
-// scalars (saturation/contrast/brightness/gamma = 1, vibrance/tonemap = 0),
-// so a scene that authors no grading looks exactly like the raw lit color.
-static float3 applyGrading(float3 c, device const float* params) {
+// The post-process grade is split into three stages so the atmosphere
+// effects (glow/bloom/fog) compose in the legacy order — color scheme →
+// atmosphere → tone curve — exactly where the original app inserted them
+// (saturation, then glow/bloom, then fog, then tonemap/gamma). Each stage is
+// identity at the catalog defaults, so a scene that authors nothing looks
+// exactly like the raw lit color (goldens are byte-identical).
+
+// Stage 3a — color scheme: brightness, saturation, vibrance, contrast. Leaves
+// the color in linear, UNCLAMPED-above space so atmosphere can add HDR that
+// the tone curve compresses.
+static float3 applyColorScheme(float3 c, device const float* params) {
     const float saturation = params[THRESH_SLOT_SATURATION];
     const float contrast   = params[THRESH_SLOT_CONTRAST];
     const float vibrance   = params[THRESH_SLOT_VIBRANCE];
     const float brightness = params[THRESH_SLOT_BRIGHTNESS];
-    const float gamma      = params[THRESH_SLOT_GAMMA];
-    const float tonemap    = params[THRESH_SLOT_TONEMAP];
 
     c = max(c, 0.0f) * brightness;
     const float3 lumaWeights = float3(0.2126f, 0.7152f, 0.0722f);
@@ -946,11 +951,66 @@ static float3 applyGrading(float3 c, device const float* params) {
     c = mix(float3(luma), c, 1.0f + vib);
     // Contrast pivoted at mid-gray.
     c = (c - 0.5f) * contrast + 0.5f;
-    c = max(c, 0.0f);
-    // Identity fast paths (perf round 14): tonemap 0 / gamma 1 are the
-    // catalog defaults — skip the ACES polynomial and the 3 pows there.
-    // Branches are uniform across the frame (engine params), so no
-    // divergence; results are identical at the defaults.
+    return max(c, 0.0f);
+}
+
+// Stage 3b — atmosphere (legacy Effects ▸ Static): glow, bloom, fog + fog
+// tint, ported from the original's PostEffectsWithScheme/applyFog. Per-pixel,
+// no post-process blur (the legacy "bloom" is a single-pass bright-area
+// halo). `rayGlow` is the finalized near-miss glow the march accumulated;
+// `distance` is the ray's world-space t (maxDist on a miss). Identity at the
+// defaults (all …_ENABLED = 0), applied BEFORE the tone curve so tonemap
+// compresses the added HDR just like the original.
+static float3 applyAtmosphere(
+    float3 c, float rayGlow, float distance, device const float* params
+) {
+    // GLOW — hue-preserving near-miss halo.
+    const float glowEnabled = params[THRESH_SLOT_GLOW_ENABLED];
+    const float glowIntensity = params[THRESH_SLOT_GLOW_INTENSITY];
+    if (glowEnabled > 0.5f && glowIntensity > 0.001f && rayGlow > 0.0f) {
+        float lumaNow = dot(c, float3(0.2126f, 0.7152f, 0.0722f));
+        float3 huePreserve = c / max(lumaNow, 0.02f);
+        float3 haloTint = mix(float3(0.95f, 0.97f, 1.0f), saturate(huePreserve), 0.45f);
+        float glowCore = smoothstep(0.06f, 0.30f, rayGlow);
+        float glowTail = rayGlow * rayGlow;
+        float glowAmount = glowCore * (0.35f + 0.90f * glowIntensity)
+            + glowTail * (0.15f + 0.65f * glowIntensity);
+        c += haloTint * glowAmount;
+    }
+    // BLOOM — bright-area additive halo (single pass; dynamic threshold).
+    const float bloomEnabled = params[THRESH_SLOT_BLOOM_ENABLED];
+    const float bloomStrength = params[THRESH_SLOT_BLOOM_STRENGTH];
+    if (bloomEnabled > 0.5f && bloomStrength > 0.001f) {
+        float lumaNow = dot(c, float3(0.299f, 0.587f, 0.114f));
+        float threshold = mix(0.52f, 0.22f, bloomStrength);
+        float knee = 0.18f;
+        float brightPass = smoothstep(threshold - knee, threshold + knee, lumaNow);
+        // Glow assist lets dark palettes bloom via the ray-glow halo.
+        float glowAssist = smoothstep(0.04f, 0.35f, rayGlow) * (0.25f + 0.95f * bloomStrength);
+        float bloomAmount = brightPass * (0.18f + 1.25f * bloomStrength) + glowAssist;
+        float3 bloomTint = mix(float3(1.0f, 0.96f, 0.88f), saturate(c + 0.08f), 0.35f);
+        c += bloomTint * bloomAmount;
+    }
+    // FOG — exponential distance fade toward the fog tint.
+    const float fogEnabled = params[THRESH_SLOT_FOG_ENABLED];
+    const float fogIntensity = params[THRESH_SLOT_FOG_INTENSITY];
+    if (fogEnabled > 0.5f && fogIntensity > 0.0001f) {
+        float3 fogColor = float3(params[THRESH_SLOT_FOG_COLOR_R],
+                                 params[THRESH_SLOT_FOG_COLOR_G],
+                                 params[THRESH_SLOT_FOG_COLOR_B]);
+        float fogFactor = saturate(exp(fma(distance, -fogIntensity * 2.0f, 1.5f)));
+        c = mix(fogColor, c, fogFactor);
+    }
+    return c;
+}
+
+// Stage 3c — tone curve: optional ACES filmic + gamma, then clamp to [0,1].
+// Identity fast paths (perf round 14): tonemap 0 / gamma 1 are the catalog
+// defaults — skip the ACES polynomial and the 3 pows there. Branches are
+// uniform across the frame (engine params), so no divergence.
+static float3 applyToneCurve(float3 c, device const float* params) {
+    const float tonemap = params[THRESH_SLOT_TONEMAP];
+    const float gamma   = params[THRESH_SLOT_GAMMA];
     if (tonemap > 0.0f) {
         c = mix(c, acesFilmic(c), clamp(tonemap, 0.0f, 1.0f));
     }
@@ -1160,6 +1220,16 @@ static inline ThreshMarchResult marchShade(
     const float lodIterN = max(params[THRESH_SLOT_ITERATIONS], 1.0f);
     const float lodPerT = float(lodF) * (1.0f / 16.0f) * U.scaleCtx.z;
 
+    // Near-miss glow accumulation (legacy Effects ▸ Static): every step whose
+    // DE radius drops under kGlowNearMissFloor adds to `glow`, scaled by the
+    // user gain. Zero cost + bit-identical when glow is off (uniform branch,
+    // gain 0). Finalized after the loop into `rayGlow` for applyAtmosphere.
+    const float kGlowNearMissFloor = 0.04f;
+    const float kGlowAccumScale = 0.25f;
+    const float glowGain = (params[THRESH_SLOT_GLOW_ENABLED] > 0.5f)
+        ? params[THRESH_SLOT_GLOW_INTENSITY] : 0.0f;
+    float glow = 0.0f;
+
     for (int i = 0; i < maxSteps; ++i) {
         if (t > maxDist) { break; }   // loop-top: a prepass start at/near the
                                       // far plane must MISS, not sample there
@@ -1192,6 +1262,12 @@ static inline ThreshMarchResult marchShade(
             continue;
         }
         const float radius = dm.x;
+        // Near-miss glow: rays grazing the surface (small radius) accumulate a
+        // halo even if they never hit. Uniform branch → skipped entirely when
+        // glow is off, so the march is bit-identical at the defaults.
+        if (glowGain > 0.0f) {
+            glow = fma(saturate(kGlowNearMissFloor - radius), glowGain, glow);
+        }
         const bool sorFail = (omega > 1.0f) && (radius + prevRadius) < stepLength;
         if (sorFail) {
             stepLength -= omega * stepLength;   // undo the over-step (t retreats)
@@ -1208,6 +1284,10 @@ static inline ThreshMarchResult marchShade(
         t += stepLength;
         if (t > maxDist) { break; }
     }
+
+    // Finalize the near-miss glow accumulator (legacy finalizeGlow): scaled
+    // down and clamped. Exactly 0 when glow is off → applyAtmosphere no-ops.
+    const float rayGlow = saturate(glow * kGlowAccumScale);
 
     float4 color;
     if (bad) {
@@ -1248,9 +1328,18 @@ static inline ThreshMarchResult marchShade(
             ? cheapAO(pos, n, aoStrength, featureScale, U, params, ops, deTable)
             : 1.0f;
         float3 lit = albedo * (lambert + 0.2f) * occ;
-        color = float4(applyGrading(lit, params), 1.0f);
+        // Post grade: color scheme → atmosphere (glow/bloom/fog) → tone curve
+        // (legacy insertion order). Identity at the defaults, so a scene that
+        // authors no atmosphere is byte-identical to the raw graded color.
+        float3 graded = applyColorScheme(lit, params);
+        graded = applyAtmosphere(graded, rayGlow, t, params);
+        color = float4(applyToneCurve(graded, params), 1.0f);
     } else {
-        color = float4(0.0f, 0.0f, 0.0f, 1.0f);              // miss: black
+        // Miss: the background is black, but atmosphere still applies so the
+        // near-miss glow HALO and distance fog show around the fractal (the
+        // signature look). Identity at the defaults → opaque black as before.
+        float3 bg = applyAtmosphere(float3(0.0f), rayGlow, maxDist, params);
+        color = float4(applyToneCurve(bg, params), 1.0f);
     }
 
     ThreshMarchResult result;

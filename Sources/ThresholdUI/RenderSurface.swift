@@ -38,6 +38,21 @@ public final class RenderSurface {
         set { (view as? MetalLayerHostView)?.onScroll = newValue }
     }
 
+    /// Mouse-drag callbacks (cumulative translation from mouse-down, in
+    /// SwiftUI's coordinate convention: +width = right, +height = down) —
+    /// routed to camera orbit. The host NSView forwards these natively
+    /// because a SwiftUI `DragGesture` layered over an AppKit view is
+    /// unreliable: AppKit wins mouse hit-testing and the gesture can stop
+    /// receiving events entirely.
+    public var onDragChanged: ((CGSize) -> Void)? {
+        get { (view as? MetalLayerHostView)?.onDragChanged }
+        set { (view as? MetalLayerHostView)?.onDragChanged = newValue }
+    }
+    public var onDragEnded: ((CGSize) -> Void)? {
+        get { (view as? MetalLayerHostView)?.onDragEnded }
+        set { (view as? MetalLayerHostView)?.onDragEnded = newValue }
+    }
+
     public init() {
         let layer = CAMetalLayer()
         InteractiveSession.configure(layer: layer)  // single source of truth
@@ -54,6 +69,14 @@ public final class RenderSurface {
 final class MetalLayerHostView: NSView {
     private let metalLayer: CAMetalLayer
     var onScroll: ((CGFloat) -> Void)?
+    var onDragChanged: ((CGSize) -> Void)?
+    var onDragEnded: ((CGSize) -> Void)?
+
+    /// Window-space location of the current drag's mouse-down, or nil when no
+    /// drag is in flight. Cumulative translation is measured from here so the
+    /// contract matches SwiftUI's `DragGesture` (which the shell's camera
+    /// code was written against).
+    private var dragOrigin: NSPoint?
 
     init(metalLayer: CAMetalLayer) {
         self.metalLayer = metalLayer
@@ -68,6 +91,44 @@ final class MetalLayerHostView: NSView {
             return
         }
         onScroll(event.scrollingDeltaY)
+    }
+
+    // MARK: Mouse-drag orbit (native, not SwiftUI)
+
+    /// Orbit a click-drag even when the window isn't key yet, so the first
+    /// click on a background window drags instead of just focusing it.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard onDragChanged != nil || onDragEnded != nil else {
+            super.mouseDown(with: event)
+            return
+        }
+        dragOrigin = event.locationInWindow
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = dragOrigin else {
+            super.mouseDragged(with: event)
+            return
+        }
+        onDragChanged?(translation(from: origin, to: event.locationInWindow))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let origin = dragOrigin else {
+            super.mouseUp(with: event)
+            return
+        }
+        dragOrigin = nil
+        onDragEnded?(translation(from: origin, to: event.locationInWindow))
+    }
+
+    /// Window-space delta → SwiftUI `DragGesture.translation` convention:
+    /// x rightward, y DOWNWARD. AppKit window coords are y-up, so the
+    /// vertical component is negated.
+    private func translation(from origin: NSPoint, to current: NSPoint) -> CGSize {
+        CGSize(width: current.x - origin.x, height: origin.y - current.y)
     }
 
     @available(*, unavailable)

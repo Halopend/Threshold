@@ -34,7 +34,7 @@ public struct EmbeddedDE: Sendable, Equatable, Codable {
     /// import the header (Foundation-only rule), so a cross-target test in
     /// ThresholdRenderTests asserts the two are equal. Writers (snapshots,
     /// migrations) stamp this into embedded DEs.
-    public static let currentABIVersion = 2
+    public static let currentABIVersion = 3
 
     /// MSL source defining `[[visible]] float2 de_main(float3, thread const
     /// ThreshDEContext&)` — compiled at load against the published ABI header.

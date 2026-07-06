@@ -77,15 +77,16 @@ struct WarpStackEditTests {
 
 @Suite("WarpMenu add-menu catalog")
 struct WarpMenuTests {
-    @Test("Every constructible kind appears exactly once (none/bounding excluded)")
+    @Test("Every constructible kind appears exactly once (none excluded)")
     func coverage() {
         let items = WarpMenu.families.flatMap(\.items)
         let kinds = items.map(\.kindRawValue)
-        #expect(items.count == 20)  // kinds 1…18 + handAttract(64) + forearmCarve(65)
+        // kinds 1…18 + handAttract(64) + forearmCarve(65) + bounding(66,
+        // constructible since the carve/clip op landed with WarpFlags.optionB).
+        #expect(items.count == 21)
         #expect(Set(kinds).count == kinds.count)
-        #expect(!kinds.contains(0))   // .none
-        #expect(!kinds.contains(66))  // .bounding (reserved, no constructor)
-        let expected = Set<UInt32>((1...18).map(UInt32.init) + [64, 65])
+        #expect(!kinds.contains(0))   // .none (no-op, never in the menu)
+        let expected = Set<UInt32>((1...18).map(UInt32.init) + [64, 65, 66])
         #expect(Set(kinds) == expected)
     }
 

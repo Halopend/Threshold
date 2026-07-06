@@ -159,6 +159,7 @@ public final class CompositorSession: @unchecked Sendable {
     /// Ask the loop to exit (it also exits when the layer invalidates —
     /// dismissing the immersive space tears it down without an explicit stop).
     public func stop() {
+        ThresholdLog.session.notice("compositor session stop requested")
         stopRequested.store(true, ordering: .releasing)
     }
 
@@ -186,6 +187,7 @@ public final class CompositorSession: @unchecked Sendable {
         let backend = Self.selectedBackend
         var raster: ViewPassEncoder? = nil
         var computeGPU: ViewComputeEncoder? = nil
+        var computeRecon: TemporalReconstructor? = nil
         switch backend {
         case .fragment:
             do {
@@ -212,6 +214,25 @@ public final class CompositorSession: @unchecked Sendable {
                     compositor session dead on arrival — compute encoder init \
                     failed: \(String(describing: error), privacy: .public)
                     """)
+            }
+            // The compute backend's resolution lever (march.renderScale):
+            // reduced-resolution march + present upsample, driven by the same
+            // governor scale the fragment backend maps to renderQuality.
+            // Loop-start construction so the resolve-library compile never
+            // lands mid-frame. Failure is non-fatal — nil keeps the backend
+            // at full drawable resolution exactly as before the lever.
+            if computeGPU != nil {
+                do {
+                    computeRecon = try TemporalReconstructor(
+                        context: context,
+                        colorFormat: layer.configuration.colorFormat)
+                } catch {
+                    ThresholdLog.session.error(
+                        """
+                        reconstruction unavailable — compute backend stays at \
+                        full resolution: \(String(describing: error), privacy: .public)
+                        """)
+                }
             }
         }
         guard raster != nil || computeGPU != nil else { return }
@@ -266,12 +287,27 @@ public final class CompositorSession: @unchecked Sendable {
         let sp = profiler.signposter
         var frameIndex: UInt64 = 0
 
+        ThresholdLog.session.notice(
+            """
+            compositor render loop up (device: \
+            \(self.context.device.name, privacy: .public), backend: \
+            \(backend.rawValue, privacy: .public), layered: \(layered), \
+            foveated: \(foveated))
+            """)
+
         while !stopRequested.load(ordering: .acquiring) {
             switch layer.state {
             case .invalidated:
+                ThresholdLog.session.notice(
+                    "compositor layer invalidated — render loop exiting")
                 return
             case .paused:
+                // System-paused (immersion dropped, device doffed). The wait
+                // blocks this thread — bracket it so a log tells "system
+                // paused us" apart from "wedged".
+                ThresholdLog.session.notice("compositor layer paused — waiting")
                 layer.waitUntilRunning()
+                ThresholdLog.session.notice("compositor layer resumed")
                 continue
             case .running:
                 break
@@ -388,6 +424,7 @@ public final class CompositorSession: @unchecked Sendable {
                     encodeCompute(
                         request, views: views, drawable: drawable,
                         layered: layered, gpu: computeGPU,
+                        recon: computeRecon,
                         commandBuffer: commandBuffer)
                 }
                 drawable.encodePresent(commandBuffer: commandBuffer)
@@ -409,9 +446,22 @@ public final class CompositorSession: @unchecked Sendable {
             // Debug telemetry for the control-window panel. Report the
             // renderQuality actually applied (clamped to the ceiling) — the
             // drawable shrinks and the compositor upscales natively, so
-            // `upscaling` tracks quality < 1. The compute backend has no
-            // renderQuality lever (foveation off) — it reports full scale.
-            let scale = foveated ? pendingRenderQuality : 1
+            // `upscaling` tracks quality < 1. The compute backend reports the
+            // REALIZED march scale of its own lever (multiple-of-8 rounding
+            // makes it differ slightly from the governor's ask), or full
+            // scale when the reconstructor is unavailable.
+            let scale: Float
+            if foveated {
+                scale = pendingRenderQuality
+            } else if computeRecon != nil,
+                      let m = TemporalReconstructor.marchSize(
+                          outputWidth: colorTexture.width,
+                          outputHeight: colorTexture.height,
+                          scale: request.renderScale) {
+                scale = Float(m.width) / Float(colorTexture.width)
+            } else {
+                scale = 1
+            }
             snapshots.publish(sessionFrame.snapshot(
                 gpuMilliseconds: stats.gpuMilliseconds,
                 totalSteps: stats.totalSteps,
@@ -420,6 +470,7 @@ public final class CompositorSession: @unchecked Sendable {
                     renderScale: scale,
                     upscaling: scale < 0.999)))
         }
+        ThresholdLog.session.notice("compositor render loop exited (stop requested)")
     }
 
     /// One pass (layered: amplified across both views) or one per view
@@ -474,6 +525,7 @@ public final class CompositorSession: @unchecked Sendable {
         drawable: LayerRenderer.Drawable,
         layered: Bool,
         gpu: ViewComputeEncoder,
+        recon: TemporalReconstructor?,
         commandBuffer: MTLCommandBuffer
     ) {
         var colorTargets: [(texture: MTLTexture, slice: Int)] = []
@@ -493,7 +545,7 @@ public final class CompositorSession: @unchecked Sendable {
         gpu.encode(
             request, views: views,
             colorTargets: colorTargets, depthTargets: depthTargets,
-            commandBuffer: commandBuffer)
+            commandBuffer: commandBuffer, recon: recon)
     }
 
     // MARK: Hand-driven ops

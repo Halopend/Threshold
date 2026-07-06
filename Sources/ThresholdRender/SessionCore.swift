@@ -15,6 +15,7 @@
 // structure or the new one, never a torn mix.
 
 import Foundation
+import os
 import simd
 import ThresholdCore
 import ThresholdShaderABI
@@ -274,6 +275,17 @@ final class SessionCore {
         engineParams.bubbleRadius = resolved.values[Int(THRESH_SLOT_BUBBLE_RADIUS)]
         engineParams.bubbleShape = resolved.values[Int(THRESH_SLOT_BUBBLE_SHAPE)]
         engineParams.bubbleBlend = resolved.values[Int(THRESH_SLOT_BUBBLE_BLEND)]
+        // Atmosphere (legacy Effects ▸ Static) — resolved from their fixed slots.
+        engineParams.glowEnabled = resolved.values[Int(THRESH_SLOT_GLOW_ENABLED)]
+        engineParams.glowIntensity = resolved.values[Int(THRESH_SLOT_GLOW_INTENSITY)]
+        engineParams.bloomEnabled = resolved.values[Int(THRESH_SLOT_BLOOM_ENABLED)]
+        engineParams.bloomStrength = resolved.values[Int(THRESH_SLOT_BLOOM_STRENGTH)]
+        engineParams.fogEnabled = resolved.values[Int(THRESH_SLOT_FOG_ENABLED)]
+        engineParams.fogIntensity = resolved.values[Int(THRESH_SLOT_FOG_INTENSITY)]
+        engineParams.fogColor = SIMD3(
+            resolved.values[Int(THRESH_SLOT_FOG_COLOR_R)],
+            resolved.values[Int(THRESH_SLOT_FOG_COLOR_G)],
+            resolved.values[Int(THRESH_SLOT_FOG_COLOR_B)])
         let deValues: [Float]
         if externalProgram != nil, externalParamSlots.count == descriptor.paramLayout.count {
             // External DE: params live in the dynamic arena (setExternal).
@@ -349,7 +361,63 @@ final class SessionCore {
 
     // MARK: - Commands
 
+    /// One log breadcrumb per drained command, so a frozen-session log shows
+    /// what the user did leading up to it. Structural commands are low-rate →
+    /// .info (memory ring, in every sysdiagnose); per-interaction commands →
+    /// .debug (stream-only); continuous userEdit ticks are never logged.
+    private func logCommand(_ command: SessionCommand) {
+        let log = ThresholdLog.session
+        switch command {
+        case .userEdit:
+            break  // per-tick during drags — too hot even for .debug
+        case .applyScene(let envelope, let transition):
+            let name = envelope.name ?? "untitled"
+            log.info("""
+                command: applyScene '\(name, privacy: .public)' \
+                (\(transition == nil ? "snap" : "tween", privacy: .public))
+                """)
+        case .setDE(let key):
+            log.info("command: setDE \(key, privacy: .public)")
+        case .setExternalDE(let program):
+            log.info("""
+                command: setExternalDE \
+                \(program == nil ? "nil (revert to built-in)" : "program", privacy: .public)
+                """)
+        case .setWarpStack(let stack):
+            log.debug("command: setWarpStack (\(stack.count) ops)")
+        case .clearUserEdit(let slot):
+            log.debug("command: clearUserEdit slot \(slot)")
+        case .commitUserEdit(let slot, _):
+            log.debug("command: commitUserEdit slot \(slot)")
+        case .clearLane(let lane):
+            log.debug("command: clearLane \(String(describing: lane), privacy: .public)")
+        case .setPaused(let isPaused):
+            log.info("command: setPaused \(isPaused)")
+        case .setBindings(let bindings):
+            log.debug("command: setBindings (\(bindings.count))")
+        case .setLFOs(let specs):
+            log.debug("command: setLFOs (\(specs.count))")
+        case .setPalette:
+            log.debug("command: setPalette")
+        case .setAnimationClip(let clip):
+            let name = clip.map { $0.name ?? "unnamed" } ?? "nil (unload)"
+            log.info("command: setAnimationClip \(name, privacy: .public)")
+        case .animationTransport(let verb):
+            log.info("command: animationTransport \(String(describing: verb), privacy: .public)")
+        case .setQualityGovernor(let config):
+            let desc = config.map { "target \($0.targetMilliseconds)ms" } ?? "off"
+            log.info("command: setQualityGovernor \(desc, privacy: .public)")
+        case .setRenderTuning:
+            log.info("command: setRenderTuning")
+        case .captureImage(let width, let height, _):
+            log.info("command: captureImage \(width)x\(height)")
+        case .captureScene:
+            log.info("command: captureScene")
+        }
+    }
+
     private func handle(_ command: SessionCommand) {
+        logCommand(command)
         switch command {
         case .applyScene(let envelope, let transition):
             apply(scene: envelope, transition: transition)

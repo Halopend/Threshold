@@ -6,6 +6,7 @@
 // touching the session.
 
 import Foundation
+import os
 import SwiftUI
 import ThresholdCore
 
@@ -118,7 +119,11 @@ public final class AnimationLibrary {
             .filter { $0.pathExtension == "threshanim" }
             .compactMap { url -> AnimationLibraryItem? in
                 guard let data = try? Data(contentsOf: url),
-                      let envelope = try? AnimationCodec.decode(data) else { return nil }
+                      let envelope = try? AnimationCodec.decode(data) else {
+                    ThresholdLog.io.error(
+                        "unreadable animation skipped: \(url.lastPathComponent, privacy: .public)")
+                    return nil
+                }
                 let clip = envelope.clip
                 return AnimationLibraryItem(
                     url: url,
