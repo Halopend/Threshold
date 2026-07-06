@@ -7,3 +7,4 @@ DerivedData/
 /artifacts/
 bench-results/
 .bench-history/
+Build/
