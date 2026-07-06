@@ -1,0 +1,260 @@
+{
+  "abiVersion" : 3,
+  "camera" : {
+    "fovYRadians" : 1.0471975,
+    "orientation" : [
+      0,
+      0,
+      0,
+      1
+    ],
+    "position" : [
+      0,
+      0,
+      3
+    ]
+  },
+  "fractalTypeKey" : "mandelboxSphereProjection",
+  "integratorPhases" : {
+    "de.mandelbulb.rotationPhase" : 0,
+    "scale.zoom" : 0
+  },
+  "palette" : {
+    "stops" : [
+      {
+        "blue" : 0.08,
+        "green" : 0.01,
+        "position" : 0,
+        "red" : 0.02
+      },
+      {
+        "blue" : 0.9,
+        "green" : 0.85,
+        "position" : 0.35,
+        "red" : 0.05
+      },
+      {
+        "blue" : 0.75,
+        "green" : 0.1,
+        "position" : 0.7,
+        "red" : 0.85
+      },
+      {
+        "blue" : 0.3,
+        "green" : 0.95,
+        "position" : 1,
+        "red" : 0.98
+      }
+    ]
+  },
+  "params" : {
+    "atmosphere.bloom.enabled" : [
+      0
+    ],
+    "atmosphere.bloom.strength" : [
+      0.20000000298023224
+    ],
+    "atmosphere.fog.color" : [
+      0.009999999776482582,
+      0.014999999664723873,
+      0.019999999552965164
+    ],
+    "atmosphere.fog.enabled" : [
+      0
+    ],
+    "atmosphere.fog.intensity" : [
+      0.3199999928474426
+    ],
+    "atmosphere.glow.enabled" : [
+      0
+    ],
+    "atmosphere.glow.intensity" : [
+      0.30000001192092896
+    ],
+    "camera.dolly" : [
+      1
+    ],
+    "camera.orbitPitch" : [
+      0
+    ],
+    "camera.orbitYaw" : [
+      0
+    ],
+    "color.brightness" : [
+      1.1035590171813965
+    ],
+    "color.contrast" : [
+      1.6973958015441895
+    ],
+    "color.gamma" : [
+      2.0897786617279053
+    ],
+    "color.gradient.offset" : [
+      0
+    ],
+    "color.gradient.repeat" : [
+      1
+    ],
+    "color.gradient.smoothing" : [
+      0
+    ],
+    "color.mapMode" : [
+      2
+    ],
+    "color.saturation" : [
+      0.8143229484558105
+    ],
+    "color.tonemap" : [
+      0.4476996660232544
+    ],
+    "color.vibrance" : [
+      0.0933159738779068
+    ],
+    "de.kleinian.crossRadius" : [
+      0.8399999737739563
+    ],
+    "de.kleinian.maxX" : [
+      0.3499999940395355
+    ],
+    "de.kleinian.maxY" : [
+      1
+    ],
+    "de.kleinian.maxZ" : [
+      1.2200000286102295
+    ],
+    "de.kleinian.minX" : [
+      -0.32519999146461487
+    ],
+    "de.kleinian.minY" : [
+      -0.7861999869346619
+    ],
+    "de.kleinian.minZ" : [
+      -0.09480000287294388
+    ],
+    "de.kleinian.sphereFold" : [
+      0.6899999976158142
+    ],
+    "de.mandelbox.fixedRadius" : [
+      1
+    ],
+    "de.mandelbox.foldLimit" : [
+      1
+    ],
+    "de.mandelbox.minRadius" : [
+      0.25
+    ],
+    "de.mandelbox.scale" : [
+      2
+    ],
+    "de.mandelboxSphereProjection.fixedRadius" : [
+      0.05000000074505806
+    ],
+    "de.mandelboxSphereProjection.foldLimit" : [
+      4
+    ],
+    "de.mandelboxSphereProjection.minRadius" : [
+      0.009999999776482582
+    ],
+    "de.mandelboxSphereProjection.projBlend" : [
+      0.5841308236122131
+    ],
+    "de.mandelboxSphereProjection.projRadius" : [
+      7.15927791595459
+    ],
+    "de.mandelboxSphereProjection.scale" : [
+      -1.2276782989501953
+    ],
+    "de.mandelbulb.power" : [
+      8
+    ],
+    "de.mandelbulb.rotationSpeed" : [
+      0
+    ],
+    "de.mandelbulbJulia.cX" : [
+      0.20000000298023224
+    ],
+    "de.mandelbulbJulia.cY" : [
+      -0.15000000596046448
+    ],
+    "de.mandelbulbJulia.cZ" : [
+      0.3499999940395355
+    ],
+    "de.mandelbulbJulia.power" : [
+      8
+    ],
+    "de.mengerSponge.offsetX" : [
+      1
+    ],
+    "de.mengerSponge.offsetY" : [
+      1
+    ],
+    "de.mengerSponge.offsetZ" : [
+      1
+    ],
+    "de.mengerSponge.scale" : [
+      3
+    ],
+    "de.quaternionJulia.cW" : [
+      0
+    ],
+    "de.quaternionJulia.cX" : [
+      -0.20000000298023224
+    ],
+    "de.quaternionJulia.cY" : [
+      0.800000011920929
+    ],
+    "de.quaternionJulia.cZ" : [
+      0
+    ],
+    "de.quaternionJulia.threshold" : [
+      10
+    ],
+    "engine.aoStrength" : [
+      0.5
+    ],
+    "engine.bubble.blend" : [
+      1
+    ],
+    "engine.bubble.enabled" : [
+      1
+    ],
+    "engine.bubble.radius" : [
+      0.14664307236671448
+    ],
+    "engine.bubble.shape" : [
+      0
+    ],
+    "engine.iterations" : [
+      12
+    ],
+    "engine.maxDist" : [
+      64
+    ],
+    "engine.shadowSoft" : [
+      8
+    ],
+    "scale.zoomSpeed" : [
+      0
+    ]
+  },
+  "version" : 1,
+  "warpStack" : [
+    {
+      "a" : [
+        2,
+        0,
+        0,
+        0
+      ],
+      "b" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "flags" : 0,
+      "kind" : 15,
+      "strength" : 2
+    }
+  ]
+}
