@@ -148,16 +148,21 @@ public struct RenderDiagnostics: Sendable, Equatable {
     public var renderScale: Float
     /// MetalFX temporal upscaling engaged this frame.
     public var upscaling: Bool
+    /// Custom temporal reconstruction mode this frame ("off" | "stabilize" |
+    /// "taau") — the compute backend's readout (march.temporalRecon).
+    public var reconstruction: String
 
     public init(
         pipeline: Pipeline = .generic, specializationPending: Bool = false,
-        bakedConstants: String = "", renderScale: Float = 1, upscaling: Bool = false
+        bakedConstants: String = "", renderScale: Float = 1, upscaling: Bool = false,
+        reconstruction: String = "off"
     ) {
         self.pipeline = pipeline
         self.specializationPending = specializationPending
         self.bakedConstants = bakedConstants
         self.renderScale = renderScale
         self.upscaling = upscaling
+        self.reconstruction = reconstruction
     }
 }
 

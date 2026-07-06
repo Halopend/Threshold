@@ -73,7 +73,7 @@ printf "%-12s %10s %8s %8s %8s %8s %10s\n" \
 
 fail=0
 row_json=""
-for res in $RESOLUTIONS; do
+for res in "${RESOLUTIONS[@]}"; do
   json=$RESULTS/last-${res}.json
   $BIN "$SCENE" -w $res -h $res --max-steps $MAX_STEPS --specialize \
     --bench $FRAMES --bench-warmup $WARMUP --bench-json "$json" --quiet \

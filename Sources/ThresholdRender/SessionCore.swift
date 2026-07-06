@@ -77,6 +77,13 @@ final class SessionCore {
     /// `scale.zoom` phase, with `camera` living in the correspondingly
     /// rebased world. Bookkeeping — the kernel never sees it.
     private(set) var octave: Int32 = 0
+    /// Bumped on DE switch / scene apply / external-DE swap — the shells'
+    /// signal that temporal history describes a world that no longer exists
+    /// (the reset funnel, temporal-reconstruction plan).
+    private(set) var historyEpoch: UInt32 = 0
+    /// Previous frame's world state for the volatility measure; nil until
+    /// the first frame steps.
+    private var volatilityBasis: WorldVolatility.Basis?
     private(set) var paused = false
     /// Active gradient palette (scene content). Defaults to the renderer's
     /// built-in stops until a scene or `setPalette` command replaces it.
@@ -330,6 +337,26 @@ final class SessionCore {
             UInt32(gpuOps.count), descriptor.index,
             UInt32(params.count), UInt32(deParamOffset))
 
+        // World volatility (temporal-reconstruction plan): how hard the
+        // world morphs THIS frame, measured on exactly what the GPU sees —
+        // param table, ops, palette, scale context. Camera and time are
+        // deliberately absent (reprojection explains the camera; time only
+        // matters through the params it already moved). Paused ⇒ 0.
+        let basis = WorldVolatility.Basis(
+            params: params, deParamOffset: deParamOffset,
+            ops: gpuOps, paletteStops: displayedPalette.stops,
+            modelScale: scaleContext.modelScale,
+            epsilonBase: scaleContext.epsilonBase)
+        let worldVolatility: Float
+        if paused {
+            worldVolatility = 0
+        } else if let previous = volatilityBasis {
+            worldVolatility = WorldVolatility.measure(from: previous, to: basis)
+        } else {
+            worldVolatility = 0
+        }
+        volatilityBasis = basis
+
         frameIndex &+= 1
         return SessionFrame(
             request: RenderRequest(
@@ -338,7 +365,8 @@ final class SessionCore {
                 // frame's `palette` below stays the AUTHORED one (what the
                 // gradient editor shows and captureScene saves).
                 palette: displayedPalette.stops, width: width, height: height,
-                renderScale: renderScale, tuning: tuning),
+                renderScale: renderScale, tuning: tuning,
+                worldVolatility: worldVolatility),
             resolved: resolved,
             frameIndex: frameIndex,
             time: clock.now,
@@ -349,6 +377,7 @@ final class SessionCore {
             animation: animationPlayer.playbackState,
             dynamicEntries: dynamicEntries,
             scaleOctave: octave,
+            historyEpoch: historyEpoch,
             externalProgram: externalProgram,
             audioLevels: audioLevels)
     }
@@ -421,6 +450,7 @@ final class SessionCore {
         switch command {
         case .applyScene(let envelope, let transition):
             apply(scene: envelope, transition: transition)
+            historyEpoch &+= 1
 
         case .setDE(let key):
             // Swap the descriptor ONLY — lane state persists (plan §2.1:
@@ -429,10 +459,12 @@ final class SessionCore {
             if let swapped = DERegistry.descriptor(forKey: key) {
                 lastBuiltinDescriptor = swapped
                 setExternal(nil)
+                historyEpoch &+= 1
             }
 
         case .setExternalDE(let program):
             setExternal(program)
+            historyEpoch &+= 1
 
         case .setWarpStack(let stack):
             setWarpStack(stack)
@@ -703,5 +735,86 @@ final class SessionCore {
         // are not rendered — same policy as the offscreen harness.
         let (raw, _) = [ThreshWarpOp].fromDTOs(stack)
         gpuOps = WarpSimplifier.simplify(raw)
+    }
+}
+
+// MARK: - WorldVolatility
+
+/// The temporal-reconstruction plan's world-morph scalar: how much of the
+/// GPU-visible WORLD changed between two frames, [0, 1]. Fractal surfaces
+/// morph under LFO/music modulation in ways camera reprojection cannot see —
+/// this is measured HOST-side from the lane engine's own outputs (the one
+/// place that knows the deltas) and discounts temporal history in the
+/// resolve. Pure and value-typed so VolatilityTests pin it on the CPU.
+enum WorldVolatility {
+    struct Basis {
+        var params: [Float]
+        /// First DE-slice index in `params` — DE params morph geometry
+        /// (weight 1); engine slots ahead of it are mostly shading
+        /// (weight 0.25).
+        var deParamOffset: Int
+        var ops: [ThreshWarpOp]
+        var paletteStops: [GradientStop]
+        var modelScale: Float
+        var epsilonBase: Float
+    }
+
+    /// `1 − exp(−8·V)` over the weighted relative deltas. An iteration-count
+    /// step or any structural change (param-table shape, op count/kind,
+    /// palette shape) is a hard cut (1) — the fractal is a different surface.
+    static func measure(from prev: Basis, to cur: Basis) -> Float {
+        let iterationsSlot = Int(THRESH_SLOT_ITERATIONS)
+        guard prev.params.count == cur.params.count,
+              prev.deParamOffset == cur.deParamOffset,
+              prev.params.indices.contains(iterationsSlot),
+              prev.params[iterationsSlot].rounded()
+                  == cur.params[iterationsSlot].rounded()
+        else { return 1 }
+
+        func rel(_ a: Float, _ b: Float) -> Float {
+            abs(a - b) / max(max(abs(a), abs(b)), 1e-3)
+        }
+
+        var v: Float = 0
+        for i in cur.params.indices where i != iterationsSlot {
+            let weight: Float = i >= cur.deParamOffset ? 1.0 : 0.25
+            v += weight * rel(prev.params[i], cur.params[i])
+        }
+
+        if prev.ops.count != cur.ops.count {
+            v += 1
+        } else {
+            for (p, c) in zip(prev.ops, cur.ops) {
+                if p.kind != c.kind || p.flags != c.flags {
+                    v += 1
+                    continue
+                }
+                v += rel(p.strength, c.strength)
+                for lane in 0..<4 {
+                    v += rel(p.a[lane], c.a[lane])
+                    v += rel(p.b[lane], c.b[lane])
+                }
+            }
+        }
+
+        v += 4 * abs(log2(max(cur.modelScale, 1e-9))
+                     - log2(max(prev.modelScale, 1e-9)))
+        v += 4 * abs(log2(max(cur.epsilonBase, 1e-12))
+                     - log2(max(prev.epsilonBase, 1e-12)))
+
+        if prev.paletteStops.count != cur.paletteStops.count {
+            v += 1
+        } else {
+            var paletteDelta: Float = 0
+            for (p, c) in zip(prev.paletteStops, cur.paletteStops) {
+                paletteDelta += abs(p.position - c.position)
+                    + abs(p.red - c.red)
+                    + abs(p.green - c.green)
+                    + abs(p.blue - c.blue)
+            }
+            v += 0.5 * paletteDelta
+        }
+
+        return 1 - exp(-8 * v)
     }
 }

@@ -1668,7 +1668,23 @@ fragment ThreshFragmentOut thresh_march_fragment(
 //
 // Texture 4 (depth out) is a private contract with ViewComputeEncoder — same
 // standing as THRESH_TEXTURE_CONE.
+//
+// THRESH_AUX variant (temporal reconstruction, plan phase A): the SAME gate
+// the Mac offscreen kernel uses. Adds jittered ray-gen (aux buffer 7 — only
+// `jitter.xy` is read on this path; the prev-camera fields are the pinhole
+// model's, superseded here by prevViews), the previous frame's view uniforms
+// (buffer 9 — private contract with ViewComputeEncoder), and two march-
+// resolution outputs the resolve kernel consumes:
+//   texture 1 (r32Float): world-space hit t, MISS = −1 sentinel (immune to a
+//     modulated max-dist param, and makes the hit↔miss flip test a sign
+//     check). NOTE this differs from the Mac aux texture-1 contract
+//     (t/maxDist for MetalFX) — TemporalResolve un-normalizes via tScale
+//     when the Mac branch reuses it.
+//   texture 2 (rg16Float): motion, previous − current, in MARCH pixels,
+//     y-down, both ends UNJITTERED; a miss reprojects the far point so
+//     rotation tracks the background (same convention as the Mac kernel).
 #define THRESH_TEXTURE_VIEW_DEPTH 4
+#define THRESH_BUFFER_PREV_VIEWS  9
 
 kernel void march_view_compute(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
@@ -1682,6 +1698,14 @@ kernel void march_view_compute(
     texture2d_array<float, access::write> outDepth [[texture(THRESH_TEXTURE_VIEW_DEPTH)]],
     texture2d_array<float, access::read> coneTex   [[texture(THRESH_TEXTURE_CONE),
                                                      function_constant(THRESH_CONE)]],
+    constant ThreshAuxUniforms& aux          [[buffer(THRESH_BUFFER_AUX),
+                                               function_constant(THRESH_AUX)]],
+    device const ThreshViewUniforms* prevViews [[buffer(THRESH_BUFFER_PREV_VIEWS),
+                                                 function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::write> outT [[texture(THRESH_TEXTURE_DEPTH),
+                                                 function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::write> outMotion [[texture(THRESH_TEXTURE_MOTION),
+                                                      function_constant(THRESH_AUX)]],
     uint3 gid                                [[thread_position_in_grid]])
 {
     const uint w = outColor.get_width();
@@ -1692,19 +1716,29 @@ kernel void march_view_compute(
 
     // Pixel center → NDC (y up) — the compute mirror of the fragment's
     // interpolated `in.ndc` for this pixel; then the SAME two-point
-    // unproject through this view's projection.
+    // unproject through this view's projection. The aux jitter shifts the
+    // sample point within the pixel (the resolve kernel knows the offset and
+    // removes it while accumulating history into sub-pixel detail).
+    float2 pixel = float2(gid.xy) + 0.5f;
+    if (THRESH_AUX) { pixel -= aux.jitter.xy; }
     const float2 ndc = float2(
-        (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
-        1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+        pixel.x / float(w) * 2.0f - 1.0f,
+        1.0f - pixel.y / float(h) * 2.0f);
     float3 dirLocal = threshViewDirLocal(view.invProj, ndc);
     const float roomScale = max(view.originScale.w, 1e-6f);
     const float3 ro = view.originScale.xyz;
     const float3 rd = quatRotate(view.orient, dirLocal);
 
-    // Hierarchical start: same logical-NDC tile map as the fragment.
+    // Hierarchical start: same logical-NDC tile map as the fragment. The
+    // UNJITTERED pixel picks the tile — a jittered lookup could cross into a
+    // neighbor tile whose cone start is not guaranteed for this ray (the
+    // shimmer margin covers sub-pixel wobble only within the owning tile).
     float startT = 0.0f;
     if (THRESH_CONE) {
-        const float2 tuv = clamp(ndc * 0.5f + 0.5f, 0.0f, 1.0f);
+        const float2 centerNdc = float2(
+            (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
+            1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+        const float2 tuv = clamp(centerNdc * 0.5f + 0.5f, 0.0f, 1.0f);
         const uint cw = coneTex.get_width();
         const uint ch = coneTex.get_height();
         const uint2 tile = uint2(min(uint(tuv.x * float(cw)), cw - 1u),
@@ -1726,6 +1760,37 @@ kernel void march_view_compute(
     outDepth.write(
         float4(clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f), 0.0f, 0.0f, 0.0f),
         gid.xy, gid.z);
+
+    if (THRESH_AUX) {
+        // World-space hit t; miss = −1 (see the contract comment above).
+        outT.write(float4(m.hit ? m.t : -1.0f, 0.0f, 0.0f, 0.0f),
+                   gid.xy, gid.z);
+
+        // Motion: where this frame's surface point sat LAST frame in march
+        // pixels — the same world point projected through the PREVIOUS
+        // frame's view (matrix mirror of the Mac pinhole formula). Miss uses
+        // the far point along the ray so rotation tracks the background.
+        // The CURRENT end is the JITTERED pixel — the position this sample
+        // actually images at — so a static camera yields motion 0 exactly
+        // (the resolve reprojects into the unjittered accumulation grid; a
+        // center-based end would smear history by −jitter every frame).
+        const ThreshViewUniforms prev = prevViews[gid.z];
+        const float prevRoomScale = max(prev.originScale.w, 1e-6f);
+        const float3 world = ro + rd * m.t;
+        const float3 local = quatRotate(
+            float4(-prev.orient.xyz, prev.orient.w),
+            world - prev.originScale.xyz) / prevRoomScale;
+        float2 motion = float2(0.0f);
+        const float4 pclip = prev.proj * float4(local, 1.0f);
+        if (pclip.w > 1e-6f) {
+            const float2 pndc = pclip.xy / pclip.w;
+            const float2 prevPixel = float2(
+                (pndc.x + 1.0f) * 0.5f * float(w),
+                (1.0f - pndc.y) * 0.5f * float(h));
+            motion = prevPixel - pixel;
+        }
+        outMotion.write(float4(motion, 0.0f, 0.0f), gid.xy, gid.z);
+    }
 }
 
 // -------------------- per-view hierarchical cone prepass --------------------

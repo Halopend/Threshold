@@ -28,6 +28,9 @@ struct SessionFrame {
     let dynamicEntries: [CatalogEntry]
     /// Zoom-rebase counter — total zoom depth = octave + resolved scale.zoom.
     let scaleOctave: Int32
+    /// Bumped on DE switch / scene apply / external-DE swap — shells reset
+    /// temporal-reconstruction history when it moves (the reset funnel).
+    let historyEpoch: UInt32
     /// Active external DE program — the encoder binds its pipeline/table
     /// instead of the context's built-in-only ones.
     let externalProgram: ExternalDEProgram?

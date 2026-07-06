@@ -29,11 +29,18 @@ public struct RenderRequest: Sendable {
     /// read by the interactive encoder to choose a pipeline. Offscreen/golden
     /// paths ignore it (they pass an explicit `specialized:` variant or none).
     public var tuning: RenderTuning
+    /// How hard the WORLD (not the camera) is morphing this frame, [0, 1] —
+    /// SessionCore derives it from the lane engine's parameter deltas
+    /// (params/ops/palette). Temporal reconstruction discounts history by it;
+    /// camera motion is deliberately excluded (reprojection's job). 0 for
+    /// offscreen/golden paths.
+    public var worldVolatility: Float = 0
 
     public init(uniforms: ThreshFrameUniforms, params: [Float],
                 ops: [ThreshWarpOp], palette: [GradientStop] = [],
                 width: Int, height: Int, renderScale: Float = 1,
-                tuning: RenderTuning = RenderTuning()) {
+                tuning: RenderTuning = RenderTuning(),
+                worldVolatility: Float = 0) {
         self.uniforms = uniforms
         self.params = params
         self.ops = ops
@@ -42,6 +49,7 @@ public struct RenderRequest: Sendable {
         self.height = height
         self.renderScale = renderScale
         self.tuning = tuning
+        self.worldVolatility = worldVolatility
     }
 }
 

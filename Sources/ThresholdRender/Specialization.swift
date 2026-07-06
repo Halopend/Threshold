@@ -344,13 +344,17 @@ extension GPUContext {
     /// Build the specialized PER-VIEW COMPUTE march (march_view_compute) for
     /// the compute backend, plus the per-view cone prepass when
     /// `spec.coneMarch` is set. Format-independent (the encoder owns the
-    /// intermediate textures), unlike the raster builder.
+    /// intermediate textures), unlike the raster builder. `auxOutputs` bakes
+    /// THRESH_AUX true — the temporal-reconstruction input variant (jittered
+    /// ray-gen + world-t/motion writes); the prepass never carries it (no aux
+    /// args there).
     func makeSpecializedViewCompute(
-        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec
+        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec,
+        auxOutputs: Bool = false
     ) throws -> SpecializedViewCompute {
         let pipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "march_view_compute",
-            deFunctions: builtinDEFunctions, spec: spec)
+            deFunctions: builtinDEFunctions, auxOutputs: auxOutputs, spec: spec)
         let table = try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized view-compute(\(deFunctionName)) DE table")
