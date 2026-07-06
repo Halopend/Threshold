@@ -19,6 +19,9 @@ public final class HandTracker: @unchecked Sendable {
     private let engine: HandGestureEngine
     private let arSession = ARKitSession()
     private let provider = HandTrackingProvider()
+    /// Previous frame's session time, for the engine's dt (render-thread
+    /// confined, like the rest of `update`).
+    private var lastTime: Double?
 
     public init(layout: CatalogLayout, mailbox: LaneMailbox, signals: SignalTable) {
         engine = HandGestureEngine(layout: layout, mailbox: mailbox, signals: signals)
@@ -28,6 +31,22 @@ public final class HandTracker: @unchecked Sendable {
     /// whenever the user edits a binding). Thread-safe.
     public func setBindings(_ table: GestureBindingTable) {
         engine.setBindings(table)
+    }
+
+    /// Suppress skeleton drives while the user is in UI panels. Thread-safe.
+    public func setUISuppressed(_ on: Bool) {
+        engine.setUISuppressed(on)
+    }
+
+    /// Per-source arming progress for the arming visualization. Thread-safe.
+    public func armingSnapshot() -> [GestureSource: Float] {
+        engine.armingSnapshot()
+    }
+
+    /// Drop in-flight gesture state without committing (scene load).
+    public func reset() {
+        engine.reset()
+        lastTime = nil
     }
 
     /// Request authorization + start the provider. Hand tracking denied is
@@ -62,14 +81,18 @@ public final class HandTracker: @unchecked Sendable {
     }
 
     /// Per-frame poll: map ARKit anchors to HandFrames and step the engine.
-    /// `sessionTime` is the render loop's frame time (session clock), so
-    /// binding freshness compares like with like.
-    public func update(sessionTime: Double) {
+    /// `sessionTime` is the render loop's frame time (session clock); `dt` is
+    /// derived from the previous frame (frame-rate-invariant gates need it).
+    /// `grabActive` = a two-hand world grab owns motion this frame, so
+    /// skeleton drives are suppressed (cross-stack arbiter).
+    public func update(sessionTime: Double, grabActive: Bool = false) {
+        let dt = lastTime.map { max(sessionTime - $0, 1e-4) } ?? (1.0 / 90.0)
+        lastTime = sessionTime
         let anchors = provider.latestAnchors
         engine.update(
             left: Self.handFrame(anchors.leftHand),
             right: Self.handFrame(anchors.rightHand),
-            sessionTime: sessionTime)
+            sessionTime: sessionTime, dt: dt, grabActive: grabActive)
     }
 
     // MARK: ARKit → HandFrame

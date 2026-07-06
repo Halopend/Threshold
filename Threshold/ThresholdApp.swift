@@ -544,7 +544,14 @@ final class VisionAppModel {
         self.hands = hands
         // Hands poll on the render loop's cadence, stamped with session time
         // (CompositorSession.onFrame contract) — set BEFORE the layer attaches.
-        session.onFrame = { time in hands.update(sessionTime: time) }
+        // Cross-stack arbiter: while a two-hand world grab owns the motion,
+        // the tracker suppresses its pinch-drives so grab and drives can't
+        // both move things off one gesture.
+        session.onFrame = { [weak session] time in
+            hands.update(
+                sessionTime: time,
+                grabActive: session?.worldGrab.isGrabbing() ?? false)
+        }
 
         self.mirror = ParameterMirror(
             layout: layout, snapshots: session.snapshots, commands: session.commands)
@@ -603,6 +610,11 @@ final class VisionAppModel {
                 // Focus Band → mic + UI for both the embedded and non-embedded
                 // paths (see the desktop shell's apply(scene:)).
                 setFocusBand(envelope.focusBand ?? .default)
+                // Drop in-flight camera/grab state so the new scene starts from
+                // its authored pose, not the previous scene's orbit/grab (the
+                // "gesture lane persists after scene load" footgun).
+                hands.reset()
+                session.worldGrab.reset()
                 guard envelope.embeddedDE != nil else {
                     mirror.applyScene(envelope)
                     return
@@ -694,6 +706,25 @@ struct VisionMainView: View {
                         }
                     } else {
                         await dismissImmersiveSpace()
+                    }
+                }
+            }
+            .task {
+                // Headless-capture seam (fps-testing "Path B" autopilot,
+                // step 1): open the immersive space on launch so simulator/
+                // device profiling runs need no UI interaction. Env-gated,
+                // inert otherwise. Retries because a launch-time open can
+                // race scene activation (the toggle's onChange reverts
+                // `immersed` on failure — that revert is the retry signal).
+                guard ProcessInfo.processInfo.environment["THRESHOLD_AUTO_IMMERSIVE"] == "1"
+                else { return }
+                for attempt in 0..<5 where !immersed {
+                    try? await Task.sleep(for: .seconds(attempt == 0 ? 1 : 2))
+                    if !immersed {
+                        ThresholdLog.session.notice(
+                            "auto-immersive: opening (attempt \(attempt + 1))")
+                        immersed = true
+                        try? await Task.sleep(for: .seconds(1))
                     }
                 }
             }
