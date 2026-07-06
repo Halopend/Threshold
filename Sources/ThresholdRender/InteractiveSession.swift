@@ -16,6 +16,7 @@
 
 import Foundation
 import Metal
+import os
 import QuartzCore
 import Synchronization
 import ThresholdCore
@@ -145,7 +146,22 @@ public final class InteractiveSession: @unchecked Sendable {
         guard shouldJoin else { return }
 
         stopRequested.store(true, ordering: .releasing)
-        started.wait()  // render thread has published its run loop
+        // BOUNDED waits, both of them: `stop()` typically runs on the main
+        // thread, and an unbounded join on a wedged render thread turns a
+        // render-side stall into a silent main-thread hang (beachball with no
+        // trail). On timeout: say so loudly and abandon the join — the thread
+        // closure retains `self`, so bailing leaks the thread, never crashes.
+        if started.wait(timeout: .now() + 5) == .timedOut {
+            // Also: without the semaphore's happens-before edge the run-loop
+            // handles below are unsafe to read, so there is nothing more we
+            // can legally do.
+            ThresholdLog.session.fault(
+                """
+                stop(): render thread never signaled start after 5s — it is \
+                wedged in setup; abandoning join (thread leaked)
+                """)
+            return
+        }
         if let source = stopSource {
             // Signaling a version-0 source stays PENDING even if the loop is
             // between runs — closes the check-then-run race without timers.
@@ -155,7 +171,13 @@ public final class InteractiveSession: @unchecked Sendable {
             CFRunLoopWakeUp(runLoop)
             CFRunLoopStop(runLoop)
         }
-        finished.wait()  // join
+        if finished.wait(timeout: .now() + 5) == .timedOut {  // join
+            ThresholdLog.session.fault(
+                """
+                stop(): render thread did not exit after 5s — likely blocked \
+                mid-frame (GPU stall?); abandoning join (thread leaked)
+                """)
+        }
     }
 
     // MARK: Render thread
@@ -187,16 +209,34 @@ public final class InteractiveSession: @unchecked Sendable {
             commands: commands,
             initialScene: initialScene)
 
-        guard let gpu = try? SessionGPUEncoder(context: context) else {
-            // No queue/buffers — nothing to render. The session ends; stop()
-            // still joins cleanly via the defer.
+        let gpu: SessionGPUEncoder
+        do {
+            gpu = try SessionGPUEncoder(context: context)
+        } catch {
+            // No queue/buffers — nothing to render. The session ends (the
+            // surface stays black); stop() still joins cleanly via the defer.
+            ThresholdLog.session.fault(
+                """
+                render session dead on arrival — GPU encoder init failed: \
+                \(String(describing: error), privacy: .public)
+                """)
             return
         }
 
         // Image export (captureImage command): renders the live frame's
         // request offscreen. Render-thread confined like everything else;
         // nil (allocation failure) just means exports never land.
-        let exporter = try? OffscreenRenderer(context: context)
+        let exporter: OffscreenRenderer?
+        do {
+            exporter = try OffscreenRenderer(context: context)
+        } catch {
+            exporter = nil
+            ThresholdLog.session.error(
+                """
+                export renderer init failed — image captures will never \
+                land: \(String(describing: error), privacy: .public)
+                """)
+        }
 
         // Profiling instrumentation (render-thread confined). Signposts are
         // always on (free when no Instruments tool is attached); the periodic
@@ -279,10 +319,23 @@ public final class InteractiveSession: @unchecked Sendable {
                 exportRequest.width = capture.width
                 exportRequest.height = capture.height
                 exportRequest.renderScale = 1
-                if let result = try? exporter.render(
-                    exportRequest, program: frame.externalProgram) {
+                do {
+                    let result = try exporter.render(
+                        exportRequest, program: frame.externalProgram)
                     capture.slot.publish(result)
+                } catch {
+                    // Nothing lands in the slot — whoever polls it must not
+                    // wait forever on a capture that will never arrive.
+                    ThresholdLog.render.error(
+                        """
+                        image capture failed \
+                        (\(capture.width)x\(capture.height)): \
+                        \(String(describing: error), privacy: .public)
+                        """)
                 }
+            } else {
+                ThresholdLog.render.error(
+                    "image capture requested but the export renderer never initialized")
             }
         }
 
@@ -351,6 +404,16 @@ final class SessionGPUEncoder {
     /// matches the stats ring and the layer's drawable pool; the wait is the
     /// deliberate pacing point (it shows up as `encode` in the profiler).
     private let inflight = DispatchSemaphore(value: 3)
+    /// GPU-fault check for every completed command buffer (observability
+    /// phase 1) — a faulting GPU must never again freeze the image silently.
+    private let health = CommandBufferHealth(shell: "session")
+    /// The most recently committed command buffers, parallel to statsRing —
+    /// held ONLY so a stall can report what each in-flight frame is doing.
+    /// Written on the render thread; `status` reads are thread-safe.
+    private var pending: [MTLCommandBuffer?] = [nil, nil, nil]
+    /// Consecutive `inflight` timeouts (render-thread confined; resets on
+    /// recovery). Rate-limits the stall logging.
+    private var stalls: UInt64 = 0
     /// Direct-call DE pipeline variants (Specialization.swift). `lookup` is
     /// non-blocking: frames render generic until a variant compiles.
     private let specializations: SpecializationCache
@@ -454,17 +517,44 @@ final class SessionGPUEncoder {
               let opsBuffer = try? context.makeOpsBuffer(request.ops)
         else { return lastDiagnostics }
 
-        // Pace the loop to the GPU: block until a frame slot frees. Every
-        // path after this point either commits (the completed handler
+        // Pace the loop to the GPU: block until a frame slot frees. BOUNDED —
+        // an unbounded wait here is how a GPU fault used to freeze the app
+        // with no diagnostics: completion handlers stop firing, the third
+        // wait blocks the render thread forever, and Xcode's hang detector
+        // (main-thread only) never notices. On timeout, report what each
+        // in-flight buffer is doing and drop the frame; the loop stays alive
+        // to recover if the GPU does.
+        if inflight.wait(timeout: .now() + 1) == .timedOut {
+            stalls += 1
+            if stalls <= 5 || stalls % 30 == 0 {
+                let states = pending.compactMap { $0 }
+                    .map { CommandBufferHealth.describe($0.status) }
+                    .joined(separator: ", ")
+                ThresholdLog.render.fault(
+                    """
+                    render pipeline stalled (#\(self.stalls)): no command \
+                    buffer completed in 1s — dropping frame; in-flight: \
+                    [\(states, privacy: .public)]
+                    """)
+            }
+            return lastDiagnostics
+        }
+        if stalls > 0 {
+            ThresholdLog.render.notice(
+                "render pipeline recovered after \(self.stalls) dropped frame(s)")
+            stalls = 0
+        }
+        // Every path after this point either commits (the completed handler
         // signals) or drops the frame (the defer signals).
-        inflight.wait()
         var committed = false
         defer { if !committed { inflight.signal() } }
 
-        guard let commandBuffer = queue.makeCommandBuffer() else { return lastDiagnostics }
+        guard let commandBuffer = CommandBufferHealth.makeCommandBuffer(on: queue)
+        else { return lastDiagnostics }
         commandBuffer.label = "session frame"
 
         let statsBuffer = statsRing[ringCursor]
+        let pendingSlot = ringCursor
         ringCursor = (ringCursor + 1) % statsRing.count
 
         // Zero the step counter on the ring slot's reuse (blit fill: ordered
@@ -683,7 +773,9 @@ final class SessionGPUEncoder {
         nonisolated(unsafe) let completedStats = statsBuffer
         let slot = statsSlot
         let inflight = inflight
+        let health = health
         commandBuffer.addCompletedHandler { completed in
+            health.check(completed)
             let steps = UInt64(completedStats.contents().load(as: UInt32.self))
             // Command-buffer GPU timestamps, not ambient time (Invariant 9).
             let ms = max(0, completed.gpuEndTime - completed.gpuStartTime) * 1000.0
@@ -692,6 +784,7 @@ final class SessionGPUEncoder {
         }
         commandBuffer.commit()
         committed = true
+        pending[pendingSlot] = commandBuffer
         return lastDiagnostics
     }
 }

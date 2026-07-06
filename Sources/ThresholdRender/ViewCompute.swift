@@ -40,6 +40,8 @@ final class ViewComputeEncoder {
     private let statsRing: [MTLBuffer]
     private var ringCursor = 0
     private let statsSlot = FrameStatsSlot()
+    /// GPU-fault check for completed command buffers (observability phase 1).
+    private let health = CommandBufferHealth(shell: "compositor.compute")
     private let specializations: ViewComputeSpecializationCache
     /// Intermediate (color, depth) array pairs + cone textures, one per
     /// in-flight slot; rebuilt on size/slice change. Cross-frame slot reuse
@@ -251,7 +253,9 @@ final class ViewComputeEncoder {
         // completed, on Metal's completion thread; FrameStatsSlot is Sendable.
         nonisolated(unsafe) let completedStats = statsBuffer
         let slot = statsSlot
+        let health = health
         commandBuffer.addCompletedHandler { completed in
+            health.check(completed)
             let steps = UInt64(completedStats.contents().load(as: UInt32.self))
             let ms = max(0, completed.gpuEndTime - completed.gpuStartTime) * 1000.0
             slot.store(gpuMilliseconds: ms, totalSteps: steps)

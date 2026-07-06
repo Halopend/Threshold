@@ -17,13 +17,26 @@ import Synchronization
 /// tracking — needed for replace composition and neutral handling).
 struct Bitset {
     private(set) var words: [UInt64]
+    /// Logical size. The backing `words` round `bitCount` up to a multiple of
+    /// 64, so the last word has PHANTOM high bits at positions
+    /// `bitCount ..< words.count*64` that are valid to store but do NOT
+    /// correspond to any slot. `forEachSetBit` must never surface them: the
+    /// engine indexes dense per-slot arrays (`tauByLane`, `current`, …) all
+    /// sized exactly `bitCount == slotCount` with the visited index, so a
+    /// phantom bit would be an out-of-bounds read that crashes the render
+    /// thread. `contains` is likewise clamped. (Every legitimate `insert`
+    /// already sits below `bitCount` — the engine's write paths precondition
+    /// `slot < slotCount` — so this is defense in depth, not a behavior change.)
+    let bitCount: Int
 
     init(bitCount: Int) {
+        self.bitCount = bitCount
         words = [UInt64](repeating: 0, count: (bitCount + 63) / 64)
     }
 
     func contains(_ i: Int) -> Bool {
-        (words[i >> 6] >> UInt64(i & 63)) & 1 == 1
+        guard i >= 0, i < bitCount else { return false }
+        return (words[i >> 6] >> UInt64(i & 63)) & 1 == 1
     }
 
     mutating func insert(_ i: Int) {
@@ -40,12 +53,20 @@ struct Bitset {
 
     var isEmpty: Bool { words.allSatisfy { $0 == 0 } }
 
-    /// Visit set bit indices in ascending order.
+    /// Visit set bit indices in ascending order. Indices at or beyond
+    /// `bitCount` (phantom high bits in the final word — see `bitCount`) are
+    /// never surfaced: within a word bits are visited low→high, so the first
+    /// out-of-range index means the rest of that word is out of range too, and
+    /// no earlier word can hold one. This keeps every visited index a valid
+    /// subscript into the engine's slot-indexed arrays.
     func forEachSetBit(_ body: (Int) -> Void) {
         for (wi, w) in words.enumerated() {
             var word = w
+            let base = wi << 6
             while word != 0 {
-                body(wi << 6 | word.trailingZeroBitCount)
+                let index = base | word.trailingZeroBitCount
+                if index >= bitCount { break }
+                body(index)
                 word &= word &- 1
             }
         }

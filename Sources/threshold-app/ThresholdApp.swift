@@ -4,6 +4,7 @@
 // flows through the session's mailboxes, and the render loop lives on the
 // session's dedicated thread. This file should stay boring.
 
+import os
 import SwiftUI
 import ThresholdCore
 import ThresholdShaderIR
@@ -93,7 +94,8 @@ final class AppModel {
                 }
                 audioEnabled = true
             } catch {
-                print("audio start failed: \(error)")
+                ThresholdLog.audio.error(
+                    "audio start failed: \(String(describing: error), privacy: .public)")
                 audioEnabled = false
             }
         } else {

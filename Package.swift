@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "ThresholdShaderIR", targets: ["ThresholdShaderIR"]),
         .library(name: "ThresholdRender", targets: ["ThresholdRender"]),
         .library(name: "ThresholdUI", targets: ["ThresholdUI"]),
+        .library(name: "ThresholdExporters", targets: ["ThresholdExporters"]),
         .library(name: "ThresholdInputs", targets: ["ThresholdInputs"]),
         .executable(name: "threshold-render", targets: ["threshold-render"]),
         .executable(name: "threshold-app", targets: ["threshold-app"]),
@@ -22,7 +23,8 @@ let package = Package(
         .target(
             name: "ThresholdShaderABI"
         ),
-        // Catalog, modulation lanes, signals, clock, persistence. Foundation + simd only.
+        // Catalog, modulation lanes, signals, clock, persistence, unified
+        // logging surface (ThresholdLog). Foundation + simd + os only.
         .target(
             name: "ThresholdCore"
         ),
@@ -47,6 +49,13 @@ let package = Package(
             // user's writable folder. Not named "Resources" (that dir name
             // breaks iOS/visionOS codesign — see build-quirks memory).
             resources: [.copy("BundledContent")]
+        ),
+        // Scene → external-format exporters (Shadertoy GLSL, …). Pure
+        // text generation over the scene envelope + DE registry: no Metal,
+        // no render dependency, so it builds and tests on any platform.
+        .target(
+            name: "ThresholdExporters",
+            dependencies: ["ThresholdCore", "ThresholdShaderIR"]
         ),
         // Input sources: audio analysis (AVAudioEngine + vDSP) publishing
         // into the SignalTable. Hand tracking/gestures land here later.
@@ -82,6 +91,10 @@ let package = Package(
         .testTarget(
             name: "ThresholdUITests",
             dependencies: ["ThresholdUI", "ThresholdCore", "ThresholdRender"]
+        ),
+        .testTarget(
+            name: "ThresholdExportersTests",
+            dependencies: ["ThresholdExporters", "ThresholdCore", "ThresholdShaderIR"]
         ),
         .testTarget(
             name: "ThresholdInputsTests",

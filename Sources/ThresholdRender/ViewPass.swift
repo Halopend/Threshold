@@ -125,6 +125,8 @@ final class ViewPassEncoder {
     private let statsRing: [MTLBuffer]
     private var ringCursor = 0
     private let statsSlot = FrameStatsSlot()
+    /// GPU-fault check for completed command buffers (observability phase 1).
+    private let health = CommandBufferHealth(shell: "compositor.raster")
     /// Specialized (direct-call, inlined DE) raster variants — the visionOS
     /// counterpart of SessionGPUEncoder's SpecializationCache. Non-blocking:
     /// frames render generic until a variant compiles off-thread. nil when the
@@ -406,7 +408,9 @@ final class ViewPassEncoder {
         // completed, on Metal's completion thread; FrameStatsSlot is Sendable.
         nonisolated(unsafe) let completedStats = statsBuffer
         let slot = statsSlot
+        let health = health
         commandBuffer.addCompletedHandler { completed in
+            health.check(completed)
             let steps = UInt64(completedStats.contents().load(as: UInt32.self))
             let ms = max(0, completed.gpuEndTime - completed.gpuStartTime) * 1000.0
             slot.store(gpuMilliseconds: ms, totalSteps: steps)

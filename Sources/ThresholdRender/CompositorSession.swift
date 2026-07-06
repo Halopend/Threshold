@@ -24,6 +24,7 @@ import ARKit
 import CompositorServices
 import Foundation
 import Metal
+import os
 import Synchronization
 import ThresholdCore
 import ThresholdShaderABI
@@ -172,7 +173,11 @@ public final class CompositorSession: @unchecked Sendable {
             commands: commands,
             initialScene: initialScene)
 
-        guard let queue = context.device.makeCommandQueue() else { return }
+        guard let queue = context.device.makeCommandQueue() else {
+            ThresholdLog.session.fault(
+                "compositor session dead on arrival — no command queue")
+            return
+        }
         queue.label = "threshold.compositor.queue"
 
         let layered = layer.configuration.layout == .layered
@@ -183,15 +188,31 @@ public final class CompositorSession: @unchecked Sendable {
         var computeGPU: ViewComputeEncoder? = nil
         switch backend {
         case .fragment:
-            raster = try? ViewPassEncoder(
-                context: context,
-                colorFormat: layer.configuration.colorFormat,
-                depthFormat: layer.configuration.depthFormat,
-                maxViewCount: layered ? 2 : 1)
+            do {
+                raster = try ViewPassEncoder(
+                    context: context,
+                    colorFormat: layer.configuration.colorFormat,
+                    depthFormat: layer.configuration.depthFormat,
+                    maxViewCount: layered ? 2 : 1)
+            } catch {
+                ThresholdLog.session.fault(
+                    """
+                    compositor session dead on arrival — raster encoder init \
+                    failed: \(String(describing: error), privacy: .public)
+                    """)
+            }
         case .compute:
-            computeGPU = try? ViewComputeEncoder(
-                context: context,
-                colorFormat: layer.configuration.colorFormat)
+            do {
+                computeGPU = try ViewComputeEncoder(
+                    context: context,
+                    colorFormat: layer.configuration.colorFormat)
+            } catch {
+                ThresholdLog.session.fault(
+                    """
+                    compositor session dead on arrival — compute encoder init \
+                    failed: \(String(describing: error), privacy: .public)
+                    """)
+            }
         }
         guard raster != nil || computeGPU != nil else { return }
         func lastCompletedStats() -> FrameStatsSlot.Stats {
@@ -206,7 +227,13 @@ public final class CompositorSession: @unchecked Sendable {
             do {
                 try await arSession.run([worldTracking])
             } catch {
-                print("compositor world tracking failed: \(error)")
+                // Non-fatal but very visible in use: no head anchor means the
+                // eyes render from the identity pose.
+                ThresholdLog.session.error(
+                    """
+                    compositor world tracking failed: \
+                    \(String(describing: error), privacy: .public)
+                    """)
             }
         }
 
@@ -351,7 +378,7 @@ public final class CompositorSession: @unchecked Sendable {
             // buffer (the GPU work itself lands in gpuMilliseconds, next frame).
             let encodeStart = Mono.now()
             let encodeState = sp.beginInterval("encode")
-            if let commandBuffer = queue.makeCommandBuffer() {
+            if let commandBuffer = CommandBufferHealth.makeCommandBuffer(on: queue) {
                 commandBuffer.label = "compositor frame"
                 if let raster {
                     encode(

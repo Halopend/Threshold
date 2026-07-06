@@ -107,7 +107,11 @@ public final class HandTracker: @unchecked Sendable {
             do {
                 try await arSession.run([provider])
             } catch {
-                print("hand tracking unavailable: \(error)")
+                ThresholdLog.hands.error(
+                    """
+                    hand tracking unavailable — gesture lane stays quiet: \
+                    \(String(describing: error), privacy: .public)
+                    """)
             }
         }
     }
