@@ -110,7 +110,7 @@ public struct InputSettingsSection: View {
             #if os(macOS)
             Toggle("Keyboard Navigation", isOn: $keyboardNav)
             if keyboardNav {
-                Text("← → orbit · ↑ ↓ pitch · W/S or +/− zoom · ⇧ moves faster · R resets the view")
+                Text("Click the view first — ← → orbit · ↑ ↓ pitch · W/S or +/− zoom · ⇧ moves faster · R resets the view")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -126,35 +126,30 @@ public struct InputSettingsSection: View {
 #if os(macOS)
 import AppKit
 
-/// Keyboard camera control: a local keyDown monitor that nudges the camera
-/// rig through `CameraInteraction` (gesture-lane writes, same as drag/pinch).
-/// Keys pass through untouched while a text control has focus or when the
-/// user disables keyboard navigation in Settings ▸ Input.
+/// Keyboard camera control: nudges the camera rig through `CameraInteraction`
+/// (gesture-lane writes, same as drag/pinch). Handled by the render view's
+/// own `keyDown` — keys reach the camera ONLY while the render view is first
+/// responder (the user clicked it). The previous design was an app-wide
+/// NSEvent monitor, which stole arrows/W/S/R/+/− from every focused control
+/// in every window and read as fields false-triggering on desktop.
 @MainActor
 public final class KeyboardCameraNav {
     public static let enabledKey = "threshold.input.keyboardNav"
 
-    // No deinit cleanup: shells own the lifecycle (install in start, remove
-    // in stop) and MainActor state is unreachable from a nonisolated deinit.
-    private var monitor: Any?
+    private weak var surface: RenderSurface?
 
     public init() {}
 
-    public func install(camera: CameraInteraction) {
-        guard monitor == nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Local event monitors fire on the main thread; only the Bool
-            // crosses the assumeIsolated boundary (NSEvent is not Sendable).
-            let consumed = MainActor.assumeIsolated {
-                Self.handle(event, camera: camera)
-            }
-            return consumed ? nil : event
+    public func install(surface: RenderSurface, camera: CameraInteraction) {
+        self.surface = surface
+        surface.onKeyDown = { event in
+            MainActor.assumeIsolated { Self.handle(event, camera: camera) }
         }
     }
 
     public func remove() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
+        surface?.onKeyDown = nil
+        surface = nil
     }
 
     /// Orbit step per key press (radians, before user tuning); shift ×4.
@@ -166,8 +161,6 @@ public final class KeyboardCameraNav {
     static func handle(_ event: NSEvent, camera: CameraInteraction) -> Bool {
         guard UserDefaults.standard.object(forKey: enabledKey) == nil
             || UserDefaults.standard.bool(forKey: enabledKey) else { return false }
-        // Never steal keys from text editing (scene-name field, etc).
-        if event.window?.firstResponder is NSText { return false }
         // Leave command/option chords to menus and the system.
         if !event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
             return false

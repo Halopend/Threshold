@@ -53,6 +53,16 @@ public final class RenderSurface {
         set { (view as? MetalLayerHostView)?.onDragEnded = newValue }
     }
 
+    /// Key-down callback, fired ONLY while the render view is first responder
+    /// (the user clicked the view). Return true to consume the event. This
+    /// replaces the old app-wide NSEvent monitor, which hijacked arrow keys
+    /// and W/S/R/+/− from every control in every window — the source of
+    /// "fields changing by themselves" while using the sidebar.
+    public var onKeyDown: ((NSEvent) -> Bool)? {
+        get { (view as? MetalLayerHostView)?.onKeyDown }
+        set { (view as? MetalLayerHostView)?.onKeyDown = newValue }
+    }
+
     public init() {
         let layer = CAMetalLayer()
         InteractiveSession.configure(layer: layer)  // single source of truth
@@ -71,18 +81,36 @@ final class MetalLayerHostView: NSView {
     var onScroll: ((CGFloat) -> Void)?
     var onDragChanged: ((CGSize) -> Void)?
     var onDragEnded: ((CGSize) -> Void)?
+    var onKeyDown: ((NSEvent) -> Bool)?
 
     /// Window-space location of the current drag's mouse-down, or nil when no
     /// drag is in flight. Cumulative translation is measured from here so the
     /// contract matches SwiftUI's `DragGesture` (which the shell's camera
     /// code was written against).
     private var dragOrigin: NSPoint?
+    /// A plain click must not orbit: drags only start publishing once the
+    /// pointer has moved past this dead zone (window points).
+    private static let dragDeadZone: CGFloat = 3
+    private var dragStarted = false
 
     init(metalLayer: CAMetalLayer) {
         self.metalLayer = metalLayer
         super.init(frame: .zero)
         wantsLayer = true
         layer = metalLayer
+        focusRingType = .none
+    }
+
+    // MARK: Keyboard (focus-scoped, not app-wide)
+
+    /// Camera keys work only while this view is first responder — clicking
+    /// the render view claims focus, clicking any sidebar control gives it
+    /// back. No other window or control ever loses keys to camera nav.
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        super.keyDown(with: event)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -100,11 +128,13 @@ final class MetalLayerHostView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
         guard onDragChanged != nil || onDragEnded != nil else {
             super.mouseDown(with: event)
             return
         }
         dragOrigin = event.locationInWindow
+        dragStarted = false
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -112,7 +142,12 @@ final class MetalLayerHostView: NSView {
             super.mouseDragged(with: event)
             return
         }
-        onDragChanged?(translation(from: origin, to: event.locationInWindow))
+        let t = translation(from: origin, to: event.locationInWindow)
+        if !dragStarted {
+            guard hypot(t.width, t.height) > Self.dragDeadZone else { return }
+            dragStarted = true
+        }
+        onDragChanged?(t)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -121,6 +156,10 @@ final class MetalLayerHostView: NSView {
             return
         }
         dragOrigin = nil
+        // A click (or sub-dead-zone jitter) commits nothing — only real
+        // drags reach the camera, so focusing the window can't nudge it.
+        guard dragStarted else { return }
+        dragStarted = false
         onDragEnded?(translation(from: origin, to: event.locationInWindow))
     }
 

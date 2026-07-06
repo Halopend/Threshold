@@ -161,7 +161,7 @@ final class AppModel {
         mirror.startPolling()
         mirror.setQualityGovernor(.platformDefault)
         #if os(macOS)
-        keyboardNav.install(camera: camera)
+        keyboardNav.install(surface: surface, camera: camera)
         #endif
     }
 

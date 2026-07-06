@@ -81,7 +81,7 @@ final class AppModel {
         session.start()
         mirror.startPolling()
         watchdog.start()
-        keyboardNav.install(camera: camera)
+        keyboardNav.install(surface: surface, camera: camera)
         // Quality governor ON by default (ADR-003): without it, any scene
         // heavier than the refresh budget misses vsyncs and the app reads as
         // "stuttering" out of the box (docs/perf-notes.md, stutter block).
