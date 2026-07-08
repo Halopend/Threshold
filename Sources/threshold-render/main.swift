@@ -121,6 +121,19 @@ func doubleValue(_ s: String, for flag: String) -> Double {
     return v
 }
 
+/// Human-readable thermal pressure at measurement time — recorded per bench
+/// run so a throttled (warm) run's slow numbers are flagged, not mistaken for a
+/// regression (ADR-006 Phase 0).
+func thermalString(_ s: ProcessInfo.ThermalState) -> String {
+    switch s {
+    case .nominal: return "nominal"
+    case .fair: return "fair"
+    case .serious: return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
+    }
+}
+
 // MARK: - Catalog wiring
 
 /// Engine catalog + every built-in DE's params registered under its
@@ -321,6 +334,10 @@ if let embedded = envelope.embeddedDE {
 // batch tool — synchronous compile is fine here; the live session compiles
 // asynchronously through SpecializationCache).
 let specialized: SpecializedMarch?
+// The MarchSpec behind the measured pipeline, retained so --bench can build a
+// stats-ON twin of it for the deterministic step-count probe (ADR-006 Phase 0)
+// without perturbing the atomic-free timing pass.
+var benchSpec: MarchSpec? = nil
 if opts.specialize, program == nil {
     do {
         // Bake the function-constant knobs each env flag enables, from the
@@ -364,6 +381,7 @@ if opts.specialize, program == nil {
             // lever, so it is opt-in even on the perf pipeline until the
             // A/B (perf block 15) settles a default.
             lodFalloff: flags["THRESHOLD_LOD_FALLOFF"].flatMap(Int.init))
+        benchSpec = spec
         specialized = try context.makeSpecializedMarch(
             deFunctionName: descriptor.mslFunctionName, spec: spec)
         if !opts.quiet {
@@ -407,8 +425,11 @@ let envEpsScale = ProcessInfo.processInfo.environment["THRESHOLD_EPS_SCALE"]
     .flatMap(Float.init) ?? 1
 
 /// `readback: false` skips the pixel copy for timing-only bench frames.
+/// `specializedOverride` swaps in an alternate variant of the measured pipeline
+/// (the bench step-count probe passes a stats-ON twin) — nil uses the default.
 @MainActor
-func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult {
+func renderOneFrame(_ frame: Int, readback: Bool = true,
+                    specializedOverride: SpecializedMarch? = nil) throws -> RenderResult {
     clock.advance()
     let resolved = engine.resolve()
 
@@ -487,7 +508,8 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
         palette: scene.palette?.stops ?? [],
         width: opts.width, height: opts.height)
     return try renderer.render(request, program: program,
-                               specialized: specialized, readback: readback,
+                               specialized: specializedOverride ?? specialized,
+                               readback: readback,
                                skipVolume: skipVolume)
 }
 
@@ -510,12 +532,39 @@ if opts.benchFrames > 0 {
             benchSteps += r.stats.totalSteps
             lastResult = r
         }
+        // --- Phase-0 instrumentation (ADR-006) -------------------------------
+        // Thermal pressure at the end of the (warmest) timing window.
+        let thermal = thermalString(ProcessInfo.processInfo.thermalState)
+        // Deterministic per-frame march step count. The specialized timing pass
+        // is atomic-free (statsEnabled baked false) so GPU-ms stays clean — so
+        // recover the count from a stats-ON twin of the SAME spec, run AFTER the
+        // timing loop so the measured samples are byte-for-byte unchanged. A
+        // generic run already counted inline (benchSteps > 0); reuse that.
+        var stepsPerFrame: UInt64 = benchSteps > 0
+            ? benchSteps / UInt64(opts.benchFrames) : 0
+        if stepsPerFrame == 0, program == nil, var statsSpec = benchSpec {
+            statsSpec.statsEnabled = true
+            if let twin = try? context.makeSpecializedMarch(
+                deFunctionName: descriptor.mslFunctionName, spec: statsSpec) {
+                var probe: [UInt64] = []
+                for frame in 0..<min(3, opts.benchFrames) {
+                    let r = try renderOneFrame(opts.benchWarmup + frame,
+                                               readback: false,
+                                               specializedOverride: twin)
+                    probe.append(r.stats.totalSteps)
+                }
+                probe.sort()
+                if !probe.isEmpty { stepsPerFrame = probe[probe.count / 2] }
+            }
+        }
         let result = FrameBenchmark.summarize(
             warmup: max(0, opts.benchWarmup), samples: samples,
-            totalSteps: benchSteps)
+            totalSteps: benchSteps, stepsPerFrame: stepsPerFrame,
+            thermalState: thermal)
         print("bench \(opts.width)x\(opts.height) de=\(descriptor.key) "
             + "ops=\(ops.count)\(specialized != nil ? " specialized" : ""): "
             + result.summaryLine)
+        print("      " + result.qualityLine)
         if let path = opts.benchJSONPath {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
