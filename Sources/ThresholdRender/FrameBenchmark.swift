@@ -25,12 +25,37 @@ public enum FrameBenchmark {
         /// Steady-state throughput implied by the median GPU frame time.
         public let medianFPS: Double
         public let totalSteps: UInt64
+        /// Sample standard deviation of the GPU frame times (noise band).
+        public let stdevMs: Double
+        /// Coefficient of variation `stdev/mean` as a percent — the
+        /// noise-relative-to-signal figure a regression must clear.
+        public let covPct: Double
+        /// Deterministic march step count of ONE measured-pipeline frame,
+        /// recovered from a stats-on twin so the timing pass stays atomic-free.
+        /// 0 when unmeasured (e.g. generic pipeline already counted inline).
+        public let stepsPerFrame: UInt64
+        /// `medianMs` attributed per march step — separates "fewer steps" from
+        /// "faster steps" across optimization rounds. 0 when `stepsPerFrame` is.
+        public let nsPerStep: Double
+        /// `ProcessInfo.thermalState` at measurement time — a warm run's slow
+        /// numbers carry this flag instead of masquerading as a regression.
+        public let thermalState: String
 
         public var summaryLine: String {
             String(format: "median %.2f ms (%.1f fps) mean %.2f p95 %.2f "
                    + "min %.2f max %.2f over %d frames",
                    medianMs, medianFPS, meanMs, p95Ms, minMs, maxMs,
                    measuredFrames)
+        }
+
+        /// Second line: measurement-quality context (noise, step attribution,
+        /// thermal) — the figures Phase-0 instrumentation added (ADR-006).
+        public var qualityLine: String {
+            let noise = String(format: "cov %.1f%% (σ %.2f ms)", covPct, stdevMs)
+            let thermal = "thermal \(thermalState)"
+            guard stepsPerFrame > 0 else { return "\(noise) · \(thermal)" }
+            return String(format: "%@ · %llu steps/frame @ %.1f ns/step · %@",
+                          noise, stepsPerFrame, nsPerStep, thermal)
         }
     }
 
@@ -57,24 +82,41 @@ public enum FrameBenchmark {
     }
 
     /// Pure statistics over already-collected samples (tests use this
-    /// directly; `run` is the driver).
+    /// directly; `run` is the driver). `stepsPerFrame`/`thermalState` are
+    /// run-context the caller measures separately (a stats-on twin and
+    /// `ProcessInfo`) — defaulted so non-bench callers are unaffected.
     public static func summarize(
-        warmup: Int, samples: [Double], totalSteps: UInt64
+        warmup: Int, samples: [Double], totalSteps: UInt64,
+        stepsPerFrame: UInt64 = 0, thermalState: String = "unknown"
     ) -> Result {
         precondition(!samples.isEmpty)
         let sorted = samples.sorted()
         let median = percentile(sorted, 0.5)
+        let mean = samples.reduce(0, +) / Double(samples.count)
+        // Sample variance (n−1); 0 for a single frame.
+        let variance = samples.count > 1
+            ? samples.reduce(0) { $0 + ($1 - mean) * ($1 - mean) }
+                / Double(samples.count - 1)
+            : 0
+        let stdev = variance.squareRoot()
+        let nsPerStep = stepsPerFrame > 0
+            ? median * 1_000_000.0 / Double(stepsPerFrame) : 0
         return Result(
             warmupFrames: warmup,
             measuredFrames: samples.count,
             gpuMsSamples: samples,
-            meanMs: samples.reduce(0, +) / Double(samples.count),
+            meanMs: mean,
             medianMs: median,
             p95Ms: percentile(sorted, 0.95),
             minMs: sorted.first!,
             maxMs: sorted.last!,
             medianFPS: median > 0 ? 1000.0 / median : .infinity,
-            totalSteps: totalSteps)
+            totalSteps: totalSteps,
+            stdevMs: stdev,
+            covPct: mean > 0 ? stdev / mean * 100 : 0,
+            stepsPerFrame: stepsPerFrame,
+            nsPerStep: nsPerStep,
+            thermalState: thermalState)
     }
 
     /// Linear-interpolated percentile over pre-sorted samples, q ∈ [0, 1].

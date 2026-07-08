@@ -621,3 +621,97 @@ original 3x audit is either PORTED (1,2,3,5,7,9,10 + fast-math), REFUTED
 (8), or REMAINS by design (4: redundant with the cone prepass's empty-space
 skip; 6/11: sub-ms hit-shading tail, revisit only if a scene shows a
 shading-bound profile; 12–14: launch-latency, not steady-state ms).
+
+## Instrumentation — 2026-07-07 (ADR-006 Phase 0)
+
+Before optimizing the sphere-tracer hard, the harness was made to answer *why*
+a number moved, not just *that* it moved. Three additions, all in
+`bench-suite.sh` + `FrameBenchmark`/`threshold-render`:
+
+**ns/step is back, without contaminating the timing pass.** `--bench` without
+`--stats` bakes `statsEnabled = false` (function_constant 7), so the measured
+frames run atomic-free and GPU-ms is clean — but that left `totalSteps: 0` and
+no way to separate "fewer steps" from "faster steps." Fix: after the timing
+loop, the CLI builds a stats-ON *twin* of the exact same `MarchSpec` and renders
+a few frames through it to recover the deterministic per-frame step count (same
+pixels every frame ⇒ constant), then reports `ns/step = medianMs·1e6 /
+stepsPerFrame`. The timing samples are byte-for-byte unchanged (the probe runs
+after them), so history stays comparable. Generic runs already count inline and
+skip the twin.
+
+**Noise band + thermal.** Every run now records `cov% = σ/mean` (sample stdev)
+and `ProcessInfo.thermalState`. A regression has to clear the noise band to be
+real; a `serious`/`critical` thermal tag explains a slow run instead of letting
+it masquerade as a regression. (Observed: cov ≈ 1–6 % at 1024²–2048²/260 f; it
+balloons at tiny frame counts — trust ≥120 f.)
+
+**Baseline Δ.** `--set-baseline` snapshots the per-res medians to
+`bench-results/baseline.json`; subsequent runs print `Δ%` vs it.
+`--strict-baseline [--tol N]` (default 3 %) trips the suite on a median
+regression at ANY resolution — orthogonal to the existing absolute 2048² ≥70 fps
+floor. All of this lands in `history.jsonl` (additive keys) + the console;
+`history.csv` keeps its legacy 16-column schema. `BENCH_RESULTS_DIR=…` redirects
+the sink for scratch/CI runs.
+
+**Still manual — the ALU-bound premise (item 2).** The "≈70 % ALU" figure that
+justifies the whole ALU-first optimization plan is inherited from the *legacy*
+renderer (`perf-port-audit.md`) and has **never been re-measured on this
+kernel**. The harness has no GPU counters and adding a robust headless
+`MTLCounterSampleBuffer` path is device/OS-gated and fragile, so this stays a
+one-time manual capture, to be done before Phase 2:
+
+1. Build the app via Xcode; run a stress scene (warped-bulb or Stress_test) at
+   2048².
+2. Xcode ▸ Debug ▸ Capture GPU Frame (or Instruments ▸ Metal System Trace).
+3. Select the `march_offscreen` / specialized march kernel; open the Shader
+   Profiler → **limiter/occupancy** view. Read the ALU vs memory vs
+   control-flow breakdown and the achieved occupancy.
+4. Record the numbers here with the scene + device. If the kernel is *not*
+   ALU-bound, the Phase-2 lever ordering (occupancy/DCE first) is re-prioritized
+   before any march-math micro-opt.
+
+## SkipVolume A/B — 2026-07-07 (measured, decisive)
+
+First real measurement of the world-space empty-space skip volume (ADR-006
+Phase 2). Isolation design: `noskip`/`hash`/`dense` are ALL generic (no cone, no
+specialization, atomic-on) so steps AND ms are comparable; `spec+cone` is the
+shipping reference. 1024², 120 f, grid 64. Δ vs `generic, no skip`.
+
+| Scene | config | median ms | steps/frame | ns/step | Δsteps | Δms |
+|---|---|---|---|---|---|---|
+| default-bulb | generic no-skip | 6.10 | 18.86 M | 0.32 | — | — |
+| | + skip hashed | 11.97 | 16.28 M | 0.74 | −13.7% | **+96.4%** |
+| | + skip dense | 9.95 | 16.28 M | 0.61 | −13.7% | **+63.2%** |
+| | spec+cone (ref) | 1.85 | 4.52 M | 0.41 | −76.1% | −69.6% |
+| bench-mandelbox | generic no-skip | 11.02 | 15.94 M | 0.69 | — | — |
+| | + skip hashed | 12.71 | 15.94 M | 0.80 | +0.0% | +15.3% |
+| | + skip dense | 11.46 | 15.94 M | 0.72 | +0.0% | +4.0% |
+| | spec+cone (ref) | 4.22 | 6.22 M | 0.68 | −61.0% | −61.7% |
+| menger-sponge | generic no-skip | 6.54 | 17.69 M | 0.37 | — | — |
+| | + skip hashed | 9.40 | 16.23 M | 0.58 | −8.2% | +43.6% |
+| | + skip dense | 8.52 | 16.23 M | 0.52 | −8.2% | +30.2% |
+| | spec+cone (ref) | 1.83 | 7.61 M | 0.24 | −57.0% | −72.0% |
+
+Findings:
+- **Step-shedding is real but modest and content-dependent** — −13.7% bulb,
+  −8.2% menger, **0.0% mandelbox** (matches the SkipVolumeTests hint: box-fold
+  DEs never over-estimate enough for a brick to prove empty). Occupancy data is
+  identical for hashed vs dense (same emptiness proof), only the lookup differs.
+- **Wall-clock LOSS on every scene (+4% … +96%).** ns/step is the tell: the
+  skip probe roughly *doubles* per-step cost (bulb 0.32 → 0.74 hashed / 0.61
+  dense). A 14% step cut at 2× cost/step is a net loss. Dense beats hashed
+  everywhere (cheaper indexed read vs CAS linear probe), as the file's own note
+  predicted.
+- **The cone prepass already wins this job.** It sheds **57–76%** of steps
+  (4–9× more than skip) and runs **3–6× faster** — because skip forces the
+  generic march and gates the cone prepass OUT (`OffscreenRenderer` exclusivity).
+  Skip isn't just failing to help; it's replacing a strictly better empty-space
+  mechanism with a weaker one.
+
+Disposition: **stays OFF** (already opt-in; goldens/benches untouched). The only
+surviving path is ADR-006 Phase 2's condition — compose skip WITH specialized +
+cone so it targets the *mid-ray interior* empty pockets cone's per-tile
+start-depth can't catch — and only if a sparse / deep-zoom content class shows
+cone leaving such pockets. Absent that demonstration this is a **shelve/cut**, not
+an invest: on the tested corpus cone dominates. Do NOT wire skip into
+RenderTuning/UI.
