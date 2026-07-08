@@ -111,6 +111,11 @@ extension View {
             .background(
                 RoundedRectangle(cornerRadius: DS.Radius.control)
                     .fill(accent.opacity(opacity)))
+            // A hairline edge so two same-accent cards stacked with the panel's
+            // small inter-card gap read as two cards, not one merged block.
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.control)
+                    .strokeBorder(accent.opacity(opacity + 0.10), lineWidth: 0.5))
     }
 }
 

@@ -240,7 +240,8 @@ struct MainView: View {
                 audioActions: AudioActions(
                     isEnabled: { model.audioEnabled },
                     setEnabled: { model.setAudioEnabled($0) },
-                    setFocusBand: { model.setFocusBand($0) }))
+                    setFocusBand: { model.setFocusBand($0) }),
+                resetView: { model.camera.reset() })
                 .frame(minWidth: 320, idealWidth: 360, maxWidth: 480)
         }
     }

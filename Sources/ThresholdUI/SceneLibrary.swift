@@ -275,6 +275,17 @@ enum SceneCategory: String, CaseIterable, Identifiable {
         case .mixedReality: return "cube.transparent"
         }
     }
+
+    /// Whether this category is wired to content. Only available categories
+    /// appear in the switcher — the placeholders were "coming soon" dead-ends.
+    /// Flip a case true when its content lands (keep in sync with the body
+    /// switch in `ScenesSection`).
+    var isAvailable: Bool {
+        switch self {
+        case .scenes: return true
+        case .jumpOff, .animations, .mixedReality: return false
+        }
+    }
 }
 
 /// The scene library panel: a category switcher over the save-current row and
@@ -299,12 +310,17 @@ public struct ScenesSection: View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             SectionHeader("Scenes", icon: "photo.on.rectangle.angled")
 
-            TabStrip(
-                items: SceneCategory.allCases.map {
-                    TabStrip.Item($0, label: $0.label, icon: $0.icon)
-                },
-                selection: $category,
-                compact: true)
+            // Only categories with content show a chip — a lone category needs
+            // no switcher (the section header already names it).
+            let available = SceneCategory.allCases.filter(\.isAvailable)
+            if available.count > 1 {
+                TabStrip(
+                    items: available.map {
+                        TabStrip.Item($0, label: $0.label, icon: $0.icon)
+                    },
+                    selection: $category,
+                    compact: true)
+            }
 
             switch category {
             case .scenes:
@@ -410,8 +426,9 @@ public struct ScenesSection: View {
     }
 }
 
-/// One saved-scene card: name + fractal + date (label only for now — the
-/// palette-gradient face is dropped pending a real thumbnail pass).
+/// One saved-scene card: the scene's palette gradient as the face, over
+/// name + fractal + date. (A rendered thumbnail is a further follow-up; the
+/// palette gradient is the cheap face every item already carries.)
 struct SceneCard: View {
     let item: SceneLibraryItem
     var canDelete: Bool = true
@@ -421,6 +438,9 @@ struct SceneCard: View {
     var body: some View {
         Button(action: onLoad) {
             VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                if let palette = item.palette {
+                    GradientPreviewBar(palette: palette, height: 20)
+                }
                 Text(item.name)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
