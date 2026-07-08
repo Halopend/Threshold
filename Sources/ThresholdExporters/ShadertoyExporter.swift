@@ -112,7 +112,7 @@ public enum ShadertoyExporter {
             aoStrength: aoStrength, value: value)
         out += paletteBlock(scene.palette)
         out += helpers
-        out += deFunction(de, paramExprs: deParamExprs)
+        out += try deFunction(de, paramExprs: deParamExprs)
         out += pointOpsFunction(pointOps)
         out += mapAndShade(bubbleEnabled: value("engine.bubble.enabled", 0) >= 0.5)
         return out
@@ -229,7 +229,7 @@ public enum ShadertoyExporter {
 
     // MARK: - DE bodies (GLSL ports, params baked via P0…Pn expressions)
 
-    private static func deFunction(_ de: DEDescriptor, paramExprs: [String]) -> String {
+    private static func deFunction(_ de: DEDescriptor, paramExprs: [String]) throws -> String {
         // Bind each declared param to a named local so the DE bodies below
         // read like their MSL originals.
         let binds = zip(de.paramLayout, paramExprs)
@@ -244,7 +244,10 @@ public enum ShadertoyExporter {
         case "kleinian": body = deKleinian
         case "mengerSponge": body = deMenger
         case "quaternionJulia": body = deQuaternionJulia
-        default: body = "    return vec2(length(p) - 1.0, length(p));"
+        // A registered DE with no GLSL body must fail loudly, not silently
+        // export a unit sphere. Guards against adding a DERegistry.builtin
+        // entry and forgetting the exporter case (caught by the coverage test).
+        default: throw ShadertoyExportError.unknownFractal(de.key)
         }
         return """
         // \(de.displayName): \(de.equation)

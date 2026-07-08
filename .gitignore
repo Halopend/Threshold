@@ -8,3 +8,5 @@ DerivedData/
 bench-results/
 .bench-history/
 Build/
+build/
+/threshold-out.png

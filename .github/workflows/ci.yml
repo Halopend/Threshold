@@ -1,0 +1,61 @@
+name: CI
+
+# The standing enforcement gate. Until this existed, the golden-image suite,
+# the perf bench, the ABI-size asserts, the render-feature-parity table, and
+# the runtime shader compile were all real but ran only when a developer
+# remembered to. This workflow runs them automatically on every push and PR.
+#
+# Runner note: the macOS slice of ThresholdKit builds and tests here (SwiftPM
+# builds for the host by default, so the visionOS-26 platform is not required
+# to compile). On an Apple-silicon runner MTLCreateSystemDefaultDevice()
+# succeeds, so the 63 GPU-gated tests actually RUN (and the MSL shaders compile
+# at runtime) rather than skipping the way they do on a headless CPU box.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: swift build + test (native)
+    runs-on: macos-15   # Apple silicon → Metal is available; GPU tests run.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version || true
+
+      # Always use the native build system: the default swiftbuild backend
+      # fails codesigning on provenance xattrs (README "Build & test").
+      - name: Build
+        run: swift build --build-system native
+
+      # Compiles the MSL at runtime via GPUContext and runs the 63 GPU-gated
+      # tests when a Metal device is present. On a device-less runner these
+      # tests skip (not fail), so the job stays green either way.
+      - name: Test
+        run: swift test --build-system native
+
+  app-build:
+    name: visionOS app (xcodebuild)  # informational until a visionOS-SDK runner is pinned
+    runs-on: macos-15
+    timeout-minutes: 40
+    continue-on-error: true   # TODO: make this a hard gate on a runner that has the visionOS 26 SDK
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Threshold.app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Threshold.xcodeproj \
+            -scheme Threshold \
+            -destination 'generic/platform=visionOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO | tail -60

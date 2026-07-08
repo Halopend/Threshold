@@ -686,7 +686,7 @@ plugs in as per-region binding scale hints.
 - **Perf gate**: per-commit ms/frame on the canonical stress scene, with the
   measured-steps atomic counter always compiled in behind a function constant.
   **All perf claims come from this harness — no hand-written numbers in docs.**
-- **ABI checks in CI**: `sizeof(FrameUniforms) ≤ 64`, `sizeof(WarpOp) == 32`, DE ABI
+- **ABI checks in CI**: `sizeof(FrameUniforms) ≤ 64`, `sizeof(WarpOp) == 48`, DE ABI
   header hash matches published version.
 - **Round-trip tests**: every catalog param save→load→compare, generated automatically
   from the catalog (cannot go stale as params are added).

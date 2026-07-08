@@ -1,6 +1,6 @@
 # ADR-002: WarpOp widens from 32 to 48 bytes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-02
 **Deciders:** Jean
 **Relates to:** ARCHITECTURE.md §4, plan §5.2/§4.4

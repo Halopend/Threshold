@@ -40,9 +40,15 @@ private func balancedBraces(_ s: String) -> Bool {
 
     @Test func everyBuiltinDEExports() throws {
         for de in DERegistry.builtin {
+            // export() now throws .unknownFractal for a registered DE with no
+            // GLSL body, so a builtin added without an exporter case fails here
+            // rather than silently shipping a unit sphere.
             let glsl = try ShadertoyExporter.export(scene(fractal: de.key))
             #expect(glsl.contains(de.displayName), "header names \(de.key)")
             #expect(balancedBraces(glsl), "balanced braces for \(de.key)")
+            // Belt-and-suspenders: no builtin may emit the sphere-fallback body.
+            #expect(!glsl.contains("return vec2(length(p) - 1.0, length(p));"),
+                    "\(de.key) fell through to the sphere fallback")
             // No MSL leakage.
             #expect(!glsl.contains("float3"))
             #expect(!glsl.contains("fabs("))

@@ -1,6 +1,6 @@
 # ADR-004: Render loop is a dedicated thread, not a Swift actor
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-02
 **Deciders:** Jean
 **Relates to:** ARCHITECTURE.md §2, plan §3.3/§10

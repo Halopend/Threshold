@@ -80,7 +80,7 @@
 				000000000000000000000304 /* ThresholdUI */,
 				000000000000000000000305 /* ThresholdInputs */,
 			);
-			productName = MyApp;
+			productName = Threshold;
 			productReference = 000000000000000000000120 /* Threshold.app */;
 			productType = "com.apple.product-type.application";
 		};

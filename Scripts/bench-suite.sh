@@ -13,7 +13,7 @@
 # app's Auto Quality cannot affect these numbers).
 #
 # Per resolution (1024², 1800², 2048²): warmup then FRAMES measured frames,
-# GPU-time medians from the command buffer. Goal line: ≥ 30 fps at 2048².
+# GPU-time medians from the command buffer. Goal line: ≥ 70 fps at 2048² (TARGET_FPS_2048).
 #
 # Results:
 #   bench-results/history.csv    one row per (run, resolution) + the note
@@ -26,10 +26,10 @@ cd "$(dirname "$0")/.."
 SCENE=Corpus/scenes/bench-mandelbox.threshscene
 BIN=.build/release/threshold-render
 RESULTS=bench-results
-FRAMES=60
+FRAMES=260
 WARMUP=10
 MAX_STEPS=120
-TARGET_FPS_2048=30
+TARGET_FPS_2048=70
 RESOLUTIONS=(1024 1800 2048)
 # history rows end with platform,views tags (on-device stereo runs log visionOS,2)
 PLATFORM=mac
@@ -73,7 +73,7 @@ printf "%-12s %10s %8s %8s %8s %8s %10s\n" \
 
 fail=0
 row_json=""
-for res in $RESOLUTIONS; do
+for res in "${RESOLUTIONS[@]}"; do
   json=$RESULTS/last-${res}.json
   $BIN "$SCENE" -w $res -h $res --max-steps $MAX_STEPS --specialize \
     --bench $FRAMES --bench-warmup $WARMUP --bench-json "$json" --quiet \

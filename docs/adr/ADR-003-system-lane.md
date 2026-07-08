@@ -1,6 +1,6 @@
 # ADR-003: Explicit `system` modulation lane
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-02
 **Deciders:** Jean
 **Relates to:** ARCHITECTURE.md §6, plan §3.1/§6.4
