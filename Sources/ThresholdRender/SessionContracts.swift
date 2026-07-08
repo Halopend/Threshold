@@ -148,16 +148,21 @@ public struct RenderDiagnostics: Sendable, Equatable {
     public var renderScale: Float
     /// MetalFX temporal upscaling engaged this frame.
     public var upscaling: Bool
+    /// Custom temporal reconstruction mode this frame ("off" | "stabilize" |
+    /// "taau") — the compute backend's readout (march.temporalRecon).
+    public var reconstruction: String
 
     public init(
         pipeline: Pipeline = .generic, specializationPending: Bool = false,
-        bakedConstants: String = "", renderScale: Float = 1, upscaling: Bool = false
+        bakedConstants: String = "", renderScale: Float = 1, upscaling: Bool = false,
+        reconstruction: String = "off"
     ) {
         self.pipeline = pipeline
         self.specializationPending = specializationPending
         self.bakedConstants = bakedConstants
         self.renderScale = renderScale
         self.upscaling = upscaling
+        self.reconstruction = reconstruction
     }
 }
 
@@ -379,13 +384,19 @@ final class FrameStatsSlot: Sendable {
     struct Stats: Sendable {
         var gpuMilliseconds: Double = 0
         var totalSteps: UInt64 = 0
+        /// Temporal-seeding restart-valve trips this frame (phase A2): rays
+        /// whose history seed failed the DE validation tap and re-marched
+        /// from the cone start. 0 on every non-seeded path.
+        var seedRestarts: UInt64 = 0
     }
 
     private let slot = Mutex<Stats>(Stats())
 
-    func store(gpuMilliseconds: Double, totalSteps: UInt64) {
+    func store(gpuMilliseconds: Double, totalSteps: UInt64,
+               seedRestarts: UInt64 = 0) {
         slot.withLock {
-            $0 = Stats(gpuMilliseconds: gpuMilliseconds, totalSteps: totalSteps)
+            $0 = Stats(gpuMilliseconds: gpuMilliseconds, totalSteps: totalSteps,
+                       seedRestarts: seedRestarts)
         }
     }
 

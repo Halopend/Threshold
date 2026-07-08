@@ -65,8 +65,21 @@ public final class GPUContext: @unchecked Sendable {
     /// The bundled ABI header source — prepended to the core at compile, and
     /// the published header external DEs compile against (plan §5.1/§7.2).
     let abiHeaderSource: String
+    /// The bundled march core source — kept so the external-DE loader can
+    /// compile a combined (core + external) library on static-dispatch
+    /// devices, where cross-library visible-function linking doesn't exist.
+    let marchCoreSource: String
+    /// TRUE when the device cannot create visible function tables (the
+    /// Simulator's Metal layer; `supportsFunctionPointers` is false there).
+    /// The MSL then compiles with THRESH_STATIC_DISPATCH — DE dispatch is a
+    /// switch generated from DERegistry.builtin (staticDispatchPrelude) —
+    /// no functions are linked, and every DE-table property is nil. Real
+    /// devices never take this path, so goldens are untouched.
+    public let staticDEDispatch: Bool
     /// Built-in DE `[[visible]]` functions in table order — the base set every
     /// pipeline links; external programs link these + their own function.
+    /// EMPTY under static dispatch (the DEs are plain static functions there);
+    /// use `deFunctionCount` for the logical built-in count.
     let builtinDEFunctions: [MTLFunction]
     /// Lazily-compiled reconstruction/present library (TemporalResolve.metal)
     /// — see resolveLibrary(). A Mutex-guarded cache keeps the Sendable audit
@@ -87,11 +100,12 @@ public final class GPUContext: @unchecked Sendable {
     let evalDEPipeline: MTLComputePipelineState
 
     /// DE table for `march_offscreen`: index 0 = mandelbox, 1 = mandelbulb.
-    let marchDETable: MTLVisibleFunctionTable
+    /// nil under static dispatch (the kernel has no table argument there).
+    let marchDETable: MTLVisibleFunctionTable?
     /// DE table matched to the aux pipeline (tables are per-pipeline).
-    let marchAuxDETable: MTLVisibleFunctionTable
+    let marchAuxDETable: MTLVisibleFunctionTable?
     /// DE table for `eval_de`: index 0 = mandelbox, 1 = mandelbulb.
-    let evalDETable: MTLVisibleFunctionTable
+    let evalDETable: MTLVisibleFunctionTable?
 
     /// Number of built-in DEs in the visible function tables
     /// (index 0 = mandelbox, index 1 = mandelbulb).
@@ -125,11 +139,17 @@ public final class GPUContext: @unchecked Sendable {
         ProcessInfo.processInfo.environment["THRESHOLD_SPEC_ITERATIONS"] == "1"
     }
 
-    public init() throws {
+    /// `staticDispatchOverride` is a TEST seam: macOS supports function
+    /// tables, so the static-dispatch path (the Simulator's reality) is only
+    /// reachable in tests by forcing it. Production callers pass nothing —
+    /// the device capability decides.
+    public init(staticDispatchOverride: Bool? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RenderError.noMetalDevice
         }
         self.device = device
+        let staticDispatch = staticDispatchOverride ?? !device.supportsFunctionPointers
+        self.staticDEDispatch = staticDispatch
 
         // --- load resources: ABI header copy + march core source -----------
         guard let headerURL = Bundle.module.url(
@@ -143,8 +163,10 @@ public final class GPUContext: @unchecked Sendable {
 
         let header = try String(contentsOf: headerURL, encoding: .utf8)
         let core = try String(contentsOf: sourceURL, encoding: .utf8)
-        let source = header + "\n" + core
+        let source = (staticDispatch ? Self.staticDispatchPrelude() : "")
+            + header + "\n" + core
         self.abiHeaderSource = header
+        self.marchCoreSource = core
 
         // --- compile --------------------------------------------------------
         // mathMode .safe: no fast-math re-association / FMA contraction
@@ -165,17 +187,21 @@ public final class GPUContext: @unchecked Sendable {
         // --- built-in DEs as linked visible functions ------------------------
         // Table order IS DERegistry.builtin order (each descriptor's `index`);
         // one declaration site — adding a DE touches the registry + MSL,
-        // never this file.
+        // never this file. Static dispatch has no visible functions at all
+        // (the generated switch calls the DEs directly), so the function list
+        // stays empty while the LOGICAL count keeps driving bounds checks.
         let deNames = DERegistry.builtin.map(\.mslFunctionName)
         var deFunctions: [MTLFunction] = []
-        deFunctions.reserveCapacity(deNames.count)
-        for name in deNames {
-            guard let f = library.makeFunction(name: name) else {
-                throw RenderError.missingFunction(name)
+        if !staticDispatch {
+            deFunctions.reserveCapacity(deNames.count)
+            for name in deNames {
+                guard let f = library.makeFunction(name: name) else {
+                    throw RenderError.missingFunction(name)
+                }
+                deFunctions.append(f)
             }
-            deFunctions.append(f)
         }
-        self.deFunctionCount = deFunctions.count
+        self.deFunctionCount = deNames.count
         self.builtinDEFunctions = deFunctions
 
         // --- pipelines --------------------------------------------------------
@@ -198,12 +224,35 @@ public final class GPUContext: @unchecked Sendable {
             device: device, library: library, kernelName: "march_offscreen",
             deFunctions: deFunctions, auxOutputs: true)
 
-        self.marchDETable = try Self.makeDETable(
-            marchPipeline, functions: deFunctions, label: "march_offscreen DE table")
-        self.marchAuxDETable = try Self.makeDETable(
-            marchAuxPipeline, functions: deFunctions, label: "march aux DE table")
-        self.evalDETable = try Self.makeDETable(
-            evalDEPipeline, functions: deFunctions, label: "eval_de DE table")
+        if staticDispatch {
+            self.marchDETable = nil
+            self.marchAuxDETable = nil
+            self.evalDETable = nil
+        } else {
+            self.marchDETable = try Self.makeDETable(
+                marchPipeline, functions: deFunctions, label: "march_offscreen DE table")
+            self.marchAuxDETable = try Self.makeDETable(
+                marchAuxPipeline, functions: deFunctions, label: "march aux DE table")
+            self.evalDETable = try Self.makeDETable(
+                evalDEPipeline, functions: deFunctions, label: "eval_de DE table")
+        }
+    }
+
+    /// The compile prelude for THRESH_STATIC_DISPATCH (no function tables —
+    /// the Simulator): defines the switch cases the MSL stub table dispatches
+    /// through, one per built-in in DERegistry.builtin order — the SAME order
+    /// the visible function tables use, generated from the same declaration
+    /// site so the two can never drift. `externalFunctionName` appends the
+    /// external DE at index builtin.count when a program library compiles the
+    /// external source into the same translation unit (ExternalDELoader).
+    static func staticDispatchPrelude(externalFunctionName: String? = nil) -> String {
+        var names = DERegistry.builtin.map(\.mslFunctionName)
+        if let externalFunctionName { names.append(externalFunctionName) }
+        let cases = names.enumerated()
+            .map { "case \($0.offset): return \($0.element)(p, ctx);" }
+            .joined(separator: " ")
+        return "#define THRESH_STATIC_DISPATCH 1\n"
+            + "#define THRESH_DE_CASES(p, ctx) \(cases)\n"
     }
 
     // MARK: - Pipeline/table construction (shared with ExternalDELoader)
@@ -220,11 +269,23 @@ public final class GPUContext: @unchecked Sendable {
     /// when requested. Shared by the compute (makeLinkedPipeline) and raster
     /// (makeSpecializedRaster) paths so the two never drift.
     static func specConstantValues(
-        auxOutputs: Bool, spec: MarchSpec?
+        auxOutputs: Bool, spec: MarchSpec?, seed: Bool = false, skipVolume: Bool = false
     ) -> MTLFunctionConstantValues {
         let constants = MTLFunctionConstantValues()
         var aux = auxOutputs
         constants.setConstantValue(&aux, type: .bool, index: 0)
+        // Temporal seeding (function_constant 12, phase A2): only ever baked
+        // TRUE on aux twins — the seed path needs prevViews + jittered rays.
+        // Left unset otherwise so every non-seeded variant compiles to the
+        // constant's false default (pre-A2 code, bit-identical).
+        if seed {
+            var s = true
+            constants.setConstantValue(&s, type: .bool, index: 12)
+        }
+        // Skip-volume gate (function_constant 11, aux-style bool). Absent /
+        // false → the march's skip branch and its buffer args vanish.
+        var skip = skipVolume
+        constants.setConstantValue(&skip, type: .bool, index: 11)
         if let spec {
             func setInt(_ value: Int, _ index: Int) {
                 var v = Int32(value)
@@ -250,7 +311,7 @@ public final class GPUContext: @unchecked Sendable {
     static func makeLinkedPipeline(
         device: MTLDevice, library: MTLLibrary, kernelName: String,
         deFunctions: [MTLFunction], auxOutputs: Bool = false,
-        spec: MarchSpec? = nil
+        spec: MarchSpec? = nil, seed: Bool = false, skipVolume: Bool = false
     ) throws -> MTLComputePipelineState {
         // The march + cone-prepass kernels reference function constants (THRESH_AUX
         // always; the bakes/cone gate in the specialized library), so they take
@@ -261,7 +322,8 @@ public final class GPUContext: @unchecked Sendable {
         ]
         let kernel: MTLFunction
         if constantKernels.contains(kernelName) {
-            let constants = specConstantValues(auxOutputs: auxOutputs, spec: spec)
+            let constants = specConstantValues(
+                auxOutputs: auxOutputs, spec: spec, seed: seed, skipVolume: skipVolume)
             do {
                 kernel = try library.makeFunction(
                     name: kernelName, constantValues: constants)
@@ -275,11 +337,15 @@ public final class GPUContext: @unchecked Sendable {
             throw RenderError.missingFunction(kernelName)
         }
         let desc = MTLComputePipelineDescriptor()
-        desc.label = auxOutputs ? "\(kernelName) aux" : kernelName
+        desc.label = kernelName + (auxOutputs ? " aux" : "") + (seed ? " seed" : "")
         desc.computeFunction = kernel
-        let linked = MTLLinkedFunctions()
-        linked.functions = deFunctions
-        desc.linkedFunctions = linked
+        // Static dispatch links nothing (empty list): the DEs are statically
+        // called through the generated switch, not visible functions.
+        if !deFunctions.isEmpty {
+            let linked = MTLLinkedFunctions()
+            linked.functions = deFunctions
+            desc.linkedFunctions = linked
+        }
         do {
             return try device.makeComputePipelineState(
                 descriptor: desc, options: [], reflection: nil)

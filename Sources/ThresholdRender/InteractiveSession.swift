@@ -702,8 +702,10 @@ final class SessionGPUEncoder {
                 }
                 pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
                 pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-                pre.setVisibleFunctionTable(
-                    specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
+                if let table = specialized?.deTable {
+                    pre.setVisibleFunctionTable(
+                        table, bufferIndex: GPUContext.deTableBufferIndex)
+                }
                 var dims = SIMD2<UInt32>(UInt32(marchTarget.width),
                                          UInt32(marchTarget.height))
                 withUnsafeBytes(of: &dims) { raw in
@@ -744,10 +746,11 @@ final class SessionGPUEncoder {
         encoder.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
-        encoder.setVisibleFunctionTable(
-            program?.marchDETable ?? specialized?.deTable
-                ?? (auxOutputs ? context.marchAuxDETable : context.marchDETable),
-            bufferIndex: GPUContext.deTableBufferIndex)
+        if let table = program?.marchDETable ?? specialized?.deTable
+            ?? (auxOutputs ? context.marchAuxDETable : context.marchDETable) {
+            encoder.setVisibleFunctionTable(
+                table, bufferIndex: GPUContext.deTableBufferIndex)
+        }
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in
             encoder.setBytes(raw.baseAddress!, length: raw.count,

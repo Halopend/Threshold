@@ -30,6 +30,9 @@ struct Options {
     var deKey = "mandelbulb"
     var quiet = false
     var specialize = false
+    var skipVolume = false     // world-space empty-space skip (fc 11) A/B
+    var skipGrid = 64
+    var skipDense = false       // dense direct-index vs hashed occupancy
     var benchFrames = 0        // > 0 → benchmark mode
     var benchWarmup = 8
     var benchJSONPath: String?
@@ -58,6 +61,9 @@ struct Options {
             case "--de": opts.deKey = next(arg)
             case "--quiet": opts.quiet = true
             case "--specialize": opts.specialize = true
+            case "--skip-volume": opts.skipVolume = true
+            case "--skip-grid": opts.skipGrid = intValue(next(arg), for: arg)
+            case "--skip-dense": opts.skipDense = true
             case "--bench": opts.benchFrames = intValue(next(arg), for: arg)
             case "--bench-warmup": opts.benchWarmup = intValue(next(arg), for: arg)
             case "--bench-json": opts.benchJSONPath = next(arg)
@@ -271,6 +277,25 @@ do {
     die("GPU init failed (the harness needs a Metal device): \(error)")
 }
 
+// Skip-volume (function_constant 11) A/B: constructed only for --skip-volume
+// so a plain run is untouched. Built-ins only — ignored under an external DE.
+let skipVolume: SkipVolume?
+if opts.skipVolume {
+    do {
+        skipVolume = try SkipVolume(
+            context: context, gridResolution: opts.skipGrid,
+            mode: opts.skipDense ? .dense : .hashed)
+        if !opts.quiet {
+            print("skip-volume ON (grid \(opts.skipGrid)³, "
+                + "\(opts.skipDense ? "dense" : "hashed"))")
+        }
+    } catch {
+        die("--skip-volume failed: \(error)")
+    }
+} else {
+    skipVolume = nil
+}
+
 // External DE: compile → probe → accept, or die with the diagnostics
 // (plan §7.2 — rejection surfaces the compiler output, never a crash).
 let program: ExternalDEProgram?
@@ -462,7 +487,8 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
         palette: scene.palette?.stops ?? [],
         width: opts.width, height: opts.height)
     return try renderer.render(request, program: program,
-                               specialized: specialized, readback: readback)
+                               specialized: specialized, readback: readback,
+                               skipVolume: skipVolume)
 }
 
 if opts.benchFrames > 0 {

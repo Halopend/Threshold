@@ -115,7 +115,8 @@ public enum CompositorViewMath {
 final class ViewPassEncoder {
     private let context: GPUContext
     private let pipeline: MTLRenderPipelineState
-    private let deTable: MTLVisibleFunctionTable
+    /// nil under static dispatch (the fragment has no table argument there).
+    private let deTable: MTLVisibleFunctionTable?
     private let depthState: MTLDepthStencilState
     /// Ring of 3, zeroed CPU-side before reuse — safe because the ring is
     /// deeper than the compositor's frames in flight (same reasoning as
@@ -182,12 +183,17 @@ final class ViewPassEncoder {
         desc.colorAttachments[0].pixelFormat = colorFormat
         desc.depthAttachmentPixelFormat = depthFormat
         desc.inputPrimitiveTopology = .triangle
-        if maxViewCount > 1 {
+        // Guard on device support, not just view count — requesting
+        // amplification on a device without it (the Simulator) is a Metal
+        // validation ABORT, not an error return.
+        if maxViewCount > 1, device.supportsVertexAmplificationCount(maxViewCount) {
             desc.maxVertexAmplificationCount = maxViewCount
         }
-        let linked = MTLLinkedFunctions()
-        linked.functions = context.builtinDEFunctions
-        desc.fragmentLinkedFunctions = linked
+        if !context.builtinDEFunctions.isEmpty {
+            let linked = MTLLinkedFunctions()
+            linked.functions = context.builtinDEFunctions
+            desc.fragmentLinkedFunctions = linked
+        }
 
         let pipeline: MTLRenderPipelineState
         do {
@@ -198,19 +204,23 @@ final class ViewPassEncoder {
         }
         self.pipeline = pipeline
 
-        let tableDesc = MTLVisibleFunctionTableDescriptor()
-        tableDesc.functionCount = context.builtinDEFunctions.count
-        guard let table = pipeline.makeVisibleFunctionTable(
-            descriptor: tableDesc, stage: .fragment)
-        else { throw RenderError.functionTableCreationFailed("raster DE table") }
-        for (index, f) in context.builtinDEFunctions.enumerated() {
-            guard let handle = pipeline.functionHandle(function: f, stage: .fragment) else {
-                throw RenderError.functionTableCreationFailed(
-                    "raster DE table: no handle for \(f.name)")
+        if context.staticDEDispatch {
+            self.deTable = nil
+        } else {
+            let tableDesc = MTLVisibleFunctionTableDescriptor()
+            tableDesc.functionCount = context.builtinDEFunctions.count
+            guard let table = pipeline.makeVisibleFunctionTable(
+                descriptor: tableDesc, stage: .fragment)
+            else { throw RenderError.functionTableCreationFailed("raster DE table") }
+            for (index, f) in context.builtinDEFunctions.enumerated() {
+                guard let handle = pipeline.functionHandle(function: f, stage: .fragment) else {
+                    throw RenderError.functionTableCreationFailed(
+                        "raster DE table: no handle for \(f.name)")
+                }
+                table.setFunction(handle, index: index)
             }
-            table.setFunction(handle, index: index)
+            self.deTable = table
         }
-        self.deTable = table
 
         // The fullscreen triangle writes fragment depth; nothing occludes it.
         let depthDesc = MTLDepthStencilDescriptor()
@@ -306,7 +316,6 @@ final class ViewPassEncoder {
         // automatic hazard tracking orders the compute-write → fragment-read.
         var coneTexture: MTLTexture? = nil
         if let s = specialized, let prepass = s.conePrepass,
-           let prepassTable = s.conePrepassDETable,
            let target = renderPass.colorAttachments[0].texture {
             let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
             let cw = (target.width + tile - 1) / tile
@@ -335,8 +344,10 @@ final class ViewPassEncoder {
                 }
                 pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
                 pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-                pre.setVisibleFunctionTable(
-                    prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
+                if let prepassTable = s.conePrepassDETable {
+                    pre.setVisibleFunctionTable(
+                        prepassTable, bufferIndex: GPUContext.deTableBufferIndex)
+                }
                 views.withUnsafeBytes { raw in
                     let base = raw.baseAddress!.advanced(by: viewsByteOffset)
                     pre.setBytes(base, length: raw.count - viewsByteOffset,
@@ -383,8 +394,10 @@ final class ViewPassEncoder {
         encoder.setFragmentBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
         encoder.setFragmentBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setFragmentBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
-        encoder.setFragmentVisibleFunctionTable(
-            chosenTable, bufferIndex: GPUContext.deTableBufferIndex)
+        if let chosenTable {
+            encoder.setFragmentVisibleFunctionTable(
+                chosenTable, bufferIndex: GPUContext.deTableBufferIndex)
+        }
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in
             encoder.setFragmentBytes(

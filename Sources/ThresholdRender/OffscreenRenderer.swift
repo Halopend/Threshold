@@ -63,7 +63,8 @@ public final class OffscreenRenderer: @unchecked Sendable {
     /// where only `stats` is consumed. GPU work is identical.
     public func render(
         _ request: RenderRequest, program: ExternalDEProgram? = nil,
-        specialized: SpecializedMarch? = nil, readback: Bool = true
+        specialized: SpecializedMarch? = nil, readback: Bool = true,
+        skipVolume: SkipVolume? = nil
     ) throws -> RenderResult {
         guard request.width > 0, request.height > 0 else {
             throw RenderError.badRequest("non-positive dimensions")
@@ -116,12 +117,25 @@ public final class OffscreenRenderer: @unchecked Sendable {
             throw RenderError.allocationFailed("command buffer")
         }
 
+        // Skip-volume build prepass (function_constant 11): DE-occupancy hash
+        // over a camera-centred world grid, consumed by the skip march
+        // pipeline below. Built-ins only (skip pipeline links no external DE),
+        // and — this first cut — mutually exclusive with the cone prepass and
+        // the specialized variant (they compose in a later stage). Off unless
+        // the caller hands us a SkipVolume.
+        let useSkip = program == nil && skipVolume != nil
+        if useSkip, let skip = skipVolume {
+            skip.prepare(uniforms: uniforms, params: request.params)
+            skip.encodeBuild(commandBuffer: commandBuffer, uniforms: uniforms,
+                             paramsBuffer: paramsBuffer, opsBuffer: opsBuffer)
+        }
+
         // Hierarchical prepass (perf round 15): one thread per 8×8 tile
         // cone-marches the tile's shared safe start depth into a small
         // r32float texture the march kernel reads (texture 3). Present iff
         // the specialized variant baked coneMarch.
         var coneTexture: MTLTexture? = nil
-        if program == nil, let prepass = specialized?.conePrepass {
+        if program == nil, !useSkip, let prepass = specialized?.conePrepass {
             // MUST match THRESH_CONE_TILE in RaymarchCore.metal (the fine
             // kernel maps gid/8 → cone texel).
             let tile = 8
@@ -152,8 +166,10 @@ public final class OffscreenRenderer: @unchecked Sendable {
             }
             pre.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
             pre.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
-            pre.setVisibleFunctionTable(
-                specialized!.deTable, bufferIndex: GPUContext.deTableBufferIndex)
+            if let table = specialized?.deTable {
+                pre.setVisibleFunctionTable(
+                    table, bufferIndex: GPUContext.deTableBufferIndex)
+            }
             var dims = SIMD2<UInt32>(UInt32(request.width), UInt32(request.height))
             withUnsafeBytes(of: &dims) { raw in
                 pre.setBytes(raw.baseAddress!, length: raw.count, index: 8)
@@ -178,7 +194,9 @@ public final class OffscreenRenderer: @unchecked Sendable {
         // an aux twin) and ViewPassEncoder (raster setFragment*). Kept per-shell
         // because the Metal API differs; the indices and precedence must match.
         encoder.setComputePipelineState(
-            program?.marchPipeline ?? specialized?.pipeline ?? context.marchPipeline)
+            program?.marchPipeline
+                ?? (useSkip ? skipVolume?.marchPipeline : nil)
+                ?? specialized?.pipeline ?? context.marchPipeline)
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setBytes(raw.baseAddress!, length: raw.count,
                              index: Int(THRESH_BUFFER_UNIFORMS))
@@ -186,9 +204,12 @@ public final class OffscreenRenderer: @unchecked Sendable {
         encoder.setBuffer(paramsBuffer, offset: 0, index: Int(THRESH_BUFFER_PARAMS))
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
-        encoder.setVisibleFunctionTable(
-            program?.marchDETable ?? specialized?.deTable ?? context.marchDETable,
-            bufferIndex: GPUContext.deTableBufferIndex)
+        if let table = program?.marchDETable
+            ?? (useSkip ? skipVolume?.marchDETable : nil)
+            ?? specialized?.deTable ?? context.marchDETable {
+            encoder.setVisibleFunctionTable(
+                table, bufferIndex: GPUContext.deTableBufferIndex)
+        }
         let paletteBytes = PaletteWire.bytes(request.palette)
         paletteBytes.withUnsafeBytes { raw in
             encoder.setBytes(raw.baseAddress!, length: raw.count,
@@ -198,6 +219,7 @@ public final class OffscreenRenderer: @unchecked Sendable {
         if let coneTexture {
             encoder.setTexture(coneTexture, index: 3)
         }
+        if useSkip { skipVolume?.bindMarch(encoder) }   // buffers 9 / 10
 
         // Measurement seam: THRESHOLD_TG=WxH overrides the threadgroup shape
         // for occupancy A/Bs (default 8x8; parsed once — see tgOverride).

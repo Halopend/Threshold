@@ -567,7 +567,9 @@ final class VisionAppModel {
     func attach(_ layerRenderer: LayerRenderer) {
         session.start(layerRenderer)
         hands.start()
-        mirror.setQualityGovernor(.platformDefault)
+        // governorDefault drops the resolution floor to 0.35 when temporal
+        // reconstruction is armed (it holds quality there — the point).
+        mirror.setQualityGovernor(CompositorSession.governorDefault)
     }
 
     /// Whether the mic is feeding the audio.* signals (Motion ▸ Music toggle).

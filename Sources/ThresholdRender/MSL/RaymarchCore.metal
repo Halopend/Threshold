@@ -28,6 +28,23 @@ using namespace metal;
 //   .x = distance estimate, .y = min |z| orbit trap / material channel
 using ThreshDE = float2(float3, thread const ThreshDEContext&);
 
+// ===================== static DE dispatch (Simulator) =======================
+//
+// Metal in the Simulator cannot create visible function tables
+// (makeVisibleFunctionTable returns nil), so on such devices GPUContext
+// compiles this source with THRESH_STATIC_DISPATCH defined: the DEs become
+// plain static functions (nothing links them), the kernels lose their table
+// argument, and a stub "table" dispatches through a switch generated from
+// DERegistry.builtin — the SAME order the real tables index
+// (GPUContext.staticDispatchPrelude emits THRESH_DE_CASES). Devices with
+// function pointers never compile this path, so goldens and the
+// CPU-equivalence contract are untouched.
+#ifdef THRESH_STATIC_DISPATCH
+#define THRESH_DE_QUAL static
+#else
+#define THRESH_DE_QUAL [[visible]]
+#endif
+
 // ======================== common helpers (op-semantics.md) ==================
 
 // GLSL-style floor-mod. docs/op-semantics.md `mod` is the floor-mod: the
@@ -524,6 +541,129 @@ constant bool THRESH_CONE = is_function_constant_defined(thresh_cone_defined)
 #define THRESH_BUFFER_CONE_DIMS 8
 #define THRESH_CONE_TILE       8
 
+// ======================= world-space skip-volume ============================
+//
+// A view-independent empty-space acceleration structure, adapted from BorgVR's
+// hashed brick paging (VolumeAtlas.h / GPUHashtable.h — see the MIT notice at
+// the foot of this file). Where BorgVR pages a bricked VOLUME and hashes which
+// bricks are resident, Threshold has no volume: the "occupancy" of a world
+// brick is COMPUTED from the distance estimator. A coarse build pass
+// (build_skip_volume) evaluates mapScene once at each brick's centre and, when
+// the brick is NOT provably empty, inserts its flat index into a GPU hash table
+// (Knuth multiplicative hash + atomic-CAS linear probing, borgHash/skipInsert).
+// The march (function_constant 11) then probes the table for the brick it is
+// in: a MISS means the brick was tested and found empty, so the ray jumps
+// straight to that brick's far face (skipBrickExit) WITHOUT the expensive
+// mapScene evaluation; a HIT — or being outside the built grid, or a build
+// overflow — falls through to the normal sphere-traced DE step.
+//
+// Conservative by construction: mapScene returns the WORLD distance to the
+// nearest surface, and a brick lies entirely within `circumradius` of its
+// centre, so `DE(centre) > circumradius` PROVES the brick empty. The build
+// tightens that to `> circumradius·(1+margin)` to tolerate DEs that
+// over-estimate under warp ops (the same rare hazard the cone prepass guards
+// with its stability margin). An empty verdict is therefore never wrong unless
+// the DE over-estimates by more than (1+margin); a hash HIT is always trusted
+// as occupied; and a build that overflows the table disables skipping for the
+// frame (host clears the overflow word; the march reads it). Net: the skip can
+// only ever make the march do MORE work, never tunnel through a surface.
+//
+// Complements — does not replace — the cone prepass (screen-space, near-field
+// start depth) and the over-relaxed sphere trace (near-optimal in OPEN empty
+// space): this structure is world-space and shared by both eyes, and it skips
+// empty pockets threading through intricate structure where the global
+// nearest-surface distance keeps sphere-tracing steps small. Off by default
+// (absent constant → false): goldens and specialized==generic are untouched.
+constant bool thresh_skip_defined [[function_constant(11)]];
+constant bool THRESH_SKIP = is_function_constant_defined(thresh_skip_defined)
+    ? thresh_skip_defined : false;
+#define THRESH_BUFFER_SKIP_UNIFORMS 9
+#define THRESH_BUFFER_SKIP_TABLE    10
+#define THRESH_SKIP_EMPTY_SLOT      0xFFFFFFFFu
+
+// Private contract with SkipVolume.swift (buffer 9). `gridDim.w` is unused
+// padding; the flat table has `tableSize` probe slots followed by ONE overflow
+// word at index `tableSize` (set by the build when an insert exhausts probing).
+struct ThreshSkipUniforms {
+    float4 originExtent;  // xyz world origin (min corner), w = brick size (world)
+    uint4  gridDim;       // xyz brick counts, w unused
+    float  margin;        // empty iff DE(centre) > circumradius·(1+margin)
+    uint   tableSize;     // hashed: probe-slot count (overflow word at [tableSize]);
+                          //   dense: brick count (occupancy indexed by brickIndex)
+    uint   probeMax;      // hashed: linear-probe attempts before giving up
+    uint   mode;          // 0 = hashed (BorgVR), 1 = dense occupancy buffer
+};
+
+// Knuth multiplicative hash (BorgVR simpleHash), verbatim.
+static inline uint borgHash(uint value) {
+    return value * 2654435761u;
+}
+
+// Flat brick index of a world point, or 0xFFFFFFFF if outside the grid.
+static inline uint skipBrickIndex(float3 p, constant ThreshSkipUniforms& S) {
+    const float inv = 1.0f / S.originExtent.w;
+    const float3 rel = (p - S.originExtent.xyz) * inv;
+    if (any(rel < 0.0f) || any(rel >= float3(S.gridDim.xyz))) {
+        return THRESH_SKIP_EMPTY_SLOT;
+    }
+    const uint3 c = uint3(rel);
+    return c.x + c.y * S.gridDim.x + c.z * S.gridDim.x * S.gridDim.y;
+}
+
+// Distance along `dir` (unit) from `p` to the far face of the brick it sits in
+// — the slab test underlying BorgVR's brickExit, axis-aligned in world space.
+// A direction component of 0 yields an infinite face distance on that axis, so
+// the other two axes bound the exit (a ray parallel to a face never leaves
+// through it).
+static inline float skipBrickExit(float3 p, float3 dir,
+                                  constant ThreshSkipUniforms& S) {
+    const float b = S.originExtent.w;
+    const float3 rel = p - S.originExtent.xyz;
+    const float3 cellMin = floor(rel / b) * b + S.originExtent.xyz;
+    const float3 invd = 1.0f / dir;              // 0 → ±inf, handled by max/min
+    const float3 tLo = (cellMin - p) * invd;
+    const float3 tHi = (cellMin + b - p) * invd;
+    const float3 tFar = max(tLo, tHi);           // far face per axis
+    return min(min(tFar.x, tFar.y), tFar.z);
+}
+
+// Table probe (march side, read-only). True = brick index is present
+// (occupied). BorgVR reportMissingBrick's read twin.
+static inline bool skipContains(uint brickIndex, device const uint* table,
+                                constant ThreshSkipUniforms& S) {
+    uint slot = borgHash(brickIndex) % S.tableSize;
+    for (uint i = 0; i < S.probeMax; ++i) {
+        const uint v = table[(slot + i) % S.tableSize];
+        if (v == brickIndex) { return true; }
+        if (v == THRESH_SKIP_EMPTY_SLOT) { return false; }  // empty slot ⇒ absent
+    }
+    return true;   // probe exhausted without an empty slot: assume occupied (safe)
+}
+
+// The march's per-step skip decision (function_constant 11). Returns the ray
+// parameter to JUMP to when the brick at `pos` is provably empty; returns the
+// current `t` unchanged (no jump) when the brick is occupied, outside the grid,
+// or the build overflowed. The +epsilon lands the jump inside the next brick.
+static inline float skipAdvance(float3 pos, float3 rd, float t,
+                                constant ThreshSkipUniforms& S,
+                                device const uint* table) {
+    const uint bi = skipBrickIndex(pos, S);
+    if (bi == THRESH_SKIP_EMPTY_SLOT) { return t; }     // outside the grid
+    bool occupied;
+    if (S.mode == 1u) {
+        // DENSE: one direct indexed read (hardware-cacheable, no probe) — the
+        // "cheapest possible per-step lookup" A/B against the hash.
+        occupied = table[bi] != 0u;
+    } else {
+        // HASHED (BorgVR): overflow disables skip for the frame; else probe.
+        if (table[S.tableSize] != 0u) { return t; }
+        occupied = skipContains(bi, table, S);
+    }
+    if (occupied) { return t; }                          // occupied ⇒ DE step
+    const float exit = skipBrickExit(pos, rd, S);
+    return t + max(exit, 0.0f) + 1e-4f * S.originExtent.w;
+}
+
 // Stats instrumentation: the per-pixel atomic step-count add is telemetry,
 // not image data — a variant that bakes FALSE drops one device atomic per
 // thread per frame (totalSteps reads back 0). Generic always counts.
@@ -566,7 +706,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 // z = p, i.e. min over every |z| value at loop-top / after each update.
 
 // params: [scale, minRadius, fixedRadius, foldLimit] + [iterations]
-[[visible]] float2 de_mandelbox(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_mandelbox(float3 p, thread const ThreshDEContext& ctx)
 {
     const float scale = ctx.params[0];
     const float minR  = ctx.params[1];
@@ -608,7 +748,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 // the point (not the running derivative dr), exactly as the app leaves p.w
 // untouched. Migration seeds minRadius = sphereRadius, fixedRadius ≡ 1,
 // scale = fractalScale, foldLimit = foldingLimit (see LegacyMigration).
-[[visible]] float2 de_mandelboxSphereProjection(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_mandelboxSphereProjection(float3 p, thread const ThreshDEContext& ctx)
 {
     const float scale = ctx.params[0];
     const float minR  = ctx.params[1];
@@ -658,7 +798,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 // ×power scaling: an isometry, so dr (the distance bound) is unchanged and the
 // shape cycles as the phase sweeps [0, 2π). rotationSpeed (index 1) is CPU-side
 // integrator input, not read here.
-[[visible]] float2 de_mandelbulb(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_mandelbulb(float3 p, thread const ThreshDEContext& ctx)
 {
     const float power = ctx.params[0];
     // Defensive: legacy 1-param slices (the equivalence oracle) carry no
@@ -699,7 +839,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 // params: [minX, minY, minZ, sphereFold, maxX, maxY, maxZ, crossRadius]
 // + [iterations]. Knighty's Pseudo Kleinian — numerically identical to
 // ReferenceDEs.kleinian.
-[[visible]] float2 de_kleinian(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_kleinian(float3 p, thread const ThreshDEContext& ctx)
 {
     const float3 mins = float3(ctx.params[0], ctx.params[1], ctx.params[2]);
     const float sphereFold = ctx.params[3];
@@ -729,7 +869,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 
 // params: [scale, offsetX, offsetY, offsetZ] + [iterations]. Classic Menger
 // sponge — numerically identical to ReferenceDEs.menger.
-[[visible]] float2 de_menger(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_menger(float3 p, thread const ThreshDEContext& ctx)
 {
     const float scale = ctx.params[0];
     const float3 offset = float3(ctx.params[1], ctx.params[2], ctx.params[3]);
@@ -758,7 +898,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 
 // params: [cX, cY, cZ, cW, threshold] + [iterations]. Quaternion Julia —
 // numerically identical to ReferenceDEs.quaternionJulia.
-[[visible]] float2 de_quaternion_julia(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_quaternion_julia(float3 p, thread const ThreshDEContext& ctx)
 {
     const float4 c = float4(ctx.params[0], ctx.params[1], ctx.params[2], ctx.params[3]);
     const float threshold = ctx.params[4];
@@ -791,7 +931,7 @@ static inline bool threshAOEnabled(float aoStrength) {
 // params: [power, cX, cY, cZ] + [iterations]. Julia-mode Mandelbulb (fixed
 // additive constant, NO +1 derivative term) — numerically identical to
 // ReferenceDEs.mandelbulbJulia.
-[[visible]] float2 de_mandelbulb_julia(float3 p, thread const ThreshDEContext& ctx)
+THRESH_DE_QUAL float2 de_mandelbulb_julia(float3 p, thread const ThreshDEContext& ctx)
 {
     const float power = ctx.params[0];
     const float3 c = float3(ctx.params[1], ctx.params[2], ctx.params[3]);
@@ -831,11 +971,34 @@ static inline bool threshAOEnabled(float aoStrength) {
 // world, positions scale in, distances divide back out (plan §6.3 —
 // ScaleContext.swift is the CPU derivation site).
 
+#ifdef THRESH_STATIC_DISPATCH
+// The stub table: `deTable[i](p, ctx)` dispatches through the generated
+// switch (THRESH_DE_CASES — one `case N: return de_<name>(p, ctx);` per
+// DERegistry.builtin entry, plus the external DE when a program library
+// compiles one in). Same index space as the real tables; the default arm is
+// unreachable (meta.y is bounds-checked against deFunctionCount CPU-side).
+struct ThreshDERef {
+    uint index;
+    inline float2 operator()(float3 p, thread const ThreshDEContext& ctx) const {
+        switch (index) {
+        THRESH_DE_CASES(p, ctx)
+        default: return float2(1e9f, 0.0f);
+        }
+    }
+};
+struct ThreshDETableStub {
+    inline ThreshDERef operator[](uint i) const { return ThreshDERef{ i }; }
+};
+#define THRESH_DE_TABLE_T ThreshDETableStub
+#else
+#define THRESH_DE_TABLE_T visible_function_table<ThreshDE>
+#endif
+
 static float2 mapScene(float3 worldP,
                        constant ThreshFrameUniforms& U,
                        device const float* params,
                        device const ThreshWarpOp* ops,
-                       visible_function_table<ThreshDE> deTable,
+                       THRESH_DE_TABLE_T deTable,
                        float iterScale = 1.0f)
 {
     const float modelScale = U.scaleCtx.z;
@@ -1029,7 +1192,7 @@ static float3 calcNormal(float3 pos, float h, float d0,
                          constant ThreshFrameUniforms& U,
                          device const float* params,
                          device const ThreshWarpOp* ops,
-                         visible_function_table<ThreshDE> deTable)
+                         THRESH_DE_TABLE_T deTable)
 {
     const float NI = 0.6f;
     float3 g = float3(
@@ -1047,7 +1210,7 @@ static float cheapAO(float3 pos, float3 n, float aoStrength, float featureScale,
                      constant ThreshFrameUniforms& U,
                      device const float* params,
                      device const ThreshWarpOp* ops,
-                     visible_function_table<ThreshDE> deTable)
+                     THRESH_DE_TABLE_T deTable)
 {
     // 2 probes (was 5 → 3 → 2, perf rounds 3/13): near + far occlusion
     // sample over the same [0.13, 0.61] walk, weights re-tuned to keep the
@@ -1180,9 +1343,13 @@ static inline ThreshMarchResult marchShade(
     constant ThreshFrameUniforms& U,
     device const float* params,
     device const ThreshWarpOp* ops,
-    visible_function_table<ThreshDE> deTable,
+    THRESH_DE_TABLE_T deTable,
     constant ThreshPalette& palette,
-    float startT = 0.0f)   // hierarchical prepass hands a tile-safe depth
+    float startT = 0.0f,   // hierarchical prepass hands a tile-safe depth
+    // Skip-volume (function_constant 11); nullptr / unused when THRESH_SKIP is
+    // false, so every non-skip caller passes nothing and the branch DCEs.
+    constant ThreshSkipUniforms* skipU = nullptr,
+    device const uint* skipTable = nullptr)
 {
     // Engine params from the reserved slots of the FULL param table.
     const int maxSteps     = threshMaxSteps(int(params[THRESH_SLOT_MAX_STEPS]));
@@ -1234,6 +1401,17 @@ static inline ThreshMarchResult marchShade(
         if (t > maxDist) { break; }   // loop-top: a prepass start at/near the
                                       // far plane must MISS, not sample there
         float3 pos = ro + rd * t;
+
+        // World-space skip-volume (function_constant 11): if the brick at
+        // `pos` is provably empty, jump to its far face and skip the mapScene
+        // evaluation entirely. A no-op jump (occupied / outside grid /
+        // overflow) falls through to the normal step. The jump counts as a
+        // loop iteration but NOT a march step (steps is DE-eval telemetry).
+        if (THRESH_SKIP) {
+            const float skipT = skipAdvance(pos, rd, t, *skipU, skipTable);
+            if (skipT > t) { t = skipT; continue; }
+        }
+
         float iterScale = 1.0f;
         if (lodF > 0) {
             // +0.5 so int(n·scale) in threshDEIterations lands ON effIter
@@ -1367,6 +1545,20 @@ constant bool THRESH_AUX = is_function_constant_defined(thresh_aux_defined)
 #define THRESH_TEXTURE_DEPTH   1
 #define THRESH_TEXTURE_MOTION  2
 
+// Temporal seeding (temporal-reconstruction plan phase A2): warm-start the
+// primary march from the RESOLVED history's hit distance instead of the cone
+// start. Gated by its own function constant so every non-seeded variant
+// compiles to exactly the pre-A2 code, and REQUIRES THRESH_AUX (the host only
+// bakes seed on aux twins — prevViews and the jittered ray both come from
+// that path). Texture 5 is the resolve history-aux READ side for this frame
+// (r = world hit t, miss = −1; g = sample count) at ACCUMULATION resolution —
+// a private contract with ViewComputeEncoder/TemporalReconstructor, same
+// standing as buffer 7. fc 11 stays reserved for phase-B tile budgets.
+constant bool thresh_seed_defined [[function_constant(12)]];
+constant bool THRESH_SEED = is_function_constant_defined(thresh_seed_defined)
+    ? thresh_seed_defined : false;
+#define THRESH_TEXTURE_SEED 5
+
 // Pixel-center → world ray direction for the compute path's pinhole model
 // (one derivation for the per-pixel rays AND the tile prepass ray).
 static inline float3 threshRayDir(float2 pixel, float w, float h,
@@ -1391,7 +1583,9 @@ kernel void march_offscreen(
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
     device atomic_uint* stats                [[buffer(THRESH_BUFFER_STATS)]],
+#ifndef THRESH_STATIC_DISPATCH
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
     constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
     texture2d<float, access::write> outTex   [[texture(THRESH_TEXTURE_OUTPUT)]],
     constant ThreshAuxUniforms& aux          [[buffer(THRESH_BUFFER_AUX),
@@ -1402,8 +1596,15 @@ kernel void march_offscreen(
                                                 function_constant(THRESH_AUX)]],
     texture2d<float, access::read> coneTex   [[texture(THRESH_TEXTURE_CONE),
                                                function_constant(THRESH_CONE)]],
+    constant ThreshSkipUniforms& skipU       [[buffer(THRESH_BUFFER_SKIP_UNIFORMS),
+                                               function_constant(THRESH_SKIP)]],
+    device const uint* skipTable             [[buffer(THRESH_BUFFER_SKIP_TABLE),
+                                               function_constant(THRESH_SKIP)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
     const uint w = outTex.get_width();
     const uint h = outTex.get_height();
     if (gid.x >= w || gid.y >= h) { return; }
@@ -1431,7 +1632,8 @@ kernel void march_offscreen(
                                    aspect, fovTan, U.camQuat);
 
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
-                                     tileStart);
+                                     tileStart,
+                                     THRESH_SKIP ? &skipU : nullptr, skipTable);
 
     // Per-thread step count added ONCE into the device stats counter
     // (baked off in benchmark variants — pure telemetry).
@@ -1483,11 +1685,16 @@ kernel void march_cone_prepass(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+#ifndef THRESH_STATIC_DISPATCH
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
     constant uint2& fullDims                 [[buffer(THRESH_BUFFER_CONE_DIMS)]],
     texture2d<float, access::write> coneTex  [[texture(THRESH_TEXTURE_CONE)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
     const uint cw = coneTex.get_width();
     const uint ch = coneTex.get_height();
     if (gid.x >= cw || gid.y >= ch) { return; }
@@ -1538,6 +1745,71 @@ kernel void march_cone_prepass(
         if (t > maxDist) { t = maxDist; break; }
     }
     coneTex.write(float4(t, 0.0f, 0.0f, 0.0f), gid);
+}
+
+// -------------------- skip-volume occupancy build ---------------------------
+//
+// One thread per world brick (3D grid dispatch). Evaluate the DE once at the
+// brick centre; unless the brick is PROVABLY empty, insert its flat index into
+// the hash table so the march treats it as occupied. Adapted from BorgVR
+// reportMissingBrick (atomic-CAS linear probing); the "which bricks matter" set
+// here is computed from the DE, not paged from disk. A probe exhaustion sets
+// the overflow word (table[tableSize]) so the march can safely disable skipping
+// for the frame rather than risk a false-empty.
+static inline void skipInsert(uint brickIndex, device atomic_uint* table,
+                              constant ThreshSkipUniforms& S) {
+    uint slot = borgHash(brickIndex) % S.tableSize;
+    for (uint i = 0; i < S.probeMax; ++i) {
+        const uint idx = (slot + i) % S.tableSize;
+        uint expected = THRESH_SKIP_EMPTY_SLOT;
+        if (atomic_compare_exchange_weak_explicit(
+                &table[idx], &expected, brickIndex,
+                memory_order_relaxed, memory_order_relaxed)) {
+            return;                              // claimed an empty slot
+        }
+        if (expected == brickIndex) { return; }  // already present
+    }
+    // Table too full / clustered to store this occupied brick — flag overflow;
+    // the march then falls back to a pure DE step everywhere this frame.
+    atomic_store_explicit(&table[S.tableSize], 1u, memory_order_relaxed);
+}
+
+kernel void build_skip_volume(
+    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+#ifndef THRESH_STATIC_DISPATCH
+    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
+    constant ThreshSkipUniforms& S           [[buffer(THRESH_BUFFER_SKIP_UNIFORMS)]],
+    device atomic_uint* table                [[buffer(THRESH_BUFFER_SKIP_TABLE)]],
+    uint3 gid                                [[thread_position_in_grid]])
+{
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
+    if (gid.x >= S.gridDim.x || gid.y >= S.gridDim.y || gid.z >= S.gridDim.z) {
+        return;
+    }
+    const float b = S.originExtent.w;
+    const float3 centre = S.originExtent.xyz + (float3(gid) + 0.5f) * b;
+    // A brick lies entirely within its centre-to-corner distance.
+    const float circumradius = b * 0.5f * 1.7320508f;   // ·√3
+
+    const float2 dm = mapScene(centre, U, params, ops, deTable);
+    // Non-finite DE ⇒ treat as occupied (never skip an undefined region).
+    const bool finite = (as_type<uint>(dm.x) & 0x7F800000u) != 0x7F800000u;
+    const bool empty = finite && (dm.x > circumradius * (1.0f + S.margin));
+    const uint bi = gid.x + gid.y * S.gridDim.x
+        + gid.z * S.gridDim.x * S.gridDim.y;
+    if (S.mode == 1u) {
+        // DENSE: write occupancy (0 empty / 1 occupied) at the brick index —
+        // the host cleared to 0, so an empty brick could be left implicit, but
+        // writing both keeps the pass independent of the clear.
+        atomic_store_explicit(&table[bi], empty ? 0u : 1u, memory_order_relaxed);
+    } else if (!empty) {
+        skipInsert(bi, table, S);            // hashed: only occupied bricks land
+    }
 }
 
 // ========================== stereo raster path ==============================
@@ -1597,7 +1869,9 @@ fragment ThreshFragmentOut thresh_march_fragment(
     device const float* params                 [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops             [[buffer(THRESH_BUFFER_WARP_OPS)]],
     device atomic_uint* stats                  [[buffer(THRESH_BUFFER_STATS)]],
+#ifndef THRESH_STATIC_DISPATCH
     visible_function_table<ThreshDE> deTable   [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
     constant ThreshPalette& palette            [[buffer(THRESH_BUFFER_PALETTE)]],
     device const ThreshViewUniforms* views     [[buffer(THRESH_BUFFER_VIEWS)]],
     // Per-view cone-prepass depths (perf block 11), THRESH_CONE-gated so the
@@ -1607,6 +1881,9 @@ fragment ThreshFragmentOut thresh_march_fragment(
     texture2d_array<float, access::read> coneTex [[texture(THRESH_TEXTURE_CONE),
                                                    function_constant(THRESH_CONE)]])
 {
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
     const ThreshViewUniforms view = views[in.ampIndex];
 
     float3 dirLocal = threshViewDirLocal(view.invProj, in.ndc);
@@ -1668,22 +1945,53 @@ fragment ThreshFragmentOut thresh_march_fragment(
 //
 // Texture 4 (depth out) is a private contract with ViewComputeEncoder — same
 // standing as THRESH_TEXTURE_CONE.
+//
+// THRESH_AUX variant (temporal reconstruction, plan phase A): the SAME gate
+// the Mac offscreen kernel uses. Adds jittered ray-gen (aux buffer 7 — only
+// `jitter.xy` is read on this path; the prev-camera fields are the pinhole
+// model's, superseded here by prevViews), the previous frame's view uniforms
+// (buffer 9 — private contract with ViewComputeEncoder), and two march-
+// resolution outputs the resolve kernel consumes:
+//   texture 1 (r32Float): world-space hit t, MISS = −1 sentinel (immune to a
+//     modulated max-dist param, and makes the hit↔miss flip test a sign
+//     check). NOTE this differs from the Mac aux texture-1 contract
+//     (t/maxDist for MetalFX) — TemporalResolve un-normalizes via tScale
+//     when the Mac branch reuses it.
+//   texture 2 (rg16Float): motion, previous − current, in MARCH pixels,
+//     y-down, both ends UNJITTERED; a miss reprojects the far point so
+//     rotation tracks the background (same convention as the Mac kernel).
 #define THRESH_TEXTURE_VIEW_DEPTH 4
+#define THRESH_BUFFER_PREV_VIEWS  9
 
 kernel void march_view_compute(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
     device atomic_uint* stats                [[buffer(THRESH_BUFFER_STATS)]],
+#ifndef THRESH_STATIC_DISPATCH
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
     constant ThreshPalette& palette          [[buffer(THRESH_BUFFER_PALETTE)]],
     device const ThreshViewUniforms* views   [[buffer(THRESH_BUFFER_VIEWS)]],
     texture2d_array<float, access::write> outColor [[texture(THRESH_TEXTURE_OUTPUT)]],
     texture2d_array<float, access::write> outDepth [[texture(THRESH_TEXTURE_VIEW_DEPTH)]],
     texture2d_array<float, access::read> coneTex   [[texture(THRESH_TEXTURE_CONE),
                                                      function_constant(THRESH_CONE)]],
+    constant ThreshAuxUniforms& aux          [[buffer(THRESH_BUFFER_AUX),
+                                               function_constant(THRESH_AUX)]],
+    device const ThreshViewUniforms* prevViews [[buffer(THRESH_BUFFER_PREV_VIEWS),
+                                                 function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::write> outT [[texture(THRESH_TEXTURE_DEPTH),
+                                                 function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::write> outMotion [[texture(THRESH_TEXTURE_MOTION),
+                                                      function_constant(THRESH_AUX)]],
+    texture2d_array<float, access::sample> seedAux [[texture(THRESH_TEXTURE_SEED),
+                                                     function_constant(THRESH_SEED)]],
     uint3 gid                                [[thread_position_in_grid]])
 {
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
     const uint w = outColor.get_width();
     const uint h = outColor.get_height();
     if (gid.x >= w || gid.y >= h) { return; }
@@ -1692,24 +2000,98 @@ kernel void march_view_compute(
 
     // Pixel center → NDC (y up) — the compute mirror of the fragment's
     // interpolated `in.ndc` for this pixel; then the SAME two-point
-    // unproject through this view's projection.
+    // unproject through this view's projection. The aux jitter shifts the
+    // sample point within the pixel (the resolve kernel knows the offset and
+    // removes it while accumulating history into sub-pixel detail).
+    float2 pixel = float2(gid.xy) + 0.5f;
+    if (THRESH_AUX) { pixel -= aux.jitter.xy; }
     const float2 ndc = float2(
-        (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
-        1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+        pixel.x / float(w) * 2.0f - 1.0f,
+        1.0f - pixel.y / float(h) * 2.0f);
     float3 dirLocal = threshViewDirLocal(view.invProj, ndc);
     const float roomScale = max(view.originScale.w, 1e-6f);
     const float3 ro = view.originScale.xyz;
     const float3 rd = quatRotate(view.orient, dirLocal);
 
-    // Hierarchical start: same logical-NDC tile map as the fragment.
+    // Hierarchical start: same logical-NDC tile map as the fragment. The
+    // UNJITTERED pixel picks the tile — a jittered lookup could cross into a
+    // neighbor tile whose cone start is not guaranteed for this ray (the
+    // shimmer margin covers sub-pixel wobble only within the owning tile).
     float startT = 0.0f;
     if (THRESH_CONE) {
-        const float2 tuv = clamp(ndc * 0.5f + 0.5f, 0.0f, 1.0f);
+        const float2 centerNdc = float2(
+            (float(gid.x) + 0.5f) / float(w) * 2.0f - 1.0f,
+            1.0f - (float(gid.y) + 0.5f) / float(h) * 2.0f);
+        const float2 tuv = clamp(centerNdc * 0.5f + 0.5f, 0.0f, 1.0f);
         const uint cw = coneTex.get_width();
         const uint ch = coneTex.get_height();
         const uint2 tile = uint2(min(uint(tuv.x * float(cw)), cw - 1u),
                                  min(uint(tuv.y * float(ch)), ch - 1u));
         startT = coneTex.read(tile, gid.z).x;
+    }
+
+    // Temporal seeding (phase A2): the resolved history already knows roughly
+    // where this ray hits — start the march just short of it. Candidates are
+    // the same-ACC-texel resolved t (exact for a static camera) and the 2×2
+    // history footprint at the PREVIOUS view's reprojection of that point
+    // (covers camera motion); the MIN of all five is the only safe choice
+    // near silhouettes. Any miss (−1) among them disqualifies the seed —
+    // surfaces must be able to morph INTO empty space, so miss-adjacent rays
+    // always re-march from the cone start (this is why hit-dominated frames
+    // are where seeding pays). The seed backs off by t·max(4·epsBase, 0.02)
+    // and must still beat the cone start to be worth a validation tap.
+    if (THRESH_SEED) {
+        const float2 accSize = float2(seedAux.get_width(), seedAux.get_height());
+        const float2 accP = (float2(gid.xy) + 0.5f)
+            * (accSize / float2(float(w), float(h)));
+        const uint2 accTexel = uint2(clamp(
+            accP, float2(0.0f), accSize - 1.0f));
+        const float t0 = seedAux.read(accTexel, gid.z).x;
+        float seedT = -1.0f;
+        if (t0 >= 0.0f) {
+            // Reproject the candidate surface point into the previous view's
+            // accumulation grid (the matrix mirror of the motion write below)
+            // and gather its bilinear footprint.
+            const ThreshViewUniforms sPrev = prevViews[gid.z];
+            const float sPrevRoom = max(sPrev.originScale.w, 1e-6f);
+            const float3 sLocal = quatRotate(
+                float4(-sPrev.orient.xyz, sPrev.orient.w),
+                (ro + rd * t0) - sPrev.originScale.xyz) / sPrevRoom;
+            const float4 sClip = sPrev.proj * float4(sLocal, 1.0f);
+            if (sClip.w > 1e-6f) {
+                const float2 sNdc = sClip.xy / sClip.w;
+                const float2 sUV = float2((sNdc.x + 1.0f) * 0.5f,
+                                          (1.0f - sNdc.y) * 0.5f);
+                if (all(sUV >= 0.0f) && all(sUV <= 1.0f)) {
+                    constexpr sampler kSeedGather(
+                        coord::normalized, address::clamp_to_edge,
+                        filter::nearest);
+                    const float4 g = seedAux.gather(kSeedGather, sUV, gid.z);
+                    const float tMin = min(
+                        t0, min(min(g.x, g.y), min(g.z, g.w)));
+                    if (tMin >= 0.0f) { seedT = tMin; }
+                }
+            }
+        }
+        if (seedT >= 0.0f) {
+            const float epsBase = U.scaleCtx.y;
+            const float seedStart = seedT * (1.0f - max(4.0f * epsBase, 0.02f));
+            if (seedStart > startT) {
+                // Restart valve: ONE DE tap at the seed. Unless the scene is
+                // clearly still open there (distance above the march's own
+                // hit epsilon at that t), the surface morphed toward us and
+                // the seed is a lie — restart from the cone start and count
+                // it. The !(d > eps) form also catches NaN.
+                const float d = mapScene(ro + rd * seedStart,
+                                         U, params, ops, deTable).x;
+                if (d > epsBase * seedStart) {
+                    startT = seedStart;
+                } else if (threshStatsEnabled()) {
+                    atomic_fetch_add_explicit(&stats[1], 1u,
+                                              memory_order_relaxed);
+                }
+            }
+        }
     }
 
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
@@ -1726,6 +2108,37 @@ kernel void march_view_compute(
     outDepth.write(
         float4(clamp(clip.z / max(clip.w, 1e-9f), 0.0f, 1.0f), 0.0f, 0.0f, 0.0f),
         gid.xy, gid.z);
+
+    if (THRESH_AUX) {
+        // World-space hit t; miss = −1 (see the contract comment above).
+        outT.write(float4(m.hit ? m.t : -1.0f, 0.0f, 0.0f, 0.0f),
+                   gid.xy, gid.z);
+
+        // Motion: where this frame's surface point sat LAST frame in march
+        // pixels — the same world point projected through the PREVIOUS
+        // frame's view (matrix mirror of the Mac pinhole formula). Miss uses
+        // the far point along the ray so rotation tracks the background.
+        // The CURRENT end is the JITTERED pixel — the position this sample
+        // actually images at — so a static camera yields motion 0 exactly
+        // (the resolve reprojects into the unjittered accumulation grid; a
+        // center-based end would smear history by −jitter every frame).
+        const ThreshViewUniforms prev = prevViews[gid.z];
+        const float prevRoomScale = max(prev.originScale.w, 1e-6f);
+        const float3 world = ro + rd * m.t;
+        const float3 local = quatRotate(
+            float4(-prev.orient.xyz, prev.orient.w),
+            world - prev.originScale.xyz) / prevRoomScale;
+        float2 motion = float2(0.0f);
+        const float4 pclip = prev.proj * float4(local, 1.0f);
+        if (pclip.w > 1e-6f) {
+            const float2 pndc = pclip.xy / pclip.w;
+            const float2 prevPixel = float2(
+                (pndc.x + 1.0f) * 0.5f * float(w),
+                (1.0f - pndc.y) * 0.5f * float(h));
+            motion = prevPixel - pixel;
+        }
+        outMotion.write(float4(motion, 0.0f, 0.0f), gid.xy, gid.z);
+    }
 }
 
 // -------------------- per-view hierarchical cone prepass --------------------
@@ -1744,11 +2157,16 @@ kernel void march_cone_prepass_view(
     constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
     device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
     device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+#ifndef THRESH_STATIC_DISPATCH
     visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
     device const ThreshViewUniforms* views   [[buffer(THRESH_BUFFER_VIEWS)]],
     texture2d_array<float, access::write> coneTex [[texture(THRESH_TEXTURE_CONE)]],
     uint3 gid                                [[thread_position_in_grid]])
 {
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
     const uint cw = coneTex.get_width();
     const uint ch = coneTex.get_height();
     if (gid.x >= cw || gid.y >= ch) { return; }
@@ -1866,9 +2284,14 @@ kernel void eval_de(
     device const float* params               [[buffer(2)]],
     constant ThreshFrameUniforms& U          [[buffer(3)]],
     constant uint& pointCount                [[buffer(4)]],
+#ifndef THRESH_STATIC_DISPATCH
     visible_function_table<ThreshDE> deTable [[buffer(5)]],
+#endif
     uint gid                                 [[thread_position_in_grid]])
 {
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
     if (gid >= pointCount) { return; }
     ThreshDEContext ctx;
     ctx.params = params + U.meta.w;
@@ -1877,3 +2300,30 @@ kernel void eval_de(
     ctx.lodScale = U.scaleCtx.w;
     outDE[gid] = deTable[U.meta.y](inPoints[gid].xyz, ctx);
 }
+
+/*
+ The skip-volume (borgHash, skipInsert, skipContains, skipBrickExit, and the
+ build_skip_volume occupancy pass) adapts the hashed-brick empty-space skipping
+ of BorgVR (GPUHashtable.h / VolumeAtlas.h), re-expressed for an analytic
+ distance-estimator march. https://github.com/JensDerKrueger/BorgVR
+
+ Copyright (c) 2025 Computer Graphics and Visualization Group, University of
+ Duisburg-Essen
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy of
+ this software and associated documentation files (the "Software"), to deal in
+ the Software without restriction, including without limitation the rights to
+ use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ of the Software, and to permit persons to whom the Software is furnished to do
+ so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */

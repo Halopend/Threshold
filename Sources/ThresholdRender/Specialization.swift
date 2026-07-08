@@ -33,12 +33,13 @@ import ThresholdShaderIR
 
 /// A specialized march pipeline + its (pipeline-matched) DE table. The table
 /// is still bound — Metal requires the argument — but never dispatched
-/// through in the specialized variant.
+/// through in the specialized variant. nil under static dispatch (the kernel
+/// compiles without the table argument there).
 public struct SpecializedMarch: @unchecked Sendable {
     // AUDIT — @unchecked: all properties are immutable Metal objects,
     // documented thread-safe (same precedent as GPUContext).
     public let pipeline: MTLComputePipelineState
-    public let deTable: MTLVisibleFunctionTable
+    public let deTable: MTLVisibleFunctionTable?
     /// Coarse tile prepass pipeline — present iff the variant baked
     /// `coneMarch: true`. The encoder dispatches it (one thread per 8×8
     /// tile) before the march and binds its output at texture 3.
@@ -51,7 +52,7 @@ public struct SpecializedMarch: @unchecked Sendable {
 public struct SpecializedViewCompute: @unchecked Sendable {
     // AUDIT — @unchecked: immutable Metal objects, documented thread-safe.
     public let pipeline: MTLComputePipelineState
-    public let deTable: MTLVisibleFunctionTable
+    public let deTable: MTLVisibleFunctionTable?
     public let conePrepass: MTLComputePipelineState?
     public let conePrepassDETable: MTLVisibleFunctionTable?
 }
@@ -63,7 +64,7 @@ public struct SpecializedViewCompute: @unchecked Sendable {
 public struct SpecializedRaster: @unchecked Sendable {
     // AUDIT — @unchecked: immutable Metal objects, documented thread-safe.
     public let pipeline: MTLRenderPipelineState
-    public let deTable: MTLVisibleFunctionTable
+    public let deTable: MTLVisibleFunctionTable?
     /// Present iff the variant baked `coneMarch: true`: the coarse per-view
     /// tile prepass dispatched before the render pass (writes a depth array
     /// the fragment reads at texture 3).
@@ -213,7 +214,11 @@ extension GPUContext {
             forResource: "RaymarchCore", withExtension: "metal", subdirectory: "MSL")
         else { throw RenderError.missingResource("MSL/RaymarchCore.metal") }
         let core = try String(contentsOf: coreURL, encoding: .utf8)
-        let source = "#define THRESH_SPEC_DE \(deFunctionName)\n"
+        // Static dispatch carries through to specialized variants: the kernel
+        // signatures must drop the table argument here exactly as the generic
+        // library did (the SPEC_DE direct call itself is unaffected).
+        let source = (staticDEDispatch ? Self.staticDispatchPrelude() : "")
+            + "#define THRESH_SPEC_DE \(deFunctionName)\n"
             + abiHeaderSource + "\n" + core
 
         let options = MTLCompileOptions()
@@ -248,7 +253,7 @@ extension GPUContext {
         let pipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "march_offscreen",
             deFunctions: builtinDEFunctions, auxOutputs: auxOutputs, spec: spec)
-        let table = try Self.makeDETable(
+        let table = staticDEDispatch ? nil : try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized(\(deFunctionName)) DE table")
         // Cone variants also carry the coarse tile-prepass pipeline (same
@@ -307,10 +312,16 @@ extension GPUContext {
         desc.colorAttachments[0].pixelFormat = colorFormat
         desc.depthAttachmentPixelFormat = depthFormat
         desc.inputPrimitiveTopology = .triangle
-        if maxViewCount > 1 { desc.maxVertexAmplificationCount = maxViewCount }
-        let linked = MTLLinkedFunctions()
-        linked.functions = builtinDEFunctions
-        desc.fragmentLinkedFunctions = linked
+        // Same device guard as ViewPassEncoder — amplification without device
+        // support is a validation abort (the Simulator).
+        if maxViewCount > 1, device.supportsVertexAmplificationCount(maxViewCount) {
+            desc.maxVertexAmplificationCount = maxViewCount
+        }
+        if !builtinDEFunctions.isEmpty {
+            let linked = MTLLinkedFunctions()
+            linked.functions = builtinDEFunctions
+            desc.fragmentLinkedFunctions = linked
+        }
 
         let pipeline: MTLRenderPipelineState
         do {
@@ -320,7 +331,7 @@ extension GPUContext {
                 "specialized raster(\(deFunctionName)): \(String(describing: error))")
         }
 
-        let table = try Self.makeFragmentDETable(
+        let table = staticDEDispatch ? nil : try Self.makeFragmentDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized raster(\(deFunctionName)) DE table")
 
@@ -332,7 +343,7 @@ extension GPUContext {
                 kernelName: "march_cone_prepass_view",
                 deFunctions: builtinDEFunctions, spec: spec)
             prepass = p
-            prepassTable = try Self.makeDETable(
+            prepassTable = staticDEDispatch ? nil : try Self.makeDETable(
                 p, functions: builtinDEFunctions,
                 label: "specialized raster(\(deFunctionName)) prepass DE table")
         }
@@ -344,14 +355,19 @@ extension GPUContext {
     /// Build the specialized PER-VIEW COMPUTE march (march_view_compute) for
     /// the compute backend, plus the per-view cone prepass when
     /// `spec.coneMarch` is set. Format-independent (the encoder owns the
-    /// intermediate textures), unlike the raster builder.
+    /// intermediate textures), unlike the raster builder. `auxOutputs` bakes
+    /// THRESH_AUX true — the temporal-reconstruction input variant (jittered
+    /// ray-gen + world-t/motion writes); the prepass never carries it (no aux
+    /// args there).
     func makeSpecializedViewCompute(
-        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec
+        from library: MTLLibrary, deFunctionName: String, spec: MarchSpec,
+        auxOutputs: Bool = false, seed: Bool = false
     ) throws -> SpecializedViewCompute {
         let pipeline = try Self.makeLinkedPipeline(
             device: device, library: library, kernelName: "march_view_compute",
-            deFunctions: builtinDEFunctions, spec: spec)
-        let table = try Self.makeDETable(
+            deFunctions: builtinDEFunctions, auxOutputs: auxOutputs, spec: spec,
+            seed: seed)
+        let table = staticDEDispatch ? nil : try Self.makeDETable(
             pipeline, functions: builtinDEFunctions,
             label: "specialized view-compute(\(deFunctionName)) DE table")
         var prepass: MTLComputePipelineState? = nil
@@ -362,7 +378,7 @@ extension GPUContext {
                 kernelName: "march_cone_prepass_view",
                 deFunctions: builtinDEFunctions, spec: spec)
             prepass = p
-            prepassTable = try Self.makeDETable(
+            prepassTable = staticDEDispatch ? nil : try Self.makeDETable(
                 p, functions: builtinDEFunctions,
                 label: "specialized view-compute(\(deFunctionName)) prepass DE table")
         }

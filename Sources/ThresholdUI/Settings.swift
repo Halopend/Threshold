@@ -17,6 +17,10 @@ import ThresholdRender
 public struct RenderBackendSection: View {
     @AppStorage(CompositorSession.renderBackendKey)
     private var backendRaw = CompositorSession.RenderBackend.fragment.rawValue
+    @AppStorage(CompositorSession.reconstructionKey)
+    private var reconstructionRaw = CompositorSession.Reconstruction.off.rawValue
+    @AppStorage(CompositorSession.reconSeedKey)
+    private var reconSeed = true
 
     public init() {}
 
@@ -26,6 +30,14 @@ public struct RenderBackendSection: View {
                 CompositorSession.RenderBackend(rawValue: backendRaw) ?? .fragment
             },
             set: { backendRaw = $0.rawValue })
+    }
+
+    private var reconstruction: SwiftUI.Binding<CompositorSession.Reconstruction> {
+        SwiftUI.Binding(
+            get: {
+                CompositorSession.Reconstruction(rawValue: reconstructionRaw) ?? .off
+            },
+            set: { reconstructionRaw = $0.rawValue })
     }
 
     public var body: some View {
@@ -44,6 +56,35 @@ public struct RenderBackendSection: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if backend.wrappedValue == .compute {
+                Divider()
+                Picker("Temporal Reconstruction", selection: reconstruction) {
+                    ForEach(CompositorSession.Reconstruction.allCases, id: \.self) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Accumulates jittered frames so the march can run at a "
+                     + "reduced scale without losing the image. Stabilize "
+                     + "accumulates at march resolution (steadier); TAAU "
+                     + "accumulates at output resolution (recovers detail — "
+                     + "costs ~3.5 ms/view more than stabilize). Lets Auto "
+                     + "Quality drop to 35% scale instead of 50%. Applies the "
+                     + "next time the immersive space opens.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if reconstruction.wrappedValue != .off {
+                    Toggle("Temporal Seeding", isOn: $reconSeed)
+                    Text("Warm-starts each ray from last frame's converged "
+                         + "hit distance (validated per ray, morphs restart "
+                         + "automatically). Cheaper frames at a slight cost "
+                         + "in sub-pixel detail. Applies on reopen.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .moduleCard(.orange)
     }
@@ -94,6 +135,9 @@ public struct InputSettingsSection: View {
     #if os(macOS)
     @AppStorage(KeyboardCameraNav.enabledKey) private var keyboardNav = true
     #endif
+    #if os(visionOS)
+    @AppStorage(WorldGrabSession.enabledKey) private var worldGrab = false
+    #endif
 
     public init() {}
 
@@ -111,6 +155,15 @@ public struct InputSettingsSection: View {
             Toggle("Keyboard Navigation", isOn: $keyboardNav)
             if keyboardNav {
                 Text("Click the view first — ← → orbit · ↑ ↓ pitch · W/S or +/− zoom · ⇧ moves faster · R resets the view")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            #endif
+            #if os(visionOS)
+            Toggle("Two-Hand World Grab", isOn: $worldGrab)
+            if worldGrab {
+                Text("Pinch with both hands to move, turn, and scale the fractal in space — turn this off to snap it back.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)

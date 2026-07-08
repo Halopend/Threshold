@@ -69,11 +69,21 @@ public enum ControlTab: String, CaseIterable, Sendable {
                 SubTab("routes", "Routes", "point.topleft.down.to.point.bottomright.curvepath"),
             ]
         case .setup:
+            // Gestures is a visionOS-only surface (hand-tracking assignment).
+            // On Mac/iPad no HandTracker consumes it, so the panel is inert —
+            // don't offer the sub-tab there.
+            #if os(visionOS)
             return [
                 SubTab("prefs", "Prefs", "slider.horizontal.3"),
                 SubTab("gestures", "Gestures", "hand.point.up.left"),
                 SubTab("performance", "Performance", "speedometer"),
             ]
+            #else
+            return [
+                SubTab("prefs", "Prefs", "slider.horizontal.3"),
+                SubTab("performance", "Performance", "speedometer"),
+            ]
+            #endif
         default:
             return []
         }
@@ -126,13 +136,19 @@ public struct ControlSidebar: View {
     /// Audio-input verbs (mic on/off) for the Motion ▸ Music sub-tab; nil hides
     /// the mic toggle (shells without audio capture).
     let audioActions: AudioActions?
+    /// Clears camera-interaction state back to the scene's authored pose. Nil
+    /// on shells with no desktop/touch camera (visionOS is head-driven — it
+    /// recovers via the world-grab toggle instead), which hides the Camera
+    /// card's Reset accessory.
+    let resetView: (() -> Void)?
 
     public init(
         mirror: ParameterMirror, layout: CatalogLayout,
         sceneActions: SceneActions? = nil,
         animationActions: AnimationActions? = nil,
         audioActions: AudioActions? = nil,
-        gestureStore: GestureBindingStore? = nil
+        gestureStore: GestureBindingStore? = nil,
+        resetView: (() -> Void)? = nil
     ) {
         self.mirror = mirror
         self.layout = layout
@@ -140,6 +156,7 @@ public struct ControlSidebar: View {
         self.animationActions = animationActions
         self.audioActions = audioActions
         self.injectedStore = gestureStore
+        self.resetView = resetView
     }
 
     private var tabs: [ControlTab] {
@@ -229,9 +246,14 @@ public struct ControlSidebar: View {
                     content(for: tab, subtab: selectedSubtab(for: tab))
                 }
                 .padding(DS.Spacing.md)
-                // Setup ▸ Prefs ▸ Display drives the PANEL's text size only —
-                // reflowed Dynamic Type, chrome untouched.
-                .dynamicTypeSize(DS.textSize(forIndex: textSizeIndex))
+                // Setup ▸ Prefs ▸ Display sets a text-size FLOOR for the panel
+                // (reflowed Dynamic Type, chrome untouched). Range form, not the
+                // absolute form: the absolute modifier REPLACED the environment,
+                // silently shrinking a low-vision user's larger OS Dynamic Type
+                // setting. As a floor…AX2 range it honors the OS size within
+                // bounds and still lets the slider raise the baseline (visionOS).
+                .dynamicTypeSize(
+                    DS.textSize(forIndex: textSizeIndex)...DynamicTypeSize.accessibility2)
             }
         }
     }
@@ -295,7 +317,15 @@ public struct ControlSidebar: View {
                     title: "Camera", icon: "move.3d", accent: .cyan,
                     keys: [.cameraOrbitYaw, .cameraOrbitPitch, .cameraDolly],
                     mirror: mirror, layout: layout,
-                    footer: "Drag the view to orbit · pinch or scroll to dolly.")
+                    footer: "Drag the view to orbit · pinch or scroll to dolly.",
+                    accessory: resetView.map { reset in
+                        AnyView(
+                            Button(action: reset) {
+                                Label("Reset View", systemImage: "arrow.counterclockwise")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless))
+                    })
                 ZoomSection(mirror: mirror, layout: layout)
             }
         case .setup:
@@ -304,11 +334,13 @@ public struct ControlSidebar: View {
                 StatsSection(mirror: mirror)
                 PipelineSection(mirror: mirror)
                 CatalogSectionView(group: .performance, layout: layout, mirror: mirror)
+            #if os(visionOS)
             case "gestures":
                 HandConstellationPanel(
                     params: BindableParams.derive(from: layout.entries + mirror.dynamicEntries),
                     fractal: mirror.deKey,
                     store: gestureStore)
+            #endif
             default:
                 DisplaySettingsSection()
                 InputSettingsSection()
@@ -371,11 +403,14 @@ public struct KeyedParamsSection: View {
     let mirror: ParameterMirror
     let layout: CatalogLayout
     let footer: String?
+    /// Optional trailing header control (e.g. the Camera card's Reset View).
+    let accessory: AnyView?
 
     public init(
         title: String, icon: String, accent: Color,
         keys: [ParamKey], mirror: ParameterMirror, layout: CatalogLayout,
-        footer: String? = nil
+        footer: String? = nil,
+        accessory: AnyView? = nil
     ) {
         self.title = title
         self.icon = icon
@@ -384,13 +419,16 @@ public struct KeyedParamsSection: View {
         self.mirror = mirror
         self.layout = layout
         self.footer = footer
+        self.accessory = accessory
     }
 
     public var body: some View {
         let entries = keys.compactMap { layout.entry(for: $0) }
         if !entries.isEmpty {
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                SectionHeader(title, icon: icon)
+                SectionHeader(title, icon: icon) {
+                    if let accessory { accessory }
+                }
                 KeyedParamRows(entries: entries, mirror: mirror)
                 if let footer {
                     Text(footer)
@@ -744,14 +782,18 @@ public struct StatsSection: View {
         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
             SectionHeader("Session", icon: "gauge.with.dots.needle.67percent")
             HStack(spacing: DS.Spacing.xs) {
+                // Paused reads as "Paused" (gray), not a deceptively calm 0 fps;
+                // a genuine stall shows 0 in red. Tiles color by budget so a
+                // slow frame is visible at a glance instead of a fixed green.
                 StatBox(
                     label: "FPS",
-                    value: String(format: "%.0f", mirror.stats.fps),
-                    color: .green)
+                    value: mirror.paused
+                        ? "Paused" : String(format: "%.0f", mirror.stats.fps),
+                    color: mirror.paused ? .secondary : Self.fpsColor(mirror.stats.fps))
                 StatBox(
                     label: "GPU ms",
                     value: String(format: "%.2f", mirror.stats.gpuMilliseconds),
-                    color: .orange)
+                    color: Self.gpuColor(mirror.stats.gpuMilliseconds))
                 StatBox(
                     label: "Steps",
                     value: "\(mirror.stats.totalSteps)",
@@ -769,7 +811,13 @@ public struct StatsSection: View {
             // governor only modulates below them.
             Toggle("Auto Quality", isOn: $autoQuality)
                 .onChange(of: autoQuality) { _, on in
+                    // visionOS: governorDefault keeps the reconstruction-aware
+                    // resolution floor (0.35 vs 0.5) when re-arming from UI.
+                    #if os(visionOS)
+                    mirror.setQualityGovernor(on ? CompositorSession.governorDefault : nil)
+                    #else
                     mirror.setQualityGovernor(on ? .platformDefault : nil)
+                    #endif
                 }
             // Render Quality: the USER'S CEILING (ADR-003). With Auto Quality
             // on, the governor adapts below it to hold fps; off, this is the
@@ -816,6 +864,30 @@ public struct StatsSection: View {
                 mirror.setRenderTuning(next)
             })
     }
+
+    /// FPS tile color by health. visionOS targets ~90 Hz; other platforms 60.
+    static func fpsColor(_ fps: Double) -> Color {
+        #if os(visionOS)
+        let good = 80.0, ok = 45.0
+        #else
+        let good = 55.0, ok = 30.0
+        #endif
+        if fps >= good { return .green }
+        if fps >= ok { return .yellow }
+        return .red
+    }
+
+    /// GPU-ms tile color by frame-budget headroom (lower is better).
+    static func gpuColor(_ ms: Double) -> Color {
+        #if os(visionOS)
+        let good = 9.0, ok = 13.0   // ~90 Hz budget ≈ 11 ms
+        #else
+        let good = 10.0, ok = 16.0  // ~60 Hz budget ≈ 16.6 ms
+        #endif
+        if ms <= good { return .green }
+        if ms <= ok { return .orange }
+        return .red
+    }
 }
 
 // MARK: - PipelineSection
@@ -851,6 +923,11 @@ public struct PipelineSection: View {
             }
             if !mirror.diagnostics.bakedConstants.isEmpty {
                 LabeledContent("Baked", value: mirror.diagnostics.bakedConstants)
+                    .font(.caption)
+            }
+            if mirror.diagnostics.reconstruction != "off" {
+                LabeledContent("Reconstruction",
+                               value: mirror.diagnostics.reconstruction.uppercased())
                     .font(.caption)
             }
             // (Render Quality lives in the Session card next to Auto

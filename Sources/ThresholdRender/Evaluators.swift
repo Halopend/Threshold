@@ -182,8 +182,10 @@ public final class DEEvaluator: @unchecked Sendable {
             encoder.setBytes(raw.baseAddress!, length: raw.count, index: 3)
         }
         encoder.setBytes(&pointCount, length: MemoryLayout<UInt32>.size, index: 4)
-        encoder.setVisibleFunctionTable(program?.evalDETable ?? context.evalDETable,
-                                        bufferIndex: GPUContext.evalDETableBufferIndex)
+        if let table = program?.evalDETable ?? context.evalDETable {
+            encoder.setVisibleFunctionTable(
+                table, bufferIndex: GPUContext.evalDETableBufferIndex)
+        }
         dispatch1D(encoder, count: count)
         encoder.endEncoding()
         commandBuffer.commit()

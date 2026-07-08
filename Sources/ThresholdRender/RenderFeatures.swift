@@ -86,5 +86,15 @@ public enum RenderFeatureTable {
             id: "march.renderScale",
             paths: [.interactive, .compositor],
             requiredOnAll: false),
+        // Custom temporal reconstruction (plan phase A): jittered aux march →
+        // temporal_resolve history accumulation (stabilize/TAAU) → present
+        // from resolved color/t. Compute backend only (the fragment path's
+        // rate-map-warped space can't host per-pixel reprojection); off by
+        // default until the device bench locks a mode. Perf overlay:
+        // correct to omit.
+        RenderFeature(
+            id: "march.temporalRecon",
+            paths: [.compositor],
+            requiredOnAll: false),
     ]
 }

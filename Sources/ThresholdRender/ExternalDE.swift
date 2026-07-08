@@ -68,15 +68,17 @@ public final class ExternalDEProgram: @unchecked Sendable {
     public let descriptor: DEDescriptor
     public let sourceHash: String
     let marchPipeline: MTLComputePipelineState
-    let marchDETable: MTLVisibleFunctionTable
+    /// nil under static dispatch — the external compiles into one translation
+    /// unit with the core and the generated switch calls it directly.
+    let marchDETable: MTLVisibleFunctionTable?
     let evalDEPipeline: MTLComputePipelineState
-    let evalDETable: MTLVisibleFunctionTable
+    let evalDETable: MTLVisibleFunctionTable?
     /// builtin count + 1 — bounds check for meta.y.
     public let deFunctionCount: Int
 
     init(descriptor: DEDescriptor, sourceHash: String,
-         marchPipeline: MTLComputePipelineState, marchDETable: MTLVisibleFunctionTable,
-         evalDEPipeline: MTLComputePipelineState, evalDETable: MTLVisibleFunctionTable,
+         marchPipeline: MTLComputePipelineState, marchDETable: MTLVisibleFunctionTable?,
+         evalDEPipeline: MTLComputePipelineState, evalDETable: MTLVisibleFunctionTable?,
          deFunctionCount: Int) {
         self.descriptor = descriptor
         self.sourceHash = sourceHash
@@ -183,25 +185,60 @@ public final class ExternalDELoader: @unchecked Sendable {
         }
 
         // --- link: built-ins + the external, external LAST ------------------
-        let functions = context.builtinDEFunctions + [external]
-        let index = context.builtinDEFunctions.count
+        // Static dispatch (the Simulator — no visible-function machinery):
+        // cross-library linking doesn't exist there, so the external source
+        // compiles INTO one translation unit with the core. The generated
+        // switch gains `case builtin.count: return de_main(p, ctx);` and the
+        // march calls it directly; `[[visible]]` is stripped from the copy
+        // (nothing links it — the switch needs a plain callable function).
+        let index = context.deFunctionCount
         let marchPipeline: MTLComputePipelineState
-        let marchTable: MTLVisibleFunctionTable
+        let marchTable: MTLVisibleFunctionTable?
         let evalPipeline: MTLComputePipelineState
-        let evalTable: MTLVisibleFunctionTable
+        let evalTable: MTLVisibleFunctionTable?
         do {
-            marchPipeline = try GPUContext.makeLinkedPipeline(
-                device: context.device, library: context.library,
-                kernelName: "march_offscreen", deFunctions: functions)
-            marchTable = try GPUContext.makeDETable(
-                marchPipeline, functions: functions,
-                label: "external DE march table \(hash.prefix(8))")
-            evalPipeline = try GPUContext.makeLinkedPipeline(
-                device: context.device, library: context.library,
-                kernelName: "eval_de", deFunctions: functions)
-            evalTable = try GPUContext.makeDETable(
-                evalPipeline, functions: functions,
-                label: "external DE eval table \(hash.prefix(8))")
+            if context.staticDEDispatch {
+                let sanitized = embedded.source
+                    .replacingOccurrences(of: "[[visible]]", with: "")
+                let combined = "#include <metal_stdlib>\nusing namespace metal;\n"
+                    + GPUContext.staticDispatchPrelude(externalFunctionName: "de_main")
+                    + context.abiHeaderSource + "\n"
+                    + sanitized + "\n"
+                    + context.marchCoreSource
+                let combinedOptions = MTLCompileOptions()
+                combinedOptions.mathMode = .safe
+                let combinedLibrary: MTLLibrary
+                do {
+                    combinedLibrary = try context.device.makeLibrary(
+                        source: combined, options: combinedOptions)
+                } catch {
+                    throw ExternalDEError.compileFailed(String(describing: error))
+                }
+                marchPipeline = try GPUContext.makeLinkedPipeline(
+                    device: context.device, library: combinedLibrary,
+                    kernelName: "march_offscreen", deFunctions: [])
+                marchTable = nil
+                evalPipeline = try GPUContext.makeLinkedPipeline(
+                    device: context.device, library: combinedLibrary,
+                    kernelName: "eval_de", deFunctions: [])
+                evalTable = nil
+            } else {
+                let functions = context.builtinDEFunctions + [external]
+                marchPipeline = try GPUContext.makeLinkedPipeline(
+                    device: context.device, library: context.library,
+                    kernelName: "march_offscreen", deFunctions: functions)
+                marchTable = try GPUContext.makeDETable(
+                    marchPipeline, functions: functions,
+                    label: "external DE march table \(hash.prefix(8))")
+                evalPipeline = try GPUContext.makeLinkedPipeline(
+                    device: context.device, library: context.library,
+                    kernelName: "eval_de", deFunctions: functions)
+                evalTable = try GPUContext.makeDETable(
+                    evalPipeline, functions: functions,
+                    label: "external DE eval table \(hash.prefix(8))")
+            }
+        } catch let error as ExternalDEError {
+            throw error
         } catch {
             throw ExternalDEError.linkFailed(String(describing: error))
         }
@@ -222,7 +259,7 @@ public final class ExternalDELoader: @unchecked Sendable {
             descriptor: descriptor, sourceHash: hash,
             marchPipeline: marchPipeline, marchDETable: marchTable,
             evalDEPipeline: evalPipeline, evalDETable: evalTable,
-            deFunctionCount: functions.count)
+            deFunctionCount: index + 1)
 
         // --- probe (plan §7.2: never trust-and-crash) ------------------------
         try probe(program)
