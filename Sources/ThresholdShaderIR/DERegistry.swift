@@ -110,10 +110,10 @@ extension DEDescriptor {
         mslFunctionName: "de_mandelbox",
         equation: "zₙ₊₁ = scale·sphereFold(boxFold(zₙ)) + p",
         paramLayout: [
-            Param(name: "scale", default: 2.0, range: -4.0...4.0),
-            Param(name: "minRadius", default: 0.25, range: 0.01...2.0),
+            Param(name: "scale", default: 2.0, range: -5.0...8.0),
+            Param(name: "minRadius", default: 0.25, range: 0.01...8.0),
             Param(name: "fixedRadius", default: 1.0, range: 0.05...4.0),
-            Param(name: "foldLimit", default: 1.0, range: 0.1...4.0),
+            Param(name: "foldLimit", default: 1.0, range: -10.0...30.0),
         ],
         defaultIterations: 12,
         stepRelaxation: 1.6
@@ -223,10 +223,10 @@ extension DEDescriptor {
         mslFunctionName: "de_mandelboxSphereProjection",
         equation: "p′ = p·((1−b) + b·R/|p|);  Mandelbox(p′)",
         paramLayout: [
-            Param(name: "scale", default: 2.0, range: -4.0...4.0),
-            Param(name: "minRadius", default: 0.25, range: 0.01...2.0),
+            Param(name: "scale", default: 2.0, range: -5.0...8.0),
+            Param(name: "minRadius", default: 0.25, range: 0.01...8.0),
             Param(name: "fixedRadius", default: 1.0, range: 0.05...4.0),
-            Param(name: "foldLimit", default: 1.0, range: 0.1...4.0),
+            Param(name: "foldLimit", default: 1.0, range: -10.0...30.0),
             Param(name: "projBlend", default: 0.98, range: 0.0...0.98),
             Param(name: "projRadius", default: 1.0, range: 0.2...12.0),
         ],

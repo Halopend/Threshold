@@ -63,7 +63,8 @@ struct Bitset {
     }
 
     mutating func removeAll() {
-        for i in words.indices { words[i] = 0 }
+        guard !words.isEmpty else { return }
+        words = [UInt64](repeating: 0, count: words.count)
     }
 
     var isEmpty: Bool { words.allSatisfy { $0 == 0 } }
@@ -359,9 +360,9 @@ public final class ModulationEngine {
         let laneCount = Lane.allCases.count
         self.target = [[Float]](repeating: [Float](repeating: 0, count: n), count: laneCount)
         self.current = [[Float]](repeating: [Float](repeating: 0, count: n), count: laneCount)
-        self.hasValue = [Bitset](repeating: Bitset(bitCount: n), count: laneCount)
+        self.hasValue = (0..<laneCount).map { _ in Bitset(bitCount: n) }
         self.musicWritten = Bitset(bitCount: n)
-        self.releasing = [Bitset](repeating: Bitset(bitCount: n), count: laneCount)
+        self.releasing = (0..<laneCount).map { _ in Bitset(bitCount: n) }
         self.pendingSceneClears = Bitset(bitCount: n)
     }
 

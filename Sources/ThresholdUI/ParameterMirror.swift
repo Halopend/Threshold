@@ -348,6 +348,18 @@ public final class ParameterMirror {
     public func applyScene(
         _ scene: SceneEnvelope, transition: SceneTransition? = .default
     ) {
+        DiagnosticBreadcrumbs.record(
+            category: "scene", message: "scene_apply_published",
+            metadata: [
+                "name": scene.name ?? "unnamed",
+                "de": scene.fractalTypeKey,
+                "external": String(scene.embeddedDE != nil),
+                "transition": String(
+                    transition != nil
+                        && !DiagnosticSwitches.isEnabled(.disableSceneTransitions)),
+                "params": String(scene.params.count),
+                "warps": String(scene.warpStack.count),
+            ])
         // Seed the editors from the loaded scene: the render side installs the
         // same bindings/LFOs on apply, so the UI source of truth stays in sync
         // with the engine (see the `bindings`/`lfos` docs). The Focus Band is
@@ -445,6 +457,9 @@ public final class ParameterMirror {
     /// Load (nil unloads) an animation clip. Transport starts stopped —
     /// follow with `animationTransport(.play)` (SessionCommand contract).
     public func setAnimationClip(_ clip: AnimationClip?) {
+        DiagnosticBreadcrumbs.record(
+            category: "animation", message: "animation_clip_published",
+            metadata: ["name": clip?.name ?? "nil"])
         commands.publish(.setAnimationClip(clip))
     }
 
@@ -452,6 +467,9 @@ public final class ParameterMirror {
     /// playback state returns via the next snapshot (transport is cheap and
     /// the play/scrub UI reads clip-local time the render thread computes).
     public func animationTransport(_ verb: AnimationTransportCommand) {
+        DiagnosticBreadcrumbs.record(
+            category: "animation", message: "animation_transport",
+            metadata: ["verb": String(describing: verb)])
         commands.publish(.animationTransport(verb))
     }
 
@@ -465,6 +483,12 @@ public final class ParameterMirror {
     /// diagnostics + gpuMs within a frame or two (a specialized variant may
     /// need a background compile before it engages).
     public func setRenderTuning(_ tuning: RenderTuning) {
+        DiagnosticBreadcrumbs.record(
+            category: "pipeline", message: "render_tuning_changed",
+            metadata: [
+                "specialization": String(tuning.specializationEnabled),
+                "iterationBake": String(tuning.bakeIterations),
+            ])
         renderTuning = tuning
         commands.publish(.setRenderTuning(tuning))
     }

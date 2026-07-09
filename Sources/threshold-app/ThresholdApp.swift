@@ -78,6 +78,13 @@ final class AppModel {
     let watchdog = HangWatchdog()
 
     func start() {
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_start_requested")
+        if DiagnosticSwitches.isEnabled(.disableSpecialization) {
+            var tuning = mirror.renderTuning
+            tuning.specializationEnabled = false
+            mirror.setRenderTuning(tuning)
+        }
         session.start()
         mirror.startPolling()
         watchdog.start()
@@ -93,15 +100,22 @@ final class AppModel {
             config.targetMilliseconds = target
         }
         mirror.setQualityGovernor(config)
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_started",
+            metadata: ["qualityTargetMs": String(config.targetMilliseconds)])
     }
 
     func stop() {
         ThresholdLog.session.notice("app stopping")
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_stop_requested")
         keyboardNav.remove()
         watchdog.stop()
         audio.stop()
         mirror.stopPolling()
-        session.stop()
+        session.requestStop()
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_stopped")
     }
 
     // MARK: Audio input
@@ -111,6 +125,8 @@ final class AppModel {
     /// builds in Motion ▸ Routes (or the Music tab's quick-adds). Enabling audio
     /// no longer installs demo bindings; routing is fully user-owned.
     func setAudioEnabled(_ on: Bool) {
+        DiagnosticBreadcrumbs.record(
+            category: "audio", message: on ? "audio_enable_requested" : "audio_disable_requested")
         if on {
             do {
                 try audio.start()
@@ -124,6 +140,9 @@ final class AppModel {
                 ThresholdLog.audio.error(
                     "audio start failed: \(String(describing: error), privacy: .public)")
                 audioEnabled = false
+                DiagnosticBreadcrumbs.record(
+                    category: "audio", message: "audio_start_failed",
+                    metadata: ["error": String(describing: error)])
             }
         } else {
             audio.stop()
@@ -181,12 +200,13 @@ struct ThresholdApp: App {
                 + (d.specializationPending ? " (compiling)" : "")
                 + (d.bakedConstants.isEmpty ? "" : " baked[\(d.bakedConstants)]")
                 + " renderScale=\(String(format: "%.2f", d.renderScale))")
+            DiagnosticBreadcrumbs.markCleanExit()
             exit(0)
         }
     }
 
     var body: some Scene {
-        WindowGroup("Threshold") {
+        WindowGroup("Threshold Rebuild") {
             Group {
                 if let model {
                     MainView(model: model)
@@ -196,6 +216,7 @@ struct ThresholdApp: App {
                 } else {
                     ProgressView("Starting…")
                         .task {
+                            AppDiagnostics.shared.start()
                             do {
                                 let m = try AppModel()
                                 m.start()
@@ -205,11 +226,18 @@ struct ThresholdApp: App {
                                 }
                             } catch {
                                 initError = String(describing: error)
+                                DiagnosticBreadcrumbs.record(
+                                    category: "lifecycle", message: "app_initialization_failed",
+                                    metadata: ["error": String(describing: error)])
                             }
                         }
                 }
             }
             .frame(minWidth: 960, minHeight: 600)
+            .onDisappear {
+                model?.stop()
+                AppDiagnostics.shared.stop(clean: true)
+            }
         }
     }
 }
@@ -240,7 +268,8 @@ struct MainView: View {
                 audioActions: AudioActions(
                     isEnabled: { model.audioEnabled },
                     setEnabled: { model.setAudioEnabled($0) },
-                    setFocusBand: { model.setFocusBand($0) }))
+                    setFocusBand: { model.setFocusBand($0) }),
+                resetView: { model.camera.reset() })
                 .frame(minWidth: 320, idealWidth: 360, maxWidth: 480)
         }
     }

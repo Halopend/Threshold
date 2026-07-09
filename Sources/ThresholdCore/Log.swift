@@ -6,7 +6,7 @@
 // RenderTelemetry ("com.polinate.threshold.render"), which feeds Instruments.
 //
 // Everything logged here is visible in Console.app, in a sysdiagnose, and via
-//   log stream --predicate 'subsystem BEGINSWITH "com.polinate.threshold"'
+//   log stream --predicate 'subsystem == "com.pupppower.threshold.rebuild"'
 // including release builds on device — none of which is true of print().
 //
 // Severity contract — pick the level by unified logging's NATIVE persistence
@@ -28,7 +28,9 @@
 import os
 
 public enum ThresholdLog {
-    public static let subsystem = "com.polinate.threshold"
+    /// Deliberately distinct from the original app: both products otherwise
+    /// appear as "Threshold" in crash reports and unified logging.
+    public static let subsystem = "com.pupppower.threshold.rebuild"
 
     /// GPU work: command-buffer faults, pipeline stalls, dropped frames.
     public static let render = Logger(subsystem: subsystem, category: "render")
@@ -40,4 +42,6 @@ public enum ThresholdLog {
     public static let hands = Logger(subsystem: subsystem, category: "hands")
     /// Scene/animation/preset persistence.
     public static let io = Logger(subsystem: subsystem, category: "io")
+    /// Build identity, breadcrumbs, MetricKit, and diagnostic switches.
+    public static let diagnostics = Logger(subsystem: subsystem, category: "diagnostics")
 }

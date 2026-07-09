@@ -478,7 +478,9 @@ final class RasterSpecializationCache: Sendable {
             let colorFormat = colorFormat
             let depthFormat = depthFormat
             let maxViewCount = maxViewCount
-            Task.detached(priority: .utility) { [self] in
+            PipelineCompilationScheduler.shared.submit(
+                label: "view-raster-specialization:\(deFunctionName)"
+            ) { [self] in
                 let library: MTLLibrary? = resolveLibrary(deFunctionName)
                 let compiled = library.flatMap {
                     try? context.makeSpecializedRaster(

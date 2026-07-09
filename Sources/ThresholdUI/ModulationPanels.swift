@@ -612,7 +612,7 @@ public struct RoutesSection: View {
                 SectionHeader("Routes", icon: "point.topleft.down.to.point.bottomright.curvepath") {
                     Button {
                         addRoute()
-                    } label: { Image(systemName: "plus") }
+                    } label: { Image(systemName: "plus.circle.fill") }
                     .buttonStyle(.borderless)
                 }
                 if mirror.bindings.isEmpty {
@@ -647,9 +647,13 @@ public struct RoutesSection: View {
     }
 
     private func addRoute() {
-        // Default to the first LFO (or bass) → the first VISIBLE target so a new
-        // route lands on the fractal you're looking at.
-        let source = mirror.lfos.first?.slot ?? SignalID.standardLFOs.first ?? .audioBandLow
+        // Default the source to the first real LFO if one exists, else the bass
+        // audio band — a LIVE signal. The old fallback to `standardLFOs.first`
+        // pointed at an unconfigured LFO slot that drives nothing until the user
+        // also creates that LFO, so a fresh route did visibly nothing.
+        // Target: the first VISIBLE target so the route lands on the fractal
+        // you're looking at.
+        let source = mirror.lfos.first?.slot ?? .audioBandLow
         let target = visibleTargets.first ?? allTargets.first
         mirror.addBinding(ThresholdCore.Binding(
             signal: source,
@@ -692,7 +696,7 @@ private struct RouteCard: View {
                 Spacer(minLength: 0)
                 Button(role: .destructive) {
                     mirror.removeBinding(id: route.id)
-                } label: { Image(systemName: "minus.circle") }
+                } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
             }
             // Row 2: response curve + strength.
@@ -732,7 +736,11 @@ private struct RouteCard: View {
             .font(.caption2)
         }
         .padding(DS.Spacing.sm)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.inset).fill(.quaternary.opacity(0.3)))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                .strokeBorder(Color.teal.opacity(0.20), lineWidth: 0.7))
     }
 
     private var sourceMenu: some View {
@@ -859,7 +867,7 @@ public struct LFOBankSection: View {
             SectionHeader("LFOs", icon: "waveform.path.ecg") {
                 Button {
                     addLFO()
-                } label: { Image(systemName: "plus") }
+                } label: { Image(systemName: "plus.circle.fill") }
                 .buttonStyle(.borderless)
                 .disabled(mirror.nextFreeLFOSlot == nil)
             }
@@ -908,7 +916,7 @@ private struct LFOCard: View {
                     .labelsHidden()
                 Button(role: .destructive) {
                     mirror.removeLFO(id: lfo.id)
-                } label: { Image(systemName: "minus.circle") }
+                } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
             }
 
@@ -933,7 +941,7 @@ private struct LFOCard: View {
             HStack {
                 Button {
                     update { $0.components.append(LFOComponent(wave: .triangle, rateHz: 0.5)) }
-                } label: { Label("Add wave", systemImage: "plus") }
+                } label: { Label("Add wave", systemImage: "plus.circle.fill") }
                 .buttonStyle(.borderless).font(.caption2)
                 Spacer()
                 Text("Bias").font(.caption2).foregroundStyle(.secondary)
@@ -943,7 +951,11 @@ private struct LFOCard: View {
             }
         }
         .padding(DS.Spacing.sm)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.inset).fill(.quaternary.opacity(0.3)))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                .strokeBorder(Color.indigo.opacity(0.20), lineWidth: 0.7))
     }
 }
 
@@ -967,7 +979,7 @@ private struct LFOComponentRow: View {
             labeledSlider("Phase", value: $component.phase, in: 0...1)
             if let onRemove {
                 Button(role: .destructive, action: onRemove) {
-                    Image(systemName: "xmark.circle")
+                    Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
             }

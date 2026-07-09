@@ -499,7 +499,9 @@ final class ViewComputeSpecializationCache: Sendable {
         }
         if shouldCompile {
             let context = context
-            Task.detached(priority: .utility) { [self] in
+            PipelineCompilationScheduler.shared.submit(
+                label: "view-compute-specialization:\(deFunctionName)"
+            ) { [self] in
                 let library: MTLLibrary? = resolveLibrary(deFunctionName)
                 let compiled = library.flatMap {
                     try? context.makeSpecializedViewCompute(

@@ -6,9 +6,9 @@
 //   • four fingertip orbs   → `.tapThumb` sources (a pinched finger's 3D drag);
 //   • four palm drop-points → `.tapPalm` sources (finger-to-palm touch);
 //   • swipe + fist chips     → `.swipe` / `.fist` sources.
-// Tapping any of these SELECTS it; the `Vec3BindingEditor` for the selection
-// renders below, so one editor serves every source (the legacy per-orb Menu is
-// replaced by the richer editor the rebuild needs for xyz grouping).
+// Fingertip orbs use the legacy direct-assignment menu: bind whole XYZ groups
+// or claim X/Y/Z axes without leaving the hand diagram. Palm/fist/swipe still
+// use the richer editor, because those sources do not need per-axis claiming.
 //
 // Purely a selector + host: it derives nothing and owns no binding state — it
 // reads `BindableParams` and drives `GestureBindingStore`.
@@ -73,6 +73,7 @@ public struct HandConstellationPanel: View {
     @State private var selected: GestureSource?
     @State private var showingSavePreset = false
     @State private var newPresetName = ""
+    @State private var showingAdvancedEditor = false
 
     public init(params: BindableParams, fractal: String, store: GestureBindingStore) {
         self.params = params
@@ -86,6 +87,7 @@ public struct HandConstellationPanel: View {
         VStack(spacing: DS.Spacing.sm) {
             presetBar
             stageCard
+            assignmentsSummary
             editorOrHint
         }
         .alert("Save gesture preset", isPresented: $showingSavePreset) {
@@ -163,8 +165,7 @@ public struct HandConstellationPanel: View {
             .frame(height: HandStage.stageHeight)
 
             handActionChips
-            Text("Tap a fingertip (pinch-drag → X/Y/Z), a palm point (finger→palm), "
-                 + "or a hand action to assign it.")
+            Text("Tap a fingertip to assign X/Y/Z directly. Tap a palm point or hand action to edit below.")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -230,7 +231,17 @@ public struct HandConstellationPanel: View {
 
     // MARK: Orb / palm point
 
+    @ViewBuilder
     private func orb(_ source: GestureSource, at center: CGPoint, diameter: CGFloat) -> some View {
+        if case let .tapThumb(hand, finger) = source {
+            tapThumbMenu(hand: hand, finger: finger)
+                .position(center)
+        } else {
+            selectorOrb(source, at: center, diameter: diameter)
+        }
+    }
+
+    private func selectorOrb(_ source: GestureSource, at center: CGPoint, diameter: CGFloat) -> some View {
         let bound = store.binding(for: source, fractal: fractal) != nil
         let isSelected = selected == source
         return Button { selected = source } label: {
@@ -255,17 +266,290 @@ public struct HandConstellationPanel: View {
         .position(center)
     }
 
+    private func tapThumbMenu(hand: GestureHand, finger: GestureFinger) -> some View {
+        let source = GestureSource.tapThumb(hand: hand, finger: finger)
+        let binding = store.binding(for: source, fractal: fractal)
+        let count = axisClaimCount(binding)
+        let icon = tapThumbIcon(binding)
+        return Menu {
+            if !params.vectors.isEmpty || !params.groups.isEmpty {
+                Section("Whole X/Y/Z") {
+                    ForEach(params.vectors) { item in
+                        Button {
+                            assign(.vector(.native(item.key)), to: source)
+                        } label: {
+                            Label(item.label, systemImage: isVectorNative(binding, item.key) ? "checkmark" : "cube")
+                        }
+                    }
+                    ForEach(params.groups, id: \.name) { group in
+                        Button {
+                            assign(.vector(group.target), to: source)
+                        } label: {
+                            Label(group.name, systemImage: isVectorGroup(binding, group) ? "checkmark" : "cube")
+                        }
+                    }
+                }
+            }
+
+            Section("Single-axis dials") {
+                ForEach(params.scalars) { item in
+                    Menu {
+                        axisClaimButton(source: source, item: item, axis: .x)
+                        axisClaimButton(source: source, item: item, axis: .y)
+                        axisClaimButton(source: source, item: item, axis: .z)
+                    } label: {
+                        Label(item.label, systemImage: "slider.horizontal.3")
+                    }
+                }
+            }
+
+            Section("Action") {
+                ForEach(CoreGestureAction.allCases, id: \.self) { action in
+                    Button {
+                        assign(.core(action), to: source)
+                    } label: {
+                        Label(action.displayName, systemImage: isCore(binding, action) ? "checkmark" : "bolt")
+                    }
+                }
+            }
+
+            if binding != nil {
+                Divider()
+                Button("Clear Finger", role: .destructive) { assign(nil, to: source) }
+            }
+            Divider()
+            Button("Open Advanced Editor") {
+                selected = source
+                showingAdvancedEditor = true
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(binding == nil ? Color.secondary.opacity(0.08) : source.accent.opacity(0.20))
+                    .overlay(Circle().strokeBorder(
+                        binding == nil ? Color.secondary.opacity(0.4) : source.accent.opacity(0.75),
+                        lineWidth: binding == nil ? 1 : 1.6))
+                    .frame(width: HandStage.orbDiameter, height: HandStage.orbDiameter)
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(binding == nil ? Color.secondary : source.accent)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(source.accent)
+                        .frame(width: 15, height: 15)
+                        .background(Circle().fill(.background)
+                            .overlay(Circle().strokeBorder(source.accent.opacity(0.55), lineWidth: 1)))
+                        .offset(x: HandStage.orbDiameter / 2 - 3, y: HandStage.orbDiameter / 2 - 3)
+                }
+            }
+            .frame(width: max(HandStage.orbDiameter, 44), height: max(HandStage.orbDiameter, 44))
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: Editor
 
     @ViewBuilder private var editorOrHint: some View {
-        if let selected {
+        if let selected, showingAdvancedEditor || selected.arity == .scalar {
             Vec3BindingEditor(source: selected, fractal: fractal, params: params, store: store)
                 .id(selected)   // rebuild cleanly when the selection changes
         } else {
-            Text("Select a fingertip, palm point, or hand action above to assign a parameter.")
+            Text("Fingertips assign directly from the diagram. Select a palm point or hand action for detailed settings.")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .moduleCard(.gray)
+        }
+    }
+
+    // MARK: Legacy-style direct assignment
+
+    private func axisClaimButton(
+        source: GestureSource, item: BindableParams.Item, axis: GestureAxis
+    ) -> some View {
+        let current = store.binding(for: source, fractal: fractal)
+        let isCurrent = isScalarAxis(current, item.key, axis)
+        return Button {
+            if isCurrent {
+                assignAxis(nil, axis: axis, source: source)
+            } else {
+                assignAxis(item.key, axis: axis, source: source)
+            }
+        } label: {
+            Label(
+                isCurrent ? "Remove \(axisLabel(axis))" : "Claim \(axisLabel(axis))",
+                systemImage: isCurrent ? "checkmark" : axisIcon(axis))
+        }
+    }
+
+    private func assign(_ binding: GestureBinding?, to source: GestureSource) {
+        store.setBinding(binding, for: source, fractal: fractal)
+        selected = source
+        showingAdvancedEditor = false
+    }
+
+    private func assignAxis(_ key: ParamKey?, axis: GestureAxis, source: GestureSource) {
+        let current = store.binding(for: source, fractal: fractal)
+        var grouped = axisTarget(from: current)
+        grouped[axis] = key
+        let target = Vec3Target.grouped(x: grouped[.x], y: grouped[.y], z: grouped[.z])
+        if case .grouped(nil, nil, nil) = target {
+            assign(nil, to: source)
+        } else {
+            assign(.vector(target), to: source)
+        }
+    }
+
+    private func axisTarget(from binding: GestureBinding?) -> [GestureAxis: ParamKey] {
+        guard case let .vector(.grouped(x, y, z)) = binding else { return [:] }
+        var out: [GestureAxis: ParamKey] = [:]
+        if let x { out[.x] = x }
+        if let y { out[.y] = y }
+        if let z { out[.z] = z }
+        return out
+    }
+
+    private func isScalarAxis(_ binding: GestureBinding?, _ key: ParamKey, _ axis: GestureAxis) -> Bool {
+        if case let .vector(.grouped(x, y, z)) = binding {
+            switch axis {
+            case .x: return x == key
+            case .y: return y == key
+            case .z: return z == key
+            }
+        }
+        if case let .scalarAxis(k, a) = binding { return k == key && a == axis }
+        return false
+    }
+
+    private func isVectorNative(_ binding: GestureBinding?, _ key: ParamKey) -> Bool {
+        if case let .vector(.native(current)) = binding { return current == key }
+        return false
+    }
+
+    private func isVectorGroup(_ binding: GestureBinding?, _ group: Vec3Group) -> Bool {
+        if case let .vector(target) = binding { return target == group.target }
+        return false
+    }
+
+    private func isCore(_ binding: GestureBinding?, _ action: CoreGestureAction) -> Bool {
+        if case let .core(current) = binding { return current == action }
+        return false
+    }
+
+    private func axisClaimCount(_ binding: GestureBinding?) -> Int {
+        switch binding {
+        case .vector(.native): return 3
+        case let .vector(.grouped(x, y, z)): return [x, y, z].compactMap { $0 }.count
+        case .scalar, .scalarAxis, .core: return 1
+        case nil: return 0
+        }
+    }
+
+    private func tapThumbIcon(_ binding: GestureBinding?) -> String {
+        switch binding {
+        case .vector(.native), .vector(.grouped): return "move.3d"
+        case .scalar, .scalarAxis: return "slider.horizontal.3"
+        case .core(.grabZoom): return "hand.pinch"
+        case .core(.resetView): return "arrow.counterclockwise"
+        case nil: return "plus"
+        }
+    }
+
+    private func axisLabel(_ axis: GestureAxis) -> String {
+        switch axis {
+        case .x: return "X / Horizontal"
+        case .y: return "Y / Vertical"
+        case .z: return "Z / Depth"
+        }
+    }
+
+    private func axisIcon(_ axis: GestureAxis) -> String {
+        switch axis {
+        case .x: return "arrow.left.and.right"
+        case .y: return "arrow.up.and.down"
+        case .z: return "arrow.up.left.and.arrow.down.right"
+        }
+    }
+
+    // MARK: Summary
+
+    private var assignmentsSummary: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+            SectionHeader("Assigned", icon: "list.bullet.rectangle")
+            let sources = assignedSources
+            if sources.isEmpty {
+                Text("No hand assignments yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(sources, id: \.self) { source in
+                    if let binding = store.binding(for: source, fractal: fractal) {
+                        assignmentRow(source: source, binding: binding)
+                    }
+                }
+            }
+        }
+        .moduleCard(.gray)
+    }
+
+    private var assignedSources: [GestureSource] {
+        var out: [GestureSource] = []
+        for hand in [GestureHand.left, .right] {
+            for finger in fingers {
+                let source = GestureSource.tapThumb(hand: hand, finger: finger)
+                if store.binding(for: source, fractal: fractal) != nil { out.append(source) }
+                let palm = GestureSource.tapPalm(hand: hand, finger: finger)
+                if store.binding(for: palm, fractal: fractal) != nil { out.append(palm) }
+            }
+            for source in [GestureSource.swipe(hand: hand), .fist(hand: hand)] {
+                if store.binding(for: source, fractal: fractal) != nil { out.append(source) }
+            }
+        }
+        return out
+    }
+
+    private func assignmentRow(source: GestureSource, binding: GestureBinding) -> some View {
+        HStack(spacing: DS.Spacing.xs) {
+            Image(systemName: source.iconName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(source.accent)
+                .frame(width: 18)
+            Text(shortName(source))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 94, alignment: .leading)
+            Text(bindingSummary(binding))
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(source.accent.opacity(0.08)))
+    }
+
+    private func shortName(_ source: GestureSource) -> String {
+        switch source {
+        case let .tapThumb(hand, finger): return "\(hand.displayName) \(finger.rawValue)"
+        case let .tapPalm(hand, finger): return "\(hand.displayName) \(finger.rawValue) palm"
+        case let .swipe(hand): return "\(hand.displayName) swipe"
+        case let .fist(hand): return "\(hand.displayName) fist"
+        }
+    }
+
+    private func bindingSummary(_ binding: GestureBinding) -> String {
+        switch binding {
+        case let .vector(.native(key)): return "XYZ -> \(params.label(for: key))"
+        case let .vector(.grouped(x, y, z)):
+            let parts = [("X", x), ("Y", y), ("Z", z)].compactMap { label, key in
+                key.map { "\(label): \(params.label(for: $0))" }
+            }
+            return parts.joined(separator: "  ")
+        case let .scalar(key): return "Magnitude -> \(params.label(for: key))"
+        case let .scalarAxis(key, axis): return "\(axis.rawValue.uppercased()) -> \(params.label(for: key))"
+        case let .core(action): return action.displayName
         }
     }
 }

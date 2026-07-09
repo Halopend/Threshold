@@ -67,6 +67,9 @@ public enum GestureLaneResolver {
                 appendVector(v, to: target, layout: layout, gain: gain, into: &writes)
             case let .scalar(key):
                 appendScalar(drive.scalarValue, to: key, layout: layout, gain: gain, into: &writes)
+            case let .scalarAxis(key, axis):
+                guard case let .vector(v) = drive else { continue }
+                appendScalar(v[axis.component], to: key, layout: layout, gain: gain, into: &writes)
             case .core:
                 continue
             }

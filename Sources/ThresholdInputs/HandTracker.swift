@@ -52,6 +52,12 @@ public final class HandTracker: @unchecked Sendable {
     /// Request authorization + start the provider. Hand tracking denied is
     /// non-fatal: signals stay unpublished and the gesture lane stays quiet.
     public func start() {
+        guard !DiagnosticSwitches.isEnabled(.disableHandInput) else {
+            ThresholdLog.hands.notice("hand tracking disabled by diagnostic switch")
+            DiagnosticBreadcrumbs.record(
+                category: "switch", message: "hand_input_disabled")
+            return
+        }
         // The Simulator has no hand tracking, and running an unsupported
         // provider makes ARKit RAISE an NSException (not throw) — the catch
         // below never sees it and the app dies. Same non-fatal contract as a
@@ -65,12 +71,17 @@ public final class HandTracker: @unchecked Sendable {
             do {
                 try await arSession.run([provider])
                 ThresholdLog.hands.notice("hand tracking running")
+                DiagnosticBreadcrumbs.record(
+                    category: "hands", message: "hand_tracking_started")
             } catch {
                 ThresholdLog.hands.error(
                     """
                     hand tracking unavailable — gesture lane stays quiet: \
                     \(String(describing: error), privacy: .public)
                     """)
+                DiagnosticBreadcrumbs.record(
+                    category: "hands", message: "hand_tracking_failed",
+                    metadata: ["error": String(describing: error)])
             }
         }
     }
@@ -78,6 +89,8 @@ public final class HandTracker: @unchecked Sendable {
     public func stop() {
         arSession.stop()
         ThresholdLog.hands.notice("hand tracking stopped")
+        DiagnosticBreadcrumbs.record(
+            category: "hands", message: "hand_tracking_stopped")
     }
 
     /// Per-frame poll: map ARKit anchors to HandFrames and step the engine.

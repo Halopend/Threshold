@@ -81,6 +81,38 @@ public enum LegacyScene {
                 params[paramKey.rawValue] = .array([.number(n)])
             }
         }
+        func formulaNumber(_ values: [JSONValue], _ index: Int) -> Double? {
+            guard values.count > index, case .number(let n) = values[index] else { return nil }
+            return n
+        }
+        func legacyMandelboxScale(fractalScale: Double?, minDistance: Double?) -> Double? {
+            guard let fractalScale, fractalScale.isFinite else { return nil }
+            guard let minDistance, minDistance.isFinite, abs(minDistance) > 1e-9 else {
+                return fractalScale
+            }
+            return fractalScale / minDistance
+        }
+        func writeLegacyMandelboxShape(
+            key: String,
+            minDistance: Double?,
+            foldingLimit: Double?,
+            sphereRadius: Double?,
+            fractalScale: Double?
+        ) {
+            if let scale = legacyMandelboxScale(
+                fractalScale: fractalScale, minDistance: minDistance) {
+                params["de.\(key).scale"] = .array([.number(scale)])
+            }
+            if let foldingLimit {
+                params["de.\(key).foldLimit"] = .array([.number(foldingLimit)])
+            }
+            if let sphereRadius {
+                params["de.\(key).minRadius"] = .array([.number(sphereRadius)])
+            }
+            // The original Mandelbox fold used a one-radius outer fold:
+            // t = clamp(1 / max(r2, sphereRadius^2), 1, 1 / sphereRadius^2).
+            params["de.\(key).fixedRadius"] = .array([.number(1.0)])
+        }
 
         // --- identity ----------------------------------------------------
         // The rebuild now has a dedicated `mandelboxSphereProjection` DE (the
@@ -94,9 +126,9 @@ public enum LegacyScene {
         // --- camera ------------------------------------------------------
         // The original moved the MODEL, not the camera: world transform
         // T(position)·R(worldRotation)·S(scale·detailScale) on the fractal,
-        // camera at the origin looking −Z. The rebuild keeps the fractal at
-        // the origin, so the equivalent camera pose is the INVERSE:
-        // position′ = R⁻¹·(−position), orientation′ = R⁻¹. The scale part
+        // with the view camera at (0,0,3) looking −Z. The rebuild keeps the
+        // fractal at the origin, so the equivalent camera pose is the INVERSE:
+        // position′ = R⁻¹·(camera−position), orientation′ = R⁻¹. The scale part
         // cancels out of the camera because zoom rescales MODEL space
         // (mapScene), leaving world distances — and the camera — untouched.
         var legacyPosition = SIMD3<Double>(0, 0, -3)
@@ -113,7 +145,8 @@ public enum LegacyScene {
         q = qLen > 1e-9 ? q / qLen : SIMD4(0, 0, 0, 1)
         let inv = SIMD4(-q.x, -q.y, -q.z, q.w)
         // v′ = v + 2·(inv.xyz × (inv.xyz × v + inv.w·v))
-        let v = -legacyPosition
+        let legacyCamera = SIMD3<Double>(0, 0, 3)
+        let v = legacyCamera - legacyPosition
         let im = SIMD3(inv.x, inv.y, inv.z)
         let cameraPosition = v + 2 * simd_cross(im, simd_cross(im, v) + inv.w * v)
         tree["camera"] = .object([
@@ -187,49 +220,67 @@ public enum LegacyScene {
         }
 
         // --- mandelbox DE params -------------------------------------------
-        // The original's mandelbox uniforms map 1:1 onto the rebuild's
-        // declared layout (mandelboxSDF_exact in the original's
-        // ProgressiveShaders.metal): fractalScale → scale, foldingLimit →
-        // foldLimit, sphereRadius → fixedRadius. Legacy `minDistance` is the
-        // mandelbox minRadius SQUARED (despite the name — it is passed as the
-        // `minDistance // minRadius²` argument), so it maps through sqrt.
+        // The original optimized Mandelbox path precomputed scale as
+        // `fractalScale / minDistance`, while the sphere fold used
+        // `sphereRadius` as the inner radius and hardcoded the outer radius to
+        // 1. Preserve that shape rather than treating `minDistance` as the
+        // sphere-fold radius; scenes like Spiky and Paul are very sensitive to
+        // this distinction.
+        //
+        // Some saved "mandelbox" scenes also have the legacy sphere-projection
+        // toggle enabled (Paul/Pulsing is the canonical example). The rebuild
+        // has a dedicated projected Mandelbox DE for that look, so promote
+        // those files and store the projection controls on the DE itself.
         if case .string("mandelbox")? = tree["fractalType"] {
-            copyParam("fractalScale", to: .de("mandelbox", "scale"))
-            copyParam("foldingLimit", to: .de("mandelbox", "foldLimit"))
-            copyParam("sphereRadius", to: .de("mandelbox", "fixedRadius"))
-            if let mr2 = number("minDistance"), mr2 > 0 {
-                params["de.mandelbox.minRadius"] = .array([.number(mr2.squareRoot())])
+            let key = (tree["sphereProjectionEnabled"] == .bool(true))
+                ? "mandelboxSphereProjection" : "mandelbox"
+            if key == "mandelboxSphereProjection" {
+                tree["fractalTypeKey"] = .string(key)
+            }
+            writeLegacyMandelboxShape(
+                key: key,
+                minDistance: number("minDistance"),
+                foldingLimit: number("foldingLimit"),
+                sphereRadius: number("sphereRadius"),
+                fractalScale: number("fractalScale"))
+            if key == "mandelboxSphereProjection" {
+                if let blend = number("sphereProjectionBlend") {
+                    params["de.\(key).projBlend"] = .array([.number(blend)])
+                }
+                if let radius = number("sphereProjectionRadius") {
+                    params["de.\(key).projRadius"] = .array([.number(radius)])
+                }
             }
         }
 
         // --- mandelboxSphereProjection DE params ---------------------------
-        // Verified against the shipping app (Shaders.metal MAP_ITERATION_PROJ /
-        // ProgressiveShaders.metal mandelboxSDF_exact): a legacy
-        // `mandelboxSphereProjection` scene is a PLAIN mandelbox + a per-fold
-        // sphere projection, NOT a distinct formula. Its Mandelbox shape lives
-        // in the SAME top-level fields as any mandelbox — `fractalScale` (scale),
-        // `foldingLimit`, `sphereRadius` — and the old fold is one-radius:
-        // `t = clamp(1/max(r², sphereRadius²), 1, 1/sphereRadius²)`, i.e.
-        // minRadius = sphereRadius and fixedRadius ≡ 1. Only the projection
-        // blend/radius come from formulaParamValues[4]/[5]. (The earlier
-        // formula[0..3] reading produced a degenerate box — Mono rendered black
-        // where the app shows a bright radiating structure.)
+        // Legacy dedicated MSP scenes stored their authored Mandelbox shape in
+        // formulaParamValues[0...3]:
+        // [minDistance, foldingLimit, sphereRadius, fractalScale]. The
+        // top-level geometry fields remained at defaults in many saved files.
+        // Projection blend/radius are formulaParamValues[4]/[5].
         if case .string("mandelboxSphereProjection")? = tree["fractalType"] {
             let key = "mandelboxSphereProjection"
-            copyParam("fractalScale", to: .de(key, "scale"))
-            copyParam("foldingLimit", to: .de(key, "foldLimit"))
-            if let sphereR = number("sphereRadius") {
-                params["de.\(key).minRadius"] = .array([.number(sphereR)])
-            }
-            // Old app hardcodes the sphere-fold fixed radius to 1.0.
-            params["de.\(key).fixedRadius"] = .array([.number(1.0)])
             if case .array(let formula)? = tree["formulaParamValues"], formula.count >= 6 {
-                func f(_ i: Int) -> Double? {
-                    if case .number(let n) = formula[i] { return n }
-                    return nil
+                writeLegacyMandelboxShape(
+                    key: key,
+                    minDistance: formulaNumber(formula, 0),
+                    foldingLimit: formulaNumber(formula, 1),
+                    sphereRadius: formulaNumber(formula, 2),
+                    fractalScale: formulaNumber(formula, 3))
+                if let blend = formulaNumber(formula, 4) {
+                    params["de.\(key).projBlend"] = .array([.number(blend)])
                 }
-                if let blend = f(4) { params["de.\(key).projBlend"] = .array([.number(blend)]) }
-                if let radius = f(5) { params["de.\(key).projRadius"] = .array([.number(radius)]) }
+                if let radius = formulaNumber(formula, 5) {
+                    params["de.\(key).projRadius"] = .array([.number(radius)])
+                }
+            } else {
+                writeLegacyMandelboxShape(
+                    key: key,
+                    minDistance: number("minDistance"),
+                    foldingLimit: number("foldingLimit"),
+                    sphereRadius: number("sphereRadius"),
+                    fractalScale: number("fractalScale"))
             }
         }
 
@@ -276,6 +327,35 @@ public enum LegacyScene {
         copyParam("colorSchemeVibrance", to: .colorVibrance)
         copyParam("colorSchemeGamma", to: .colorGamma)
         copyParam("tonemapStrength", to: .colorTonemap)
+
+        // --- atmosphere effects (legacy Effects ▸ Static) -----------------
+        if case .object(let glow)? = tree["glowEffect"],
+           case .bool(true)? = glow["enabled"] {
+            params[ParamKey.atmosphereGlowEnabled.rawValue] = .array([.number(1)])
+            if case .number(let n)? = glow["intensity"] {
+                params[ParamKey.atmosphereGlowIntensity.rawValue] = .array([.number(n)])
+            }
+        }
+        if case .object(let bloom)? = tree["bloomEffect"],
+           case .bool(true)? = bloom["enabled"] {
+            params[ParamKey.atmosphereBloomEnabled.rawValue] = .array([.number(1)])
+            if case .number(let n)? = bloom["strength"] {
+                params[ParamKey.atmosphereBloomStrength.rawValue] = .array([.number(n)])
+            }
+        }
+        if case .object(let fog)? = tree["fogEffect"],
+           case .bool(true)? = fog["enabled"] {
+            params[ParamKey.atmosphereFogEnabled.rawValue] = .array([.number(1)])
+            if case .number(let n)? = fog["intensity"] {
+                params[ParamKey.atmosphereFogIntensity.rawValue] = .array([.number(n)])
+            }
+            if case .number(let r)? = fog["colorRed"],
+               case .number(let g)? = fog["colorGreen"],
+               case .number(let b)? = fog["colorBlue"] {
+                params[ParamKey.atmosphereFogColor.rawValue] =
+                    .array([.number(r), .number(g), .number(b)])
+            }
+        }
 
         // --- palette (gradientState.gradient) -----------------------------
         if case .object(let state)? = tree["gradientState"],
@@ -365,9 +445,11 @@ public enum LegacyScene {
                 ]))
             }
         }
-        // Sphere projection was a separate legacy system; it is a warp op
-        // now (Invariant 6 — one sphere system).
-        if case .bool(true)? = tree["sphereProjectionEnabled"] {
+        // Sphere projection was a separate legacy system. Plain Mandelbox
+        // projection is promoted above to the dedicated DE; other fractal
+        // families still preserve the authored projection as a warp op.
+        if case .bool(true)? = tree["sphereProjectionEnabled"],
+           tree["fractalTypeKey"] != .string("mandelboxSphereProjection") {
             stack.append(.object([
                 "kind": .number(Double(sphereProjectKind)),
                 "flags": .number(0),

@@ -26,6 +26,7 @@ import ThresholdShaderIR
 // MARK: - Errors
 
 public enum ExternalDEError: Error, CustomStringConvertible {
+    case disabledByDiagnostics
     /// `EmbeddedDE.abiVersion` does not match this build's ABI header.
     case abiVersionMismatch(declared: Int, current: Int)
     /// `EmbeddedDE.hash` does not match the source content (tamper check).
@@ -42,6 +43,8 @@ public enum ExternalDEError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
+        case .disabledByDiagnostics:
+            return "external DE compilation is disabled by a diagnostic switch"
         case .abiVersionMismatch(let d, let c):
             return "DE ABI version \(d) does not match this build's ABI \(c)"
         case .hashMismatch(let d, let c):
@@ -102,6 +105,15 @@ extension InteractiveSession {
         _ envelope: SceneEnvelope, loader: ExternalDELoader,
         transition: SceneTransition? = .default
     ) throws {
+        DiagnosticBreadcrumbs.record(
+            category: "scene", message: "scene_apply_requested",
+            metadata: [
+                "name": envelope.name ?? "unnamed",
+                "de": envelope.fractalTypeKey,
+                "external": String(envelope.embeddedDE != nil),
+                "params": String(envelope.params.count),
+                "warps": String(envelope.warpStack.count),
+            ])
         let program = try envelope.embeddedDE.map { try loader.load($0) }
         commands.publish(.applyScene(envelope, transition: transition))
         commands.publish(.setExternalDE(program))
@@ -137,6 +149,11 @@ public final class ExternalDELoader: @unchecked Sendable {
 
     /// Load (or return the cached program for) an embedded DE.
     public func load(_ embedded: EmbeddedDE) throws -> ExternalDEProgram {
+        guard !DiagnosticSwitches.isEnabled(.disableExternalDE) else {
+            DiagnosticBreadcrumbs.record(
+                category: "switch", message: "external_de_disabled")
+            throw ExternalDEError.disabledByDiagnostics
+        }
         guard embedded.abiVersion == Int(THRESHOLD_ABI_VERSION) else {
             throw ExternalDEError.abiVersionMismatch(
                 declared: embedded.abiVersion, current: Int(THRESHOLD_ABI_VERSION))
@@ -154,12 +171,46 @@ public final class ExternalDELoader: @unchecked Sendable {
             .map { "\($0.name):\($0.defaultValue):\($0.min):\($0.max)" }
             .joined(separator: ",")
         if let cached = cache.withLock({ $0[cacheKey] }) {
+            DiagnosticBreadcrumbs.record(
+                category: "pipeline", message: "external_de_cache_hit",
+                metadata: ["hash": String(hash.prefix(12))])
             return cached
         }
 
-        let program = try compileAndProbe(embedded, hash: hash)
-        cache.withLock { $0[cacheKey] = program }
-        return program
+        DiagnosticBreadcrumbs.record(
+            category: "pipeline", message: "external_de_compile_started",
+            metadata: ["hash": String(hash.prefix(12))])
+        do {
+            let program = try compileAndProbe(embedded, hash: hash)
+            cache.withLock { $0[cacheKey] = program }
+            DiagnosticBreadcrumbs.record(
+                category: "pipeline", message: "external_de_compile_completed",
+                metadata: ["hash": String(hash.prefix(12))])
+            return program
+        } catch {
+            DiagnosticBreadcrumbs.record(
+                category: "pipeline", message: "external_de_compile_failed",
+                metadata: [
+                    "hash": String(hash.prefix(12)),
+                    "error": String(describing: error),
+                ])
+            throw error
+        }
+    }
+
+    /// Cooperative-pool-safe external compile. The continuation suspends the
+    /// caller while the process-wide bounded Metal compiler lane does the
+    /// blocking source/library/pipeline work.
+    public func loadAsync(_ embedded: EmbeddedDE) async throws -> ExternalDEProgram {
+        try await withCheckedThrowingContinuation { continuation in
+            PipelineCompilationScheduler.shared.submit(label: "external-de") { [self] in
+                do {
+                    continuation.resume(returning: try load(embedded))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func compileAndProbe(

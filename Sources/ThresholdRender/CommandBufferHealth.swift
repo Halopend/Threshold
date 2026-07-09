@@ -23,7 +23,7 @@ import ThresholdCore
 final class CommandBufferHealth: Sendable {
     /// Opt-in per-encoder execution status (process-wide, read once).
     static let verboseFaults =
-        ProcessInfo.processInfo.environment["THRESHOLD_GPU_FAULTS"] != nil
+        DiagnosticSwitches.isEnabled(.verboseGPUFaults)
 
     private let shell: String
     private let faults = Atomic<UInt64>(0)
@@ -61,6 +61,13 @@ final class CommandBufferHealth: Sendable {
             \(self.shell, privacy: .public) command buffer faulted \
             (#\(n + 1)): \(description, privacy: .public)
             """)
+        DiagnosticBreadcrumbs.record(
+            category: "gpu", message: "command_buffer_fault",
+            metadata: [
+                "shell": shell,
+                "count": String(n + 1),
+                "error": description,
+            ])
         // Encoder attribution, present when THRESHOLD_GPU_FAULTS built the
         // buffer with .encoderExecutionStatus.
         if let nsError = completed.error as NSError?,
@@ -73,6 +80,13 @@ final class CommandBufferHealth: Sendable {
                     '\(info.label, privacy: .public)': \
                     \(Self.describe(info.errorState), privacy: .public)
                     """)
+                DiagnosticBreadcrumbs.record(
+                    category: "gpu", message: "command_encoder_fault",
+                    metadata: [
+                        "shell": shell,
+                        "encoder": info.label,
+                        "state": Self.describe(info.errorState),
+                    ])
             }
         }
     }

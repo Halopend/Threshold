@@ -1,4 +1,4 @@
-// TemporalUpscaler.swift — MetalFX temporal upscaling for the live Mac/iOS
+// TemporalUpscaler.swift — MetalFX temporal upscaling for the live Mac
 // path (perf block 5). The march renders color + depth + motion at reduced
 // resolution with a jittered projection (RaymarchCore's THRESH_AUX variant);
 // the scaler reconstructs a full-resolution frame from accumulated history.
@@ -33,14 +33,16 @@
 // skipped, and a wedged build strands only this queue's thread — `stalled`
 // logging makes that visible instead of silent.
 
-#if os(macOS) || os(iOS)
-
 import Dispatch
 import Foundation
 import Metal
+#if canImport(MetalFX)
 import MetalFX
+#endif
 import Synchronization
 import ThresholdCore
+
+#if canImport(MetalFX)
 
 final class TemporalUpscaler: Sendable {
     /// MetalFX temporal scaling supports at most 3× per dimension.
@@ -109,21 +111,44 @@ final class TemporalUpscaler: Sendable {
         /// of Xcode's Metal diagnostics wedging makeTemporalScaler.
         var inFlightAge = 0
         var reportedStall = false
+        /// Output dimensions must remain unchanged for several frames before
+        /// a scaler build starts. Live resize otherwise compiles one expensive
+        /// scaler for every transient drawable size.
+        var outputStableFrames = 0
+        /// Failed keys are never retried in this session. Two distinct build
+        /// failures, or one pathological build, trips the session circuit.
+        var failedKeys: Set<Key> = []
+        var buildFailures = 0
+        var disabled = false
     }
 
     private let device: MTLDevice
     private let colorFormat: MTLPixelFormat
     private let state = Mutex<State>(State())
     private let maxPoolSize = 4
-    /// The one thread scaler builds may occupy (see header).
-    private let buildQueue = DispatchQueue(
-        label: "com.polinate.threshold.mfx-build", qos: .userInitiated)
+    /// Four stable quality buckets bound scaler lifetime and compilation
+    /// count. Arbitrary governor/window-slider values map to the nearest.
+    private static let scaleBuckets: [Float] = [0.35, 0.50, 0.67, 0.82]
+    /// Output dimensions must be stable for this many render frames before a
+    /// build starts. Rendering falls back to full resolution during resize.
+    private static let stableOutputFrameThreshold = 8
+    /// PROCESS-WIDE serialization: leaked/overlapping sessions cannot call
+    /// MetalFX construction concurrently inside MPSGraph.
+    private static let buildQueue = DispatchQueue(
+        label: "com.pupppower.threshold.rebuild.metalfx-build",
+        qos: .userInitiated)
     /// ~5–10 s at 60–120 fps before an in-flight build is reported stalled.
     private static let stalledBuildFrameLimit = 600
 
     /// nil when this device can't do MetalFX temporal scaling — the caller
     /// renders at full resolution instead (the governor's scale is moot).
     init?(device: MTLDevice, colorFormat: MTLPixelFormat) {
+        guard !DiagnosticSwitches.isEnabled(.disableMetalFX) else {
+            ThresholdLog.render.notice("MetalFX disabled by diagnostic switch")
+            DiagnosticBreadcrumbs.record(
+                category: "switch", message: "metalfx_disabled")
+            return nil
+        }
         guard MTLFXTemporalScalerDescriptor.supportsDevice(device) else { return nil }
         self.device = device
         self.colorFormat = colorFormat
@@ -145,7 +170,19 @@ final class TemporalUpscaler: Sendable {
             return nil
         }
 
-        let key = Key(inW: inputWidth, inH: inputHeight,
+        let requestedScale = min(
+            Float(inputWidth) / Float(outputWidth),
+            Float(inputHeight) / Float(outputHeight))
+        let bucket = Self.scaleBuckets.min {
+            abs($0 - requestedScale) < abs($1 - requestedScale)
+        } ?? requestedScale
+        let floor = Self.minimumInputSize(
+            forOutputWidth: outputWidth, height: outputHeight)
+        let quantizedWidth = max(
+            Int((Float(outputWidth) * bucket).rounded()), floor.width)
+        let quantizedHeight = max(
+            Int((Float(outputHeight) * bucket).rounded()), floor.height)
+        let key = Key(inW: quantizedWidth, inH: quantizedHeight,
                       outW: outputWidth, outH: outputHeight)
         let (pass, startDrain, reportStall): (Pass?, Bool, Bool) = state.withLock { s in
             s.useCounter += 1
@@ -155,6 +192,15 @@ final class TemporalUpscaler: Sendable {
             if s.currentOutput != out {
                 s.currentOutput = out
                 s.entries.removeAll()
+                s.wanted = nil
+                s.failedKeys.removeAll()
+                s.outputStableFrames = 0
+            } else {
+                s.outputStableFrames = min(s.outputStableFrames + 1, Int.max - 1)
+            }
+            if s.disabled {
+                s.activeKey = nil
+                return (nil, false, false)
             }
 
             // Age the in-flight build; report a wedge exactly once per build.
@@ -180,7 +226,8 @@ final class TemporalUpscaler: Sendable {
             // Miss: latest-wins — overwrite whatever stale size a fast drag
             // left here. Skip only when the builder is ALREADY on this key.
             var startDrain = false
-            if s.inFlight != key {
+            if s.outputStableFrames >= Self.stableOutputFrameThreshold,
+               !s.failedKeys.contains(key), s.inFlight != key {
                 s.wanted = key
                 if !s.draining {
                     s.draining = true
@@ -215,9 +262,11 @@ final class TemporalUpscaler: Sendable {
                 (GPU capture / HUD / API validation) can wedge it; rendering \
                 continues at nearest/full resolution
                 """)
+            DiagnosticBreadcrumbs.record(
+                category: "hang", message: "metalfx_build_stalled")
         }
         if startDrain {
-            buildQueue.async { [self] in drainBuilds() }
+            Self.buildQueue.async { [self] in drainBuilds() }
         }
         return pass
     }
@@ -230,7 +279,7 @@ final class TemporalUpscaler: Sendable {
     private func drainBuilds() {
         while true {
             let next: Key? = state.withLock { s in
-                guard let key = s.wanted,
+                guard !s.disabled, let key = s.wanted,
                       s.currentOutput == SIMD2(key.outW, key.outH) else {
                     s.wanted = nil
                     s.draining = false
@@ -256,15 +305,34 @@ final class TemporalUpscaler: Sendable {
                     (\(key.inW)x\(key.inH)→\(key.outW)x\(key.outH)) — \
                     expected 0.2–2s; Metal diagnostics slow this dramatically
                     """)
+                DiagnosticBreadcrumbs.record(
+                    category: "hang", message: "metalfx_build_slow",
+                    metadata: [
+                        "durationMs": String(Int(seconds * 1_000)),
+                        "input": "\(key.inW)x\(key.inH)",
+                        "output": "\(key.outW)x\(key.outH)",
+                    ])
             }
 
-            state.withLock { s in
+            let circuitTripped = state.withLock { s -> Bool in
+                let wasDisabled = s.disabled
                 s.inFlight = nil
                 s.inFlightAge = 0
+                if built == nil {
+                    s.failedKeys.insert(key)
+                    s.buildFailures += 1
+                } else {
+                    s.buildFailures = 0
+                }
+                if seconds > 10 || s.buildFailures >= 2 {
+                    s.disabled = true
+                    s.entries.removeAll()
+                    s.wanted = nil
+                }
                 // Discard a build that raced a resize (stale output).
-                guard let built,
+                guard !s.disabled, let built,
                       s.currentOutput == SIMD2(key.outW, key.outH)
-                else { return }
+                else { return !wasDisabled && s.disabled }
                 s.entries[key] = Entry(
                     pass: built, lastUsed: s.useCounter, needsReset: true)
                 if s.entries.count > maxPoolSize,
@@ -272,6 +340,14 @@ final class TemporalUpscaler: Sendable {
                        .min(by: { $0.value.lastUsed < $1.value.lastUsed }) {
                     s.entries.removeValue(forKey: evict.key)
                 }
+                return !wasDisabled && s.disabled
+            }
+            if circuitTripped {
+                ThresholdLog.render.fault(
+                    "MetalFX disabled for this session after build instability")
+                DiagnosticBreadcrumbs.record(
+                    category: "switch", message: "metalfx_circuit_breaker_tripped",
+                    metadata: ["durationMs": String(Int(seconds * 1_000))])
             }
         }
     }
@@ -351,6 +427,9 @@ final class TemporalUpscaler: Sendable {
         desc.depthTextureFormat = Self.depthFormat
         desc.motionTextureFormat = Self.motionFormat
         desc.outputTextureFormat = colorFormat
+        // Make MetalFX perform all internal compilation on this one globally
+        // serialized builder lane instead of spawning hidden background work.
+        desc.requiresSynchronousInitialization = true
         guard let scaler = desc.makeTemporalScaler(device: device) else {
             return nil
         }
@@ -361,4 +440,47 @@ final class TemporalUpscaler: Sendable {
     }
 }
 
-#endif  // os(macOS) || os(iOS)
+#else
+
+/// Platform adapter for SDKs without MetalFX (including the current iOS
+/// simulator SDK). Construction fails intentionally, so InteractiveSession
+/// keeps using its full-resolution direct-render fallback without platform
+/// conditionals throughout the frame loop.
+final class TemporalUpscaler: Sendable {
+    static let maxScaleFactor: Float = 3.0
+    static let minimumInputEdge = 32
+
+    static func minimumInputSize(
+        forOutputWidth width: Int, height: Int
+    ) -> (width: Int, height: Int) {
+        (max(Int((Float(width) / maxScaleFactor).rounded(.up)), minimumInputEdge),
+         max(Int((Float(height) / maxScaleFactor).rounded(.up)), minimumInputEdge))
+    }
+
+    struct Pass: @unchecked Sendable {
+        let color: MTLTexture
+        let depth: MTLTexture
+        let motion: MTLTexture
+        let output: MTLTexture
+    }
+
+    init?(device: MTLDevice, colorFormat: MTLPixelFormat) {
+        DiagnosticBreadcrumbs.record(
+            category: "capability", message: "metalfx_unavailable")
+        return nil
+    }
+
+    func prepare(
+        inputWidth: Int, inputHeight: Int, outputWidth: Int, outputHeight: Int
+    ) -> Pass? {
+        nil
+    }
+
+    func encode(
+        commandBuffer: MTLCommandBuffer,
+        jitterPixels: SIMD2<Float>,
+        forceReset: Bool
+    ) {}
+}
+
+#endif  // canImport(MetalFX)

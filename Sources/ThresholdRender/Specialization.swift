@@ -457,7 +457,9 @@ public final class SpecializationCache: Sendable {
 
         if shouldCompile {
             let context = context
-            Task.detached(priority: .utility) { [self] in
+            PipelineCompilationScheduler.shared.submit(
+                label: "compute-specialization:\(deFunctionName)"
+            ) { [self] in
                 // Resolve the specialized SOURCE library (compile once per DE;
                 // a rare concurrent double-compile across two variant lookups
                 // is merely wasteful — the OS Metal cache dedups — and never

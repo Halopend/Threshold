@@ -446,13 +446,12 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
     engineParams.bubbleRadius = resolved.values[Int(THRESH_SLOT_BUBBLE_RADIUS)]
     engineParams.bubbleShape = resolved.values[Int(THRESH_SLOT_BUBBLE_SHAPE)]
     engineParams.bubbleBlend = resolved.values[Int(THRESH_SLOT_BUBBLE_BLEND)]
-    let dbgDE = program != nil
+    let deParams = program != nil
             ? externalDEParamValues(descriptor, envelope: scene)
             : deParamValues(descriptor, layout: layout, resolved: resolved)
-    FileHandle.standardError.write("DBG de=\(descriptor.key) deParams=\(dbgDE) cam=\(camera.position) iters=\(engineParams.iterations) bubble(en=\(engineParams.bubbleEnabled),r=\(engineParams.bubbleRadius),bl=\(engineParams.bubbleBlend))\n".data(using: .utf8)!)
     let (params, deParamOffset) = ParamTableLayout.build(
         engine: engineParams,
-        deParams: dbgDE)
+        deParams: deParams)
 
     // Camera: base pose + resolved rig offsets, same derivation as the
     // interactive session (SessionCore.step). CameraRig handles degenerate

@@ -57,12 +57,23 @@ public enum LegacyAnimation {
         // --- per-keyframe scalar extraction (shared with LegacyMigration) --
         var fractalType = ""
         if case .string(let t)? = tree["fractalType"] { fractalType = t }
-        let isMandelbox = fractalType == "mandelbox"
-            || fractalType == "mandelboxSphereProjection"
 
         func scalar(_ kf: [String: JSONValue], _ key: String) -> Double? {
             if case .number(let n)? = kf[key] { return n }
             return nil
+        }
+        func formula(_ kf: [String: JSONValue], _ index: Int) -> Double? {
+            guard case .array(let values)? = kf["formulaParamValues"],
+                  values.count > index, case .number(let n) = values[index]
+            else { return nil }
+            return n
+        }
+        func legacyMandelboxScale(fractalScale: Double?, minDistance: Double?) -> Double? {
+            guard let fractalScale, fractalScale.isFinite else { return nil }
+            guard let minDistance, minDistance.isFinite, abs(minDistance) > 1e-9 else {
+                return fractalScale
+            }
+            return fractalScale / minDistance
         }
         // ParamKey → per-keyframe value extractor. nil = key absent in that
         // keyframe (the whole track is dropped unless EVERY keyframe has it —
@@ -71,15 +82,31 @@ public enum LegacyAnimation {
             (.engineIterations, { scalar($0, "baseFractalIterations") }),
             (.engineMaxSteps, { scalar($0, "baseMaxRaySteps") }),
         ]
-        if isMandelbox {
+        if fractalType == "mandelbox" {
             extractors += [
-                (.de("mandelbox", "scale"), { scalar($0, "fractalScale") }),
-                (.de("mandelbox", "foldLimit"), { scalar($0, "foldingLimit") }),
-                (.de("mandelbox", "fixedRadius"), { scalar($0, "sphereRadius") }),
-                // Legacy minDistance is minRadius² (LegacyMigration).
-                (.de("mandelbox", "minRadius"), {
-                    scalar($0, "minDistance").flatMap { $0 > 0 ? $0.squareRoot() : nil }
+                (.de("mandelbox", "scale"), {
+                    legacyMandelboxScale(
+                        fractalScale: scalar($0, "fractalScale"),
+                        minDistance: scalar($0, "minDistance"))
                 }),
+                (.de("mandelbox", "foldLimit"), { scalar($0, "foldingLimit") }),
+                (.de("mandelbox", "minRadius"), { scalar($0, "sphereRadius") }),
+                (.de("mandelbox", "fixedRadius"), { _ in 1.0 }),
+            ]
+        }
+        if fractalType == "mandelboxSphereProjection" {
+            let key = "mandelboxSphereProjection"
+            extractors += [
+                (.de(key, "scale"), {
+                    legacyMandelboxScale(
+                        fractalScale: formula($0, 3),
+                        minDistance: formula($0, 0))
+                }),
+                (.de(key, "foldLimit"), { formula($0, 1) }),
+                (.de(key, "minRadius"), { formula($0, 2) }),
+                (.de(key, "fixedRadius"), { _ in 1.0 }),
+                (.de(key, "projBlend"), { formula($0, 4) }),
+                (.de(key, "projRadius"), { formula($0, 5) }),
             ]
         }
         if fractalType == "kleinian" {

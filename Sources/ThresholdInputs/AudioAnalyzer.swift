@@ -101,6 +101,11 @@ public final class AudioAnalyzer {
     /// audio-session category is the app's responsibility, before this call.
     /// Restarting after `stop()` resets the DSP state and the sample clock.
     public func start() throws {
+        guard !DiagnosticSwitches.isEnabled(.disableAudioInput) else {
+            DiagnosticBreadcrumbs.record(
+                category: "switch", message: "audio_input_disabled")
+            throw AudioAnalyzerDiagnosticError.disabledByDiagnostics
+        }
         guard !isRunning else { return }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -126,6 +131,9 @@ public final class AudioAnalyzer {
         }
         isRunning = true
         ThresholdLog.audio.notice("audio capture started (\(Int(sampleRate))Hz input)")
+        DiagnosticBreadcrumbs.record(
+            category: "audio", message: "audio_capture_started",
+            metadata: ["sampleRate": String(Int(sampleRate))])
     }
 
     /// Remove the tap and stop the engine. Idempotent. Publishes one silent
@@ -138,6 +146,16 @@ public final class AudioAnalyzer {
         isRunning = false
         sink.publishSilence()
         ThresholdLog.audio.notice("audio capture stopped")
+        DiagnosticBreadcrumbs.record(
+            category: "audio", message: "audio_capture_stopped")
+    }
+}
+
+public enum AudioAnalyzerDiagnosticError: Error, CustomStringConvertible {
+    case disabledByDiagnostics
+
+    public var description: String {
+        "audio input is disabled by a Threshold diagnostic switch"
     }
 }
 

@@ -283,6 +283,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Threshold Rebuild";
+				INFOPLIST_KEY_CFBundleName = "Threshold Rebuild";
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Threshold uses hand tracking to orbit and zoom the fractal with pinch gestures.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Threshold listens to the microphone to drive audio-reactive visuals.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -331,6 +333,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Threshold Rebuild";
+				INFOPLIST_KEY_CFBundleName = "Threshold Rebuild";
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Threshold uses hand tracking to orbit and zoom the fractal with pinch gestures.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Threshold listens to the microphone to drive audio-reactive visuals.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

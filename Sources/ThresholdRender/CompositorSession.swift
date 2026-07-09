@@ -57,6 +57,8 @@ public final class CompositorSession: @unchecked Sendable {
     private let signals: SignalTable
     private let initialScene: SceneEnvelope?
     private let stopRequested = Atomic<Bool>(false)
+    private enum Phase { case idle, running, stopping }
+    private let phase = Mutex<Phase>(.idle)
 
     /// Per-frame input hook, called on the render thread with the frame's
     /// SESSION-clock time right before the step — the seam through which the
@@ -235,6 +237,18 @@ public final class CompositorSession: @unchecked Sendable {
     /// Spawn the render thread against a live LayerRenderer. Called from the
     /// CompositorLayer content closure when the immersive space opens.
     @MainActor public func start(_ layerRenderer: LayerRenderer) {
+        let shouldStart = phase.withLock { phase -> Bool in
+            guard phase == .idle else { return false }
+            phase = .running
+            return true
+        }
+        guard shouldStart else {
+            ThresholdLog.session.error(
+                "compositor start ignored — previous render loop has not exited")
+            DiagnosticBreadcrumbs.record(
+                category: "lifecycle", message: "compositor_start_rejected")
+            return
+        }
         stopRequested.store(false, ordering: .releasing)
         // World grab input: system pinches arrive through the layer's
         // spatial-event channel (the BorgVR pattern). Installed
@@ -255,13 +269,27 @@ public final class CompositorSession: @unchecked Sendable {
     /// Ask the loop to exit (it also exits when the layer invalidates —
     /// dismissing the immersive space tears it down without an explicit stop).
     public func stop() {
+        let shouldStop = phase.withLock { phase -> Bool in
+            guard phase == .running else { return false }
+            phase = .stopping
+            return true
+        }
+        guard shouldStop else { return }
         ThresholdLog.session.notice("compositor session stop requested")
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "compositor_stop_requested")
         stopRequested.store(true, ordering: .releasing)
     }
 
     // MARK: Render thread
 
     private func renderLoop(_ layer: LayerRenderer) {
+        defer {
+            phase.withLock { $0 = .idle }
+            ThresholdLog.session.notice("compositor render loop exited")
+            DiagnosticBreadcrumbs.record(
+                category: "lifecycle", message: "compositor_stopped")
+        }
         // Render-thread-confined state comes to life HERE (ADR-004).
         let core = SessionCore(
             layout: layout,

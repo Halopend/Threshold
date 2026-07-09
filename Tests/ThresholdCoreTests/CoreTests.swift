@@ -68,6 +68,58 @@ struct ClockTests {
     }
 }
 
+@Suite("Bitset")
+struct BitsetTests {
+    @Test("removeAll clears all words and can be reused")
+    func removeAllClearsAndReuses() {
+        var bits = Bitset(bitCount: 130)
+        bits.insert(0)
+        bits.insert(64)
+        bits.insert(129)
+        #expect(!bits.isEmpty)
+
+        bits.removeAll()
+        #expect(bits.isEmpty)
+        #expect(!bits.contains(0))
+        #expect(!bits.contains(64))
+        #expect(!bits.contains(129))
+
+        bits.insert(17)
+        #expect(bits.contains(17))
+        #expect(!bits.contains(18))
+    }
+
+    @Test("lane bitsets do not share backing storage after full-lane clears")
+    func laneBitsetsClearIndependently() throws {
+        let clock = FixedStepClock(step: 0.01)
+        let engine = try makeEngine(
+            (0..<70).map {
+                ParamSpec(
+                    key: ParamKey("t.p\($0)"),
+                    label: "P\($0)",
+                    range: -10...10,
+                    default: 0,
+                    smoothing: .instant)
+            },
+            clock: clock)
+
+        for lane in Lane.allCases {
+            for slot in firstContentSlot..<(firstContentSlot + 70) {
+                engine.write(lane: lane, slot: slot, value: 1)
+            }
+        }
+
+        for _ in 0..<20 {
+            for lane in Lane.allCases { engine.clearLane(lane) }
+            engine.write(lane: .user, slot: firstContentSlot + 69, value: 2)
+            clock.advance()
+            _ = engine.resolve()
+        }
+
+        #expect(engine.resolve().values[firstContentSlot + 69] == 2)
+    }
+}
+
 @Suite("Param value types")
 struct ParamTypeTests {
     @Test("ParamKey and SignalID round-trip through Codable as bare strings")

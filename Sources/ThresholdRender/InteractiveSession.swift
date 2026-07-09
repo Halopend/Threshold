@@ -65,6 +65,11 @@ public final class InteractiveSession: @unchecked Sendable {
     }
 
     private let phase = Mutex<Phase>(.idle)
+    /// App-facing teardown dispatches the blocking join here. `stop()` keeps
+    /// its synchronous contract for tests and non-main lifecycle owners.
+    private let lifecycleQueue = DispatchQueue(
+        label: "com.pupppower.threshold.rebuild.session-lifecycle",
+        qos: .userInitiated)
     private let stopRequested = Atomic<Bool>(false)
     private let started = DispatchSemaphore(value: 0)
     private let finished = DispatchSemaphore(value: 0)
@@ -120,6 +125,9 @@ public final class InteractiveSession: @unchecked Sendable {
         }
         guard shouldStart else { return }
 
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "render_session_start_requested")
+
         let thread = Thread { [self] in
             renderThreadMain()
         }
@@ -146,6 +154,8 @@ public final class InteractiveSession: @unchecked Sendable {
         guard shouldJoin else { return }
 
         stopRequested.store(true, ordering: .releasing)
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "render_session_stop_requested")
         // BOUNDED waits, both of them: `stop()` typically runs on the main
         // thread, and an unbounded join on a wedged render thread turns a
         // render-side stall into a silent main-thread hang (beachball with no
@@ -160,6 +170,9 @@ public final class InteractiveSession: @unchecked Sendable {
                 stop(): render thread never signaled start after 5s — it is \
                 wedged in setup; abandoning join (thread leaked)
                 """)
+            DiagnosticBreadcrumbs.record(
+                category: "hang", message: "render_session_start_timeout",
+                metadata: ["timeoutMs": "5000"])
             return
         }
         if let source = stopSource {
@@ -177,9 +190,22 @@ public final class InteractiveSession: @unchecked Sendable {
                 stop(): render thread did not exit after 5s — likely blocked \
                 mid-frame (GPU stall?); abandoning join (thread leaked)
                 """)
+            DiagnosticBreadcrumbs.record(
+                category: "hang", message: "render_session_stop_timeout",
+                metadata: ["timeoutMs": "5000"])
         } else {
             ThresholdLog.session.notice("render session stopped (joined cleanly)")
+            DiagnosticBreadcrumbs.record(
+                category: "lifecycle", message: "render_session_stopped")
         }
+    }
+
+    /// Nonblocking app-facing teardown. The dedicated lifecycle lane performs
+    /// the same bounded join as `stop()` without freezing SwiftUI's main actor.
+    public func requestStop() {
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "render_session_stop_dispatched")
+        lifecycleQueue.async { [self] in stop() }
     }
 
     // MARK: Render thread
@@ -560,12 +586,21 @@ final class SessionGPUEncoder {
                     buffer completed in 1s — dropping frame; in-flight: \
                     [\(states, privacy: .public)]
                     """)
+                DiagnosticBreadcrumbs.record(
+                    category: "hang", message: "gpu_inflight_timeout",
+                    metadata: [
+                        "count": String(stalls),
+                        "states": states,
+                    ])
             }
             return lastDiagnostics
         }
         if stalls > 0 {
             ThresholdLog.render.notice(
                 "render pipeline recovered after \(self.stalls) dropped frame(s)")
+            DiagnosticBreadcrumbs.record(
+                category: "gpu", message: "render_pipeline_recovered",
+                metadata: ["droppedFrames": String(stalls)])
             stalls = 0
         }
         // Every path after this point either commits (the completed handler
@@ -618,7 +653,7 @@ final class SessionGPUEncoder {
                 outputHeight: texture.height)
             // Report the scale actually marched (clamped), not the request, so
             // the readout reflects reality instead of an unreachable target.
-            if fx != nil { effectiveScale = Float(inputW) / Float(texture.width) }
+            if let fx { effectiveScale = Float(fx.color.width) / Float(texture.width) }
         }
         let auxOutputs = fx != nil
         let marchTarget = fx?.color ?? texture

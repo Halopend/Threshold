@@ -14,6 +14,14 @@
 #if os(visionOS)
 import CompositorServices
 #endif
+#if canImport(MetricKit)
+import MetricKit
+#endif
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 import ImageIO
 import os
 import SwiftUI
@@ -26,8 +34,78 @@ import UniformTypeIdentifiers
 
 // MARK: - Shared shell pieces (all platforms)
 
-/// Shell diagnostics (`log stream --predicate 'subsystem == "com.pupppower.threshold"'`).
-let appLog = Logger(subsystem: "com.pupppower.threshold", category: "shell")
+/// Shell diagnostics (kept distinct from the original MetalRaymarch app).
+let appLog = Logger(subsystem: ThresholdLog.subsystem, category: "shell")
+
+// MARK: - Process diagnostics
+
+@MainActor
+final class ShippingAppDiagnostics: NSObject {
+    static let shared = ShippingAppDiagnostics()
+
+    private var started = false
+    private var terminationObserver: NSObjectProtocol?
+    private let watchdog = MainThreadHangWatchdog()
+
+    func start() {
+        guard !started else { return }
+        started = true
+
+        let identity = ThresholdBuildIdentity.current
+        DiagnosticBreadcrumbs.beginSession(identity: identity)
+        ThresholdLog.diagnostics.notice("\(identity.summary, privacy: .public)")
+        ThresholdLog.diagnostics.notice(
+            "diagnostic switches: \(DiagnosticSwitches.summary, privacy: .public)")
+        ThresholdLog.diagnostics.notice(
+            "diagnostic files: \(DiagnosticBreadcrumbs.directoryURL.path, privacy: .public)")
+        watchdog.start()
+
+        #if canImport(MetricKit)
+        MXMetricManager.shared.add(self)
+        #endif
+
+        #if os(macOS)
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: nil
+        ) { _ in
+            DiagnosticBreadcrumbs.record(
+                category: "lifecycle", message: "application_will_terminate")
+            DiagnosticBreadcrumbs.markCleanExit()
+        }
+        #elseif canImport(UIKit)
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil, queue: nil
+        ) { _ in
+            DiagnosticBreadcrumbs.record(
+                category: "lifecycle", message: "application_will_terminate")
+            DiagnosticBreadcrumbs.markCleanExit()
+        }
+        #endif
+    }
+}
+
+#if canImport(MetricKit)
+extension ShippingAppDiagnostics: MXMetricManagerSubscriber {
+    nonisolated func didReceive(_ payloads: [MXMetricPayload]) {
+        DiagnosticBreadcrumbs.record(
+            category: "diagnostic", message: "metrickit_metrics_received",
+            metadata: ["count": String(payloads.count)])
+    }
+
+    nonisolated func didReceive(_ payloads: [MXDiagnosticPayload]) {
+        for payload in payloads {
+            DiagnosticBreadcrumbs.storeArtifact(
+                prefix: "metrickit-diagnostic",
+                data: payload.jsonRepresentation(),
+                metadata: ["source": "MetricKit"])
+        }
+        ThresholdLog.diagnostics.notice(
+            "received \(payloads.count) MetricKit diagnostic payload(s)")
+    }
+}
+#endif
 
 /// Constants shared by the desktop and visionOS composition roots.
 enum AppModelShared {
@@ -157,21 +235,34 @@ final class AppModel {
     }
 
     func start() {
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_start_requested")
+        if DiagnosticSwitches.isEnabled(.disableSpecialization) {
+            var tuning = mirror.renderTuning
+            tuning.specializationEnabled = false
+            mirror.setRenderTuning(tuning)
+        }
         session.start()
         mirror.startPolling()
         mirror.setQualityGovernor(.platformDefault)
         #if os(macOS)
         keyboardNav.install(surface: surface, camera: camera)
         #endif
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_started")
     }
 
     func stop() {
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_stop_requested")
         #if os(macOS)
         keyboardNav.remove()
         #endif
         audio.stop()
         mirror.stopPolling()
-        session.stop()
+        session.requestStop()
+        DiagnosticBreadcrumbs.record(
+            category: "lifecycle", message: "app_model_stopped")
     }
 
     /// Whether the mic is feeding the audio.* signals (Motion ▸ Music toggle).
@@ -319,14 +410,15 @@ final class AppModel {
         // cache makes reopening the same DE instant.
         let commands = session.commands
         let loader = loader
-        Task.detached(priority: .userInitiated) {
+        let embeddedDE = envelope.embeddedDE!
+        Task {
             do {
-                let program = try envelope.embeddedDE.map { try loader.load($0) }
+                let program = try await loader.loadAsync(embeddedDE)
                 commands.publish(.applyScene(envelope, transition: .default))
                 commands.publish(.setExternalDE(program))
             } catch {
                 let message = "\(filename): \(error)"
-                await MainActor.run { self.lastOpenError = message }
+                self.lastOpenError = message
             }
         }
     }
@@ -427,7 +519,8 @@ struct MainView: View {
                     audioActions: AudioActions(
                         isEnabled: { model.audioEnabled },
                         setEnabled: { model.setAudioEnabled($0) },
-                        setFocusBand: { model.setFocusBand($0) }))
+                        setFocusBand: { model.setFocusBand($0) }),
+                    resetView: { model.camera.reset() })
             }
             .frame(width: 340)
             .fileImporter(
@@ -565,11 +658,23 @@ final class VisionAppModel {
     /// space opens: spin up the render thread + hand tracking, and arm the
     /// quality governor that drives the compositor's renderQuality lever.
     func attach(_ layerRenderer: LayerRenderer) {
+        if DiagnosticSwitches.isEnabled(.disableSpecialization) {
+            var tuning = mirror.renderTuning
+            tuning.specializationEnabled = false
+            mirror.setRenderTuning(tuning)
+        }
         session.start(layerRenderer)
         hands.start()
         // governorDefault drops the resolution floor to 0.35 when temporal
         // reconstruction is armed (it holds quality there — the point).
         mirror.setQualityGovernor(CompositorSession.governorDefault)
+    }
+
+    func detach() {
+        session.stop()
+        hands.stop()
+        audio.stop()
+        audioEnabled = false
     }
 
     /// Whether the mic is feeding the audio.* signals (Motion ▸ Music toggle).
@@ -624,14 +729,15 @@ final class VisionAppModel {
                 let commands = session.commands
                 let loader = loader
                 let filename = url.lastPathComponent
-                Task.detached(priority: .userInitiated) {
+                let embeddedDE = envelope.embeddedDE!
+                Task {
                     do {
-                        let program = try envelope.embeddedDE.map { try loader.load($0) }
+                        let program = try await loader.loadAsync(embeddedDE)
                         commands.publish(.applyScene(envelope, transition: .default))
                         commands.publish(.setExternalDE(program))
                     } catch {
                         let message = "\(filename): \(error)"
-                        await MainActor.run { self.lastOpenError = message }
+                        self.lastOpenError = message
                     }
                 }
             case .animation(let envelope):
@@ -708,6 +814,7 @@ struct VisionMainView: View {
                         }
                     } else {
                         await dismissImmersiveSpace()
+                        model.detach()
                     }
                 }
             }
@@ -837,7 +944,7 @@ struct ThresholdApp: App {
 
     var body: some Scene {
         #if os(macOS) || os(iOS)
-        WindowGroup("Threshold") {
+        WindowGroup("Threshold Rebuild") {
             Group {
                 if let model {
                     MainView(model: model)
@@ -847,12 +954,16 @@ struct ThresholdApp: App {
                 } else {
                     ProgressView("Starting…")
                         .task {
+                            ShippingAppDiagnostics.shared.start()
                             do {
                                 let m = try AppModel()
                                 m.start()
                                 model = m
                             } catch {
                                 initError = String(describing: error)
+                                DiagnosticBreadcrumbs.record(
+                                    category: "lifecycle", message: "app_initialization_failed",
+                                    metadata: ["error": String(describing: error)])
                             }
                         }
                 }
@@ -860,9 +971,10 @@ struct ThresholdApp: App {
             #if os(macOS)
             .frame(minWidth: 960, minHeight: 600)
             #endif
+            .onDisappear { model?.stop() }
         }
         #else
-        WindowGroup("Threshold") {
+        WindowGroup("Threshold Rebuild") {
             Group {
                 if let model {
                     VisionMainView(model: model)
@@ -872,12 +984,16 @@ struct ThresholdApp: App {
                 } else {
                     ProgressView("Starting…")
                         .task {
+                            ShippingAppDiagnostics.shared.start()
                             do {
                                 let m = try VisionAppModel()
                                 m.mirror.startPolling()
                                 model = m
                             } catch {
                                 initError = String(describing: error)
+                                DiagnosticBreadcrumbs.record(
+                                    category: "lifecycle", message: "app_initialization_failed",
+                                    metadata: ["error": String(describing: error)])
                             }
                         }
                 }

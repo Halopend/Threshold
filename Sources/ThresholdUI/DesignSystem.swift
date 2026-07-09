@@ -47,6 +47,22 @@ public enum DS {
         /// 20 pt — prominent containers / sheets.
         public static let prominent: CGFloat = 20
     }
+
+    // MARK: - Glass surfaces
+
+    public enum Surface {
+        /// Main floating control surface: the legacy dark glass plate.
+        public static let panelDark = Color.black.opacity(0.78)
+        public static let panelLight = Color.white.opacity(0.72)
+        public static let strokeDark = Color.white.opacity(0.10)
+        public static let strokeLight = Color.black.opacity(0.12)
+        /// Content cards sit slightly above the panel, with accent color in
+        /// the edge and a dark liquid-glass fill underneath.
+        public static let cardDark = Color.black.opacity(0.34)
+        public static let cardLight = Color.white.opacity(0.30)
+        public static let innerStrokeDark = Color.white.opacity(0.07)
+        public static let innerStrokeLight = Color.black.opacity(0.08)
+    }
 }
 
 // MARK: - Panel text size (Dynamic Type)
@@ -101,16 +117,58 @@ extension DS {
 // MARK: - Module card chrome
 
 extension View {
+    /// Floating dark glass panel used by the control sidebar and top chrome.
+    public func panelGlass(cornerRadius: CGFloat = DS.Radius.prominent) -> some View {
+        modifier(PanelGlassModifier(cornerRadius: cornerRadius))
+    }
+
     /// The shared "module card" chrome: padded rounded rect tinted by an
     /// accent. One box per section — the wrapper the legacy control tabs
     /// used for every titled group of controls.
     public func moduleCard(_ accent: Color, opacity: Double = 0.06) -> some View {
-        self
+        modifier(ModuleCardModifier(accent: accent, opacity: opacity))
+    }
+}
+
+private struct PanelGlassModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background(.ultraThinMaterial, in: shape)
+            .background(
+                shape.fill(colorScheme == .dark ? DS.Surface.panelDark : DS.Surface.panelLight))
+            .overlay(
+                shape.strokeBorder(
+                    colorScheme == .dark ? DS.Surface.strokeDark : DS.Surface.strokeLight,
+                    lineWidth: 1))
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.28 : 0.10),
+                    radius: 18, x: 0, y: 10)
+    }
+}
+
+private struct ModuleCardModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    let accent: Color
+    let opacity: Double
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+        content
             .padding(DS.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.control)
-                    .fill(accent.opacity(opacity)))
+            .background(.thinMaterial, in: shape)
+            .background(shape.fill(colorScheme == .dark ? DS.Surface.cardDark : DS.Surface.cardLight))
+            .overlay(
+                shape.strokeBorder(accent.opacity(opacity + 0.18), lineWidth: 0.8))
+            .overlay(
+                shape.strokeBorder(
+                    colorScheme == .dark ? DS.Surface.innerStrokeDark : DS.Surface.innerStrokeLight,
+                    lineWidth: 0.5))
+            .shadow(color: accent.opacity(colorScheme == .dark ? 0.10 : 0.05),
+                    radius: 10, x: 0, y: 4)
     }
 }
 

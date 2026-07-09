@@ -449,7 +449,9 @@ final class SessionCore {
         logCommand(command)
         switch command {
         case .applyScene(let envelope, let transition):
-            apply(scene: envelope, transition: transition)
+            let effectiveTransition = DiagnosticSwitches.isEnabled(.disableSceneTransitions)
+                ? nil : transition
+            apply(scene: envelope, transition: effectiveTransition)
             historyEpoch &+= 1
 
         case .setDE(let key):
@@ -524,9 +526,16 @@ final class SessionCore {
             palette = newPalette
 
         case .setAnimationClip(let clip):
-            animationPlayer.setClip(clip)
+            if DiagnosticSwitches.isEnabled(.disableAnimation) {
+                animationPlayer.setClip(nil)
+                DiagnosticBreadcrumbs.record(
+                    category: "switch", message: "animation_clip_ignored")
+            } else {
+                animationPlayer.setClip(clip)
+            }
 
         case .animationTransport(let verb):
+            guard !DiagnosticSwitches.isEnabled(.disableAnimation) else { return }
             switch verb {
             case .play: animationPlayer.play()
             case .pause: animationPlayer.pause()
@@ -541,7 +550,11 @@ final class SessionCore {
             }
 
         case .setRenderTuning(let newTuning):
-            tuning = newTuning
+            var effectiveTuning = newTuning
+            if DiagnosticSwitches.isEnabled(.disableSpecialization) {
+                effectiveTuning.specializationEnabled = false
+            }
+            tuning = effectiveTuning
 
         case .captureImage(let width, let height, let slot):
             // Latched for the shell's frame loop: the request that renders
