@@ -295,7 +295,7 @@ public final class Catalog {
             atSlot: EngineSlot.gradSmoothing.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorMapMode, label: "Color Mapping",
-                      kind: .enumeration(caseCount: 4), range: 0...3, default: 0,
+                      kind: .enumeration(caseCount: 5), range: 0...4, default: 0,
                       composition: .replace, persistence: .scene, group: .color),
             atSlot: EngineSlot.colorMapMode.rawValue)
         try! catalog.registerEngine(

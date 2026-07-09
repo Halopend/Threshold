@@ -20,6 +20,7 @@ public enum ColorMapMode: Int, Sendable, Codable, Hashable, CaseIterable {
     case depth = 1
     case normal = 2
     case blend = 3
+    case angle = 4
 
     public var label: String {
         switch self {
@@ -27,6 +28,7 @@ public enum ColorMapMode: Int, Sendable, Codable, Hashable, CaseIterable {
         case .depth: return "Depth"
         case .normal: return "Normal"
         case .blend: return "Blend"
+        case .angle: return "Angle"
         }
     }
 }

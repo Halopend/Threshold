@@ -169,6 +169,7 @@ typedef enum ThreshColorMapMode {
     ThreshColorMapDepth     = 1,  // normalized ray depth (t / maxDist)
     ThreshColorMapNormal    = 2,  // facing ratio from the surface normal
     ThreshColorMapBlend     = 3,  // 0.5*(trap) + 0.5*(depth)
+    ThreshColorMapAngle     = 4,  // polar angle of the surface hit position
 } ThreshColorMapMode;
 
 // ---------------------------------------------------------------------------

@@ -393,7 +393,18 @@ public enum LegacyScene {
                 params[ParamKey.colorGradientSmoothing.rawValue] = .array([.number(n)])
             }
             if let n = gnumber("mappingMode") {
-                params[ParamKey.colorMapMode.rawValue] = .array([.number(n)])
+                // Legacy raw values were orbit=0, iterations=1, depth=2,
+                // angle=3, normal=4, blended=5. Threshold already persisted
+                // depth/normal/blend as 1/2/3, so translate rather than copy.
+                let mapped: Double
+                switch Int(n.rounded()) {
+                case 2: mapped = Double(ColorMapMode.depth.rawValue)
+                case 3: mapped = Double(ColorMapMode.angle.rawValue)
+                case 4: mapped = Double(ColorMapMode.normal.rawValue)
+                case 5: mapped = Double(ColorMapMode.blend.rawValue)
+                default: mapped = Double(ColorMapMode.orbitTrap.rawValue)
+                }
+                params[ParamKey.colorMapMode.rawValue] = .array([.number(mapped)])
             }
         }
 

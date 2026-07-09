@@ -68,6 +68,7 @@ struct ABILayoutTests {
         #expect(ColorMapMode.depth.rawValue == Int(ThreshColorMapDepth.rawValue))
         #expect(ColorMapMode.normal.rawValue == Int(ThreshColorMapNormal.rawValue))
         #expect(ColorMapMode.blend.rawValue == Int(ThreshColorMapBlend.rawValue))
+        #expect(ColorMapMode.angle.rawValue == Int(ThreshColorMapAngle.rawValue))
     }
 
     @Test("ThreshPalette is 16B header + 16B per stop; Core cap matches header")

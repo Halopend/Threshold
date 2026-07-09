@@ -703,9 +703,11 @@ public enum ShadertoyExporter {
                 float lambert = max(dot(n, lightDir), 0.0);
                 float depth = clamp(t / max(MAX_DIST, 1e-3), 0.0, 1.0);
                 float facing = clamp(0.5 + 0.5 * dot(n, -rd), 0.0, 1.0);
+                float angle = atan(pos.y, pos.x) * 0.15915494 + 0.5;
                 float tMap = (MAP_MODE == 1) ? depth
                            : (MAP_MODE == 2) ? facing
                            : (MAP_MODE == 3) ? 0.5 * fract(trap) + 0.5 * depth
+                           : (MAP_MODE == 4) ? angle
                            : trap;
                 vec3 albedo = samplePalette(tMap);
                 float occ = (AO_STRENGTH > 0.0) ? cheapAO(pos, n, featureScale) : 1.0;

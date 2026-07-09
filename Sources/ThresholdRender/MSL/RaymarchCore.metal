@@ -1481,8 +1481,8 @@ static inline ThreshMarchResult marchShade(
         float lambert = max(dot(n, lightDir), 0.0f);
 
         // Mapping (plan §5.5 stage 1): derive the palette coordinate t_map.
-        // Depth/normal already land in 0..1; orbit trap is wrapped by the
-        // sampler. Blend mixes trap with depth.
+        // Depth/normal/angle already land in 0..1; orbit trap is wrapped by
+        // the sampler. Blend mixes trap with depth.
         float depth = clamp(t / max(maxDist, 1e-3f), 0.0f, 1.0f);
         float facing = clamp(0.5f + 0.5f * dot(n, -rd), 0.0f, 1.0f);
         int mapMode = threshMapMode(int(params[THRESH_SLOT_MAP_MODE]));
@@ -1491,6 +1491,7 @@ static inline ThreshMarchResult marchShade(
             case 1:  tMap = depth; break;                         // depth
             case 2:  tMap = facing; break;                        // normal
             case 3:  tMap = 0.5f * fract(trap) + 0.5f * depth; break;  // blend
+            case 4:  tMap = atan2(pos.y, pos.x) * 0.15915494f + 0.5f; break; // angle
             default: tMap = trap; break;                          // orbit trap
         }
 
