@@ -63,7 +63,11 @@ struct Bitset {
     }
 
     mutating func removeAll() {
-        for i in words.indices { words[i] = 0 }
+        words.withUnsafeMutableBufferPointer { buffer in
+            for i in buffer.indices {
+                buffer[i] = 0
+            }
+        }
     }
 
     var isEmpty: Bool { words.allSatisfy { $0 == 0 } }
@@ -116,6 +120,11 @@ public struct LaneWrite: Sendable, Hashable {
 /// Sendable: the only stored property is a `Mutex` over Sendable state — no
 /// `@unchecked` needed.
 public final class LaneMailbox: Sendable {
+    private struct LaneSlot: Hashable {
+        var lane: Lane
+        var slot: Int
+    }
+
     private struct State: Sendable {
         var buffer: [LaneWrite]
         var head: Int = 0
@@ -154,29 +163,46 @@ public final class LaneMailbox: Sendable {
         }
     }
 
-    /// Apply all pending writes to `engine` in publish order and empty the
-    /// ring. Render thread only (the engine is not Sendable; whoever owns the
-    /// engine owns this call). Allocation-free.
+    /// Apply the latest pending write per `(lane, slot)` to `engine` and empty
+    /// the ring. Render thread only (the engine is not Sendable; whoever owns
+    /// the engine owns this call).
     public func drainInto(_ engine: ModulationEngine) {
-        state.withLock { s in
-            let slotCount = engine.layout.slotCount
+        let pending = state.withLock { s -> [LaneWrite] in
+            guard s.count > 0 else { return [] }
+            var writes: [LaneWrite] = []
+            writes.reserveCapacity(s.count)
             for i in 0..<s.count {
-                let w = s.buffer[(s.head + i) % s.buffer.count]
-                // Ingress validation: the mailbox accepts writes from ANY
-                // thread with no slot knowledge, so a stale/garbage slot
-                // (old scene, remapped catalog, torn producer) must be
-                // dropped HERE — loudly in debug — rather than fed to
-                // `write`, whose precondition would kill the render thread.
-                guard w.slot >= 0, w.slot < slotCount else {
-                    assertionFailure(
-                        "LaneMailbox: dropped write to slot \(w.slot) "
-                        + "(lane \(w.lane), slotCount \(slotCount))")
-                    continue
-                }
-                engine.write(lane: w.lane, slot: w.slot, value: w.value)
+                writes.append(s.buffer[(s.head + i) % s.buffer.count])
             }
             s.head = 0
             s.count = 0
+            return writes
+        }
+        guard !pending.isEmpty else { return }
+
+        var latest: [LaneSlot: LaneWrite] = [:]
+        latest.reserveCapacity(pending.count)
+        var order: [LaneSlot] = []
+        order.reserveCapacity(pending.count)
+        for write in pending {
+            let key = LaneSlot(lane: write.lane, slot: write.slot)
+            if latest.updateValue(write, forKey: key) == nil {
+                order.append(key)
+            }
+        }
+
+        let slotCount = engine.layout.slotCount
+        for key in order {
+            guard let w = latest[key] else { continue }
+            // Ingress validation: the mailbox accepts writes from ANY thread
+            // with no slot knowledge, so a stale/garbage slot (old scene,
+            // remapped catalog, torn producer) must be dropped HERE rather
+            // than fed to `write`, whose precondition would kill the render
+            // thread.
+            guard w.slot >= 0, w.slot < slotCount else {
+                continue
+            }
+            engine.write(lane: w.lane, slot: w.slot, value: w.value)
         }
     }
 
@@ -184,6 +210,12 @@ public final class LaneMailbox: Sendable {
     /// item 2 observability).
     public var didGrowBeyondInitialCapacity: Bool {
         state.withLock { $0.didGrow }
+    }
+
+    /// Current queued write count. Observability only; producers may change
+    /// it immediately after this returns.
+    public var pendingCount: Int {
+        state.withLock { $0.count }
     }
 }
 
@@ -359,9 +391,9 @@ public final class ModulationEngine {
         let laneCount = Lane.allCases.count
         self.target = [[Float]](repeating: [Float](repeating: 0, count: n), count: laneCount)
         self.current = [[Float]](repeating: [Float](repeating: 0, count: n), count: laneCount)
-        self.hasValue = [Bitset](repeating: Bitset(bitCount: n), count: laneCount)
+        self.hasValue = (0..<laneCount).map { _ in Bitset(bitCount: n) }
         self.musicWritten = Bitset(bitCount: n)
-        self.releasing = [Bitset](repeating: Bitset(bitCount: n), count: laneCount)
+        self.releasing = (0..<laneCount).map { _ in Bitset(bitCount: n) }
         self.pendingSceneClears = Bitset(bitCount: n)
     }
 

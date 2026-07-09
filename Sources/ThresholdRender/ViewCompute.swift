@@ -470,10 +470,16 @@ final class ViewComputeSpecializationCache: Sendable {
         var libraries: [String: MTLLibrary] = [:]
         var ready: [String: SpecializedViewCompute] = [:]
         var inFlight: Set<String> = []
+        var hits: [String: Int] = [:]
     }
 
     private let context: GPUContext
     private let state = Mutex<State>(State())
+    private let buildQueue = DispatchQueue(
+        label: "com.polinate.threshold.view-compute-specialization-build",
+        qos: .utility)
+    private let compileAfterHits = 8
+    private let maxReadyVariants = 32
 
     init(context: GPUContext) {
         self.context = context
@@ -495,11 +501,14 @@ final class ViewComputeSpecializationCache: Sendable {
 
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
+            let hits = (s.hits[key] ?? 0) + 1
+            s.hits[key] = hits
+            guard hits >= compileAfterHits else { return false }
             return s.inFlight.insert(key).inserted
         }
         if shouldCompile {
             let context = context
-            Task.detached(priority: .utility) { [self] in
+            buildQueue.async { [self] in
                 let library: MTLLibrary? = resolveLibrary(deFunctionName)
                 let compiled = library.flatMap {
                     try? context.makeSpecializedViewCompute(
@@ -508,7 +517,13 @@ final class ViewComputeSpecializationCache: Sendable {
                 }
                 state.withLock { s in
                     s.inFlight.remove(key)
-                    if let compiled { s.ready[key] = compiled }
+                    if let compiled {
+                        s.ready[key] = compiled
+                        if s.ready.count > maxReadyVariants,
+                           let evict = s.ready.keys.first(where: { $0 != key }) {
+                            s.ready.removeValue(forKey: evict)
+                        }
+                    }
                 }
             }
         }

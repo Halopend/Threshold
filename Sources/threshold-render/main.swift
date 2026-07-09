@@ -449,7 +449,6 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
     let dbgDE = program != nil
             ? externalDEParamValues(descriptor, envelope: scene)
             : deParamValues(descriptor, layout: layout, resolved: resolved)
-    FileHandle.standardError.write("DBG de=\(descriptor.key) deParams=\(dbgDE) cam=\(camera.position) iters=\(engineParams.iterations) bubble(en=\(engineParams.bubbleEnabled),r=\(engineParams.bubbleRadius),bl=\(engineParams.bubbleBlend))\n".data(using: .utf8)!)
     let (params, deParamOffset) = ParamTableLayout.build(
         engine: engineParams,
         deParams: dbgDE)

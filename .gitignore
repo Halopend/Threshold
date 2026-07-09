@@ -10,3 +10,6 @@ bench-results/
 Build/
 build/
 /threshold-out.png
+
+# Local debug scratch (crash reports, captures, sanitizer output)
+tmp/

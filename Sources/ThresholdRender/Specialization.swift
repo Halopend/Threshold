@@ -25,9 +25,11 @@
 // - Built-ins only: an external DE's own pipeline already exists per program
 //   and its function is not part of the core source.
 
+import Dispatch
 import Foundation
 import Metal
 import Synchronization
+import ThresholdCore
 import ThresholdShaderABI
 import ThresholdShaderIR
 
@@ -422,10 +424,16 @@ public final class SpecializationCache: Sendable {
         var libraries: [String: MTLLibrary] = [:]  // per DE function name
         var ready: [String: SpecializedMarch] = [:]  // per (DE, iters, aux)
         var inFlight: Set<String> = []               // variant keys
+        var hits: [String: Int] = [:]                 // miss stability gate
     }
 
     private let context: GPUContext
     private let state = Mutex<State>(State())
+    private let buildQueue = DispatchQueue(
+        label: "com.polinate.threshold.specialization-build",
+        qos: .utility)
+    private let compileAfterHits = 8
+    private let maxReadyVariants = 32
 
     public init(context: GPUContext) {
         self.context = context
@@ -452,21 +460,36 @@ public final class SpecializationCache: Sendable {
 
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
+            let hits = (s.hits[key] ?? 0) + 1
+            s.hits[key] = hits
+            guard hits >= compileAfterHits else { return false }
             return s.inFlight.insert(key).inserted
         }
 
         if shouldCompile {
             let context = context
-            Task.detached(priority: .utility) { [self] in
+            buildQueue.async { [self] in
                 // Resolve the specialized SOURCE library (compile once per DE;
                 // a rare concurrent double-compile across two variant lookups
                 // is merely wasteful — the OS Metal cache dedups — and never
                 // incorrect, so no separate in-flight tracking).
+                let started = ProcessInfo.processInfo.systemUptime
                 let library: MTLLibrary? = resolveLibrary(deFunctionName)
                 let compiled = library.flatMap {
                     try? context.makeSpecializedMarch(
                         from: $0, deFunctionName: deFunctionName,
                         spec: spec, auxOutputs: auxOutputs)
+                }
+                let seconds = ProcessInfo.processInfo.systemUptime - started
+                if seconds > 2 {
+                    ThresholdLog.render.error(
+                        """
+                        specialization build took \
+                        \(String(format: "%.1f", seconds), privacy: .public)s \
+                        for \(deFunctionName, privacy: .public) \
+                        [\(spec.summary, privacy: .public)] \
+                        \(auxOutputs ? "aux" : "base", privacy: .public)
+                        """)
                 }
                 state.withLock { s in
                     s.inFlight.remove(key)
@@ -474,7 +497,13 @@ public final class SpecializationCache: Sendable {
                     // keeps rendering. inFlight was cleared, so the next lookup
                     // miss retries (fine for transient OOM; a structurally bad
                     // name simply never lands).
-                    if let compiled { s.ready[key] = compiled }
+                    if let compiled {
+                        s.ready[key] = compiled
+                        if s.ready.count > maxReadyVariants,
+                           let evict = s.ready.keys.first(where: { $0 != key }) {
+                            s.ready.removeValue(forKey: evict)
+                        }
+                    }
                 }
             }
         }

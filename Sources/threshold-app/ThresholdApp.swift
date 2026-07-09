@@ -76,11 +76,13 @@ final class AppModel {
     }
 
     let watchdog = HangWatchdog()
+    lazy var renderWatchdog = RenderWatchdog(session: session)
 
     func start() {
         session.start()
         mirror.startPolling()
         watchdog.start()
+        renderWatchdog.start()
         keyboardNav.install(surface: surface, camera: camera)
         // Quality governor ON by default (ADR-003): without it, any scene
         // heavier than the refresh budget misses vsyncs and the app reads as
@@ -98,6 +100,7 @@ final class AppModel {
     func stop() {
         ThresholdLog.session.notice("app stopping")
         keyboardNav.remove()
+        renderWatchdog.stop()
         watchdog.stop()
         audio.stop()
         mirror.stopPolling()

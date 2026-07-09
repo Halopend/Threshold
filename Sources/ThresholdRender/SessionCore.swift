@@ -168,7 +168,12 @@ final class SessionCore {
         now timestamp: Double, width: Int, height: Int,
         gpuMilliseconds: Double = 0
     ) -> SessionFrame {
-        for command in commands.drain() {
+        let drained = commands.drain()
+        if drained.count > 512 {
+            ThresholdLog.session.error(
+                "large command drain: \(drained.count) commands before coalescing")
+        }
+        for command in coalescedCommands(drained) {
             handle(command)
         }
 
@@ -389,6 +394,48 @@ final class SessionCore {
     }
 
     // MARK: - Commands
+
+    private struct UserEditKey: Hashable {
+        var slot: Int
+    }
+
+    /// Drag events can arrive much faster than the display link, and every
+    /// `userEdit` requires a live inversion against render-thread engine
+    /// state. Preserve command order around non-drag commands, but collapse
+    /// each burst to the latest edit per slot so a backed-up frame does bounded
+    /// useful work instead of replaying stale thumb positions.
+    private func coalescedCommands(_ drained: [SessionCommand]) -> [SessionCommand] {
+        guard drained.count > 1 else { return drained }
+        var result: [SessionCommand] = []
+        result.reserveCapacity(drained.count)
+        var latestEdits: [UserEditKey: SessionCommand] = [:]
+        var editOrder: [UserEditKey] = []
+
+        func flushEdits() {
+            guard !editOrder.isEmpty else { return }
+            for key in editOrder {
+                if let command = latestEdits[key] {
+                    result.append(command)
+                }
+            }
+            latestEdits.removeAll(keepingCapacity: true)
+            editOrder.removeAll(keepingCapacity: true)
+        }
+
+        for command in drained {
+            if case .userEdit(let slot, _) = command {
+                let key = UserEditKey(slot: slot)
+                if latestEdits.updateValue(command, forKey: key) == nil {
+                    editOrder.append(key)
+                }
+            } else {
+                flushEdits()
+                result.append(command)
+            }
+        }
+        flushEdits()
+        return result
+    }
 
     /// One log breadcrumb per drained command, so a frozen-session log shows
     /// what the user did leading up to it. Structural commands are low-rate →

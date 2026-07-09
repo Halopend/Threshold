@@ -202,6 +202,22 @@ struct SessionCoreTests {
                 "target 99 clamps to the param range's upper bound 10")
     }
 
+    @Test func userEditBurstsCoalesceToLatestTargetPerSlot() {
+        var h = Harness()
+        h.step()
+        let addSlot = h.slot(TK.add)
+        let mulSlot = h.slot(TK.mul)
+
+        for i in 0..<1_000 {
+            h.commands.publish(.userEdit(slot: addSlot, targetResolved: Float(i % 10)))
+            h.commands.publish(.userEdit(slot: mulSlot, targetResolved: Float((i % 5) + 1)))
+        }
+
+        let frame = h.step()
+        #expect(abs(frame.resolved.values[addSlot] - 9) <= 1e-4)
+        #expect(abs(frame.resolved.values[mulSlot] - 5) <= 1e-4)
+    }
+
     @Test func clearUserEditRestoresPreEditResolvedValue() {
         var h = Harness()
         h.step()

@@ -444,6 +444,7 @@ final class RasterSpecializationCache: Sendable {
         var libraries: [String: MTLLibrary] = [:]        // per DE function name
         var ready: [String: SpecializedRaster] = [:]     // per (DE, spec)
         var inFlight: Set<String> = []
+        var hits: [String: Int] = [:]
     }
 
     private let context: GPUContext
@@ -451,6 +452,11 @@ final class RasterSpecializationCache: Sendable {
     private let depthFormat: MTLPixelFormat
     private let maxViewCount: Int
     private let state = Mutex<State>(State())
+    private let buildQueue = DispatchQueue(
+        label: "com.polinate.threshold.raster-specialization-build",
+        qos: .utility)
+    private let compileAfterHits = 8
+    private let maxReadyVariants = 32
 
     init(
         context: GPUContext, colorFormat: MTLPixelFormat,
@@ -471,6 +477,9 @@ final class RasterSpecializationCache: Sendable {
 
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
+            let hits = (s.hits[key] ?? 0) + 1
+            s.hits[key] = hits
+            guard hits >= compileAfterHits else { return false }
             return s.inFlight.insert(key).inserted
         }
         if shouldCompile {
@@ -478,7 +487,7 @@ final class RasterSpecializationCache: Sendable {
             let colorFormat = colorFormat
             let depthFormat = depthFormat
             let maxViewCount = maxViewCount
-            Task.detached(priority: .utility) { [self] in
+            buildQueue.async { [self] in
                 let library: MTLLibrary? = resolveLibrary(deFunctionName)
                 let compiled = library.flatMap {
                     try? context.makeSpecializedRaster(
@@ -488,7 +497,13 @@ final class RasterSpecializationCache: Sendable {
                 }
                 state.withLock { s in
                     s.inFlight.remove(key)
-                    if let compiled { s.ready[key] = compiled }
+                    if let compiled {
+                        s.ready[key] = compiled
+                        if s.ready.count > maxReadyVariants,
+                           let evict = s.ready.keys.first(where: { $0 != key }) {
+                            s.ready.removeValue(forKey: evict)
+                        }
+                    }
                 }
             }
         }
