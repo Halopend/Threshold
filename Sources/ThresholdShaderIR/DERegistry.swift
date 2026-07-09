@@ -119,6 +119,26 @@ extension DEDescriptor {
         stepRelaxation: 1.6
     )
 
+    /// Original app Mandelbox. The UI exposed `minDistance` as a shape control;
+    /// internally the fold multiply used `scale / minDistance`, while the final
+    /// Rrmin normalization still used raw `scale`. Legacy scenes such as Paul
+    /// and Spiky depend on that hybrid parameterization.
+    public static let legacyMandelbox = DEDescriptor(
+        index: 7,
+        key: "legacyMandelbox",
+        displayName: "Mandelbox",
+        mslFunctionName: "de_legacyMandelbox",
+        equation: "zₙ₊₁ = (scale/minDistance)·sphereFold(boxFold(zₙ)) + p",
+        paramLayout: [
+            Param(name: "scale", default: 2.8, range: -4.0...4.0),
+            Param(name: "minDistance", default: 0.8, range: 0.01...16.0),
+            Param(name: "sphereRadius", default: 0.5, range: 0.01...2.0),
+            Param(name: "foldLimit", default: 1.0, range: 0.1...4.0),
+        ],
+        defaultIterations: 8,
+        stepRelaxation: 1.6
+    )
+
     /// Classic power-N Mandelbulb with a continuous polar rotation (the
     /// original app's "PolarRotation" knob, now an integrator). Param layout:
     /// [power, rotationSpeed, rotationPhase]. The rotation offsets the spherical
@@ -269,6 +289,7 @@ public enum DERegistry {
     public static let builtin: [DEDescriptor] = [
         .mandelbox, .mandelbulb, .kleinian, .mengerSponge,
         .quaternionJulia, .mandelbulbJulia, .mandelboxSphereProjection,
+        .legacyMandelbox,
     ]
 
     public static func descriptor(forKey key: String) -> DEDescriptor? {

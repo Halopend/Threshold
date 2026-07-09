@@ -198,6 +198,10 @@ public enum GestureBinding: Sendable, Hashable, Codable {
     /// A single scalar parameter. Valid for `.scalar` sources, and for
     /// `.vector` sources that drive one param from their delta magnitude.
     case scalar(ParamKey)
+    /// A vector source driving one scalar from a specific movement axis.
+    /// This preserves the legacy assignment model where one finger can claim
+    /// vertical, horizontal, and depth independently.
+    case scalarAxis(ParamKey, GestureAxis)
     /// A built-in behavior (grab-zoom, reset).
     case core(CoreGestureAction)
 
@@ -205,6 +209,7 @@ public enum GestureBinding: Sendable, Hashable, Codable {
     public func isValid(for arity: GestureArity) -> Bool {
         switch self {
         case .vector: return arity == .vector
+        case .scalarAxis: return arity == .vector
         case .scalar, .core: return true
         }
     }
@@ -216,6 +221,7 @@ public enum GestureBinding: Sendable, Hashable, Codable {
         case let .vector(.native(key)): return [key]
         case let .vector(.grouped(x, y, z)): return [x, y, z].compactMap { $0 }
         case let .scalar(key): return [key]
+        case let .scalarAxis(key, _): return [key]
         case .core: return []
         }
     }

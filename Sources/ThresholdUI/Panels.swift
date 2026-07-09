@@ -236,7 +236,8 @@ public struct ControlSidebar: View {
                 )
                 .padding(.horizontal, DS.Spacing.sm)
                 .padding(.vertical, DS.Spacing.xxs)
-                .background(.quaternary.opacity(0.4))
+                .background(.thinMaterial)
+                .background(Color.black.opacity(0.18))
             }
 
             Divider()
@@ -256,6 +257,7 @@ public struct ControlSidebar: View {
                     DS.textSize(forIndex: textSizeIndex)...DynamicTypeSize.accessibility2)
             }
         }
+        .panelGlass()
     }
 
     @ViewBuilder
@@ -1688,8 +1690,10 @@ struct WarpOpRow: View {
             }
         }
         .padding(DS.Spacing.sm)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.inset)
-                .fill(.quaternary.opacity(0.5)))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                .strokeBorder(Color.indigo.opacity(0.20), lineWidth: 0.7))
     }
 }

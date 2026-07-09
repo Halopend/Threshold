@@ -60,6 +60,38 @@ struct DEEquivalenceTests {
     }
 
     @Test(.enabled(if: GPU.available))
+    func legacyMandelboxEquivalence() throws {
+        let ctx = try GPU.ctx()
+        let evaluator = try DEEvaluator(context: ctx)
+        var rng = SplitMix64(seed: 0x1E6A_C0DE)
+        let descriptor = try #require(DERegistry.descriptor(forKey: "legacyMandelbox"))
+
+        // params: [scale, minDistance, sphereRadius, foldLimit]
+        let paramSets: [(params: [Float], iterations: Int)] = [
+            ([2.8, 2.2960358, 0.01, 1.0], 8),       // Paul
+            ([2.8, 2.3174517, 0.01, 1.0], 8),       // Spiky
+            ([3.0075026, 12.501993, 0.31832752, 1.0], 10),
+        ]
+        var tested = 0
+        for set in paramSets {
+            let points = (0..<40).map { _ in exteriorPoint(&rng, radius: 4.0...8.0) }
+            let gpu = try evaluator.evaluate(points: points, deIndex: Int(descriptor.index),
+                                             deParams: set.params,
+                                             iterations: set.iterations)
+            for (i, p) in points.enumerated() {
+                let cpu = ReferenceDEs.legacyMandelbox(p, params: set.params,
+                                                       iterations: set.iterations)
+                #expect(relClose(gpu[i].x, cpu.x, rel: 1e-3),
+                        "legacyMandelbox .x GPU \(gpu[i].x) vs CPU \(cpu.x) at \(p), params \(set.params)")
+                #expect(relClose(gpu[i].y, cpu.y, rel: 5e-3),
+                        "legacyMandelbox .y GPU \(gpu[i].y) vs CPU \(cpu.y) at \(p), params \(set.params)")
+                tested += 1
+            }
+        }
+        #expect(tested == 120)
+    }
+
+    @Test(.enabled(if: GPU.available))
     func mandelboxSphereProjectionEquivalence() throws {
         let ctx = try GPU.ctx()
         let evaluator = try DEEvaluator(context: ctx)

@@ -136,6 +136,40 @@ public final class SceneLibrary {
         sources = built
     }
 
+    /// Serial queue for off-main file scans. A dedicated queue — NOT the Swift
+    /// cooperative pool via `Task.detached` — because `Self.list` does blocking
+    /// directory-scan + JSON-decode I/O, and the cooperative pool is width-
+    /// capped at core count: enough concurrent blocked scans (or scans piled on
+    /// top of a specialization build storm) starve it and freeze the app. See
+    /// TemporalUpscaler.swift for the full failure mode.
+    private static let scanQueue = DispatchQueue(
+        label: "com.polinate.threshold.scene-library-scan", qos: .utility)
+
+    /// Re-list sources off the main actor. Used by panel appearance, where a
+    /// synchronous bundled/user JSON scan would be visible as navigation hitch.
+    public func refreshAsync() {
+        let directory = directory
+        let bundledSpecs = bundledSpecs
+        Self.scanQueue.async {
+            var built: [SceneSource] = [
+                SceneSource(
+                    id: "user", name: "My Scenes", directory: directory,
+                    isWritable: true, items: Self.list(directory))
+            ]
+            for spec in bundledSpecs {
+                let items = Self.list(spec.url)
+                if items.isEmpty { continue }
+                built.append(SceneSource(
+                    id: spec.id, name: spec.name, directory: spec.url,
+                    isWritable: false, items: items))
+            }
+            let result = built
+            Task { @MainActor in
+                self.sources = result
+            }
+        }
+    }
+
     /// Decode every `.threshscene` in `directory` into library items, sorted
     /// newest-first. A missing/foreign folder yields an empty list.
     nonisolated static func list(_ directory: URL) -> [SceneLibraryItem] {
@@ -275,6 +309,17 @@ enum SceneCategory: String, CaseIterable, Identifiable {
         case .mixedReality: return "cube.transparent"
         }
     }
+
+    /// Whether this category is wired to content. Only available categories
+    /// appear in the switcher — the placeholders were "coming soon" dead-ends.
+    /// Flip a case true when its content lands (keep in sync with the body
+    /// switch in `ScenesSection`).
+    var isAvailable: Bool {
+        switch self {
+        case .scenes: return true
+        case .jumpOff, .animations, .mixedReality: return false
+        }
+    }
 }
 
 /// The scene library panel: a category switcher over the save-current row and
@@ -299,12 +344,17 @@ public struct ScenesSection: View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             SectionHeader("Scenes", icon: "photo.on.rectangle.angled")
 
-            TabStrip(
-                items: SceneCategory.allCases.map {
-                    TabStrip.Item($0, label: $0.label, icon: $0.icon)
-                },
-                selection: $category,
-                compact: true)
+            // Only categories with content show a chip — a lone category needs
+            // no switcher (the section header already names it).
+            let available = SceneCategory.allCases.filter(\.isAvailable)
+            if available.count > 1 {
+                TabStrip(
+                    items: available.map {
+                        TabStrip.Item($0, label: $0.label, icon: $0.icon)
+                    },
+                    selection: $category,
+                    compact: true)
+            }
 
             switch category {
             case .scenes:
@@ -329,7 +379,7 @@ public struct ScenesSection: View {
                 confirmingDelete = nil
             }
         }
-        .onAppear { actions.library.refresh() }
+        .onAppear { actions.library.refreshAsync() }
     }
 
     /// The saved-scene browser: save-current row over the per-source card grid.
@@ -410,8 +460,9 @@ public struct ScenesSection: View {
     }
 }
 
-/// One saved-scene card: name + fractal + date (label only for now — the
-/// palette-gradient face is dropped pending a real thumbnail pass).
+/// One saved-scene card: the scene's palette gradient as the face, over
+/// name + fractal + date. (A rendered thumbnail is a further follow-up; the
+/// palette gradient is the cheap face every item already carries.)
 struct SceneCard: View {
     let item: SceneLibraryItem
     var canDelete: Bool = true
@@ -421,6 +472,9 @@ struct SceneCard: View {
     var body: some View {
         Button(action: onLoad) {
             VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+                if let palette = item.palette {
+                    GradientPreviewBar(palette: palette, height: 20)
+                }
                 Text(item.name)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
@@ -434,9 +488,11 @@ struct SceneCard: View {
                 .foregroundStyle(.secondary)
             }
             .padding(DS.Spacing.sm)
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.inset)
-                    .fill(.quaternary.opacity(0.5)))
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+            .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                    .strokeBorder(Color.purple.opacity(0.20), lineWidth: 0.7))
             .contentShape(RoundedRectangle(cornerRadius: DS.Radius.inset))
         }
         .buttonStyle(.plain)

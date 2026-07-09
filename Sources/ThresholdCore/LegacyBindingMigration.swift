@@ -6,7 +6,7 @@
 //   source  bass/mid/treble → audio.band.*, composite → audio.rms,
 //           beat → audio.onset
 //   target  saturation → color.saturation, iterations → engine.iterations,
-//           fractalScale → de.mandelbox.scale (a mandelbox-only field in
+//           fractalScale → de.legacyMandelbox.scale (a mandelbox-only field in
 //           the original)
 //   amount  → Binding.scale;  disabled mappings are dropped (UI state)
 //
@@ -39,7 +39,7 @@ public enum LegacyBindingMap {
     static let targetMap: [String: ParamKey] = [
         "saturation": .colorSaturation,
         "iterations": .engineIterations,
-        "fractalScale": .de("mandelbox", "scale"),
+        "fractalScale": .de("legacyMandelbox", "scale"),
     ]
 
     static func curve(_ name: String?) -> MappingCurve {

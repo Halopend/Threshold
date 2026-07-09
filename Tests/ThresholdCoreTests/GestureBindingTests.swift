@@ -68,6 +68,16 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
     let src = GestureSource.tapThumb(hand: .right, finger: .index)
     table.setBinding(.vector(.native(ParamKey("de.mbox.offset"))), for: src)
     #expect(table.binding(for: src) == .vector(.native(ParamKey("de.mbox.offset"))))
+
+    table.setBinding(.scalarAxis(ParamKey("de.mbox.power"), .y), for: src)
+    #expect(table.binding(for: src) == .scalarAxis(ParamKey("de.mbox.power"), .y))
+}
+
+@Test func scalarAxisBindingRejectedOnScalarSource() {
+    var table = GestureBindingTable()
+    let src = GestureSource.tapPalm(hand: .right, finger: .index)
+    table.setBinding(.scalarAxis(ParamKey("de.mbox.power"), .y), for: src)
+    #expect(table.binding(for: src) == nil)
 }
 
 @Test func nilClearsBinding() {

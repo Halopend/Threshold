@@ -68,6 +68,20 @@ private func writeMap(_ writes: [LaneWrite]) -> [Int: Float] {
     #expect(writes[0].value == 4.0)   // 1 · 0.5 · span(8)
 }
 
+@Test func resolverScalarAxisUsesSelectedVectorComponent() {
+    let layout = makeLayout()
+    var table = GestureBindingTable()
+    let src = GestureSource.tapThumb(hand: .right, finger: .index)
+    table.setBinding(.scalarAxis(ParamKey("de.f.power"), .z), for: src)
+
+    let writes = GestureLaneResolver.resolve(
+        drives: [src: .vector(SIMD3(1, 2, -0.25))],
+        table: table, layout: layout, gain: 0.5)
+    #expect(writes.count == 1)
+    #expect(writes[0].slot == firstContentSlot + 3)
+    #expect(writes[0].value == -1.0)   // z(-0.25) * gain(0.5) * span(8)
+}
+
 // Guards --------------------------------------------------------------------
 
 @Test func resolverSkipsArityMismatch() {

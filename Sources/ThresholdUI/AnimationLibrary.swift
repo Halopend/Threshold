@@ -108,6 +108,40 @@ public final class AnimationLibrary {
         sources = built
     }
 
+    /// Serial queue for off-main file scans. A dedicated queue — NOT the Swift
+    /// cooperative pool via `Task.detached` — because `Self.list` does blocking
+    /// directory-scan + JSON-decode I/O, and the cooperative pool is width-
+    /// capped at core count: enough concurrent blocked scans (or scans piled on
+    /// top of a specialization build storm) starve it and freeze the app. See
+    /// TemporalUpscaler.swift for the full failure mode.
+    private static let scanQueue = DispatchQueue(
+        label: "com.polinate.threshold.animation-library-scan", qos: .utility)
+
+    /// Re-list sources off the main actor. Panel appearance should not decode
+    /// every bundled/user clip synchronously in SwiftUI's navigation pass.
+    public func refreshAsync() {
+        let directory = directory
+        let bundledSpecs = bundledSpecs
+        Self.scanQueue.async {
+            var built: [AnimationSource] = [
+                AnimationSource(
+                    id: "user", name: "My Clips", directory: directory,
+                    isWritable: true, items: Self.list(directory))
+            ]
+            for spec in bundledSpecs {
+                let items = Self.list(spec.url)
+                if items.isEmpty { continue }
+                built.append(AnimationSource(
+                    id: spec.id, name: spec.name, directory: spec.url,
+                    isWritable: false, items: items))
+            }
+            let result = built
+            Task { @MainActor in
+                self.sources = result
+            }
+        }
+    }
+
     /// Decode every `.threshanim` in `directory` into items, sorted by name.
     nonisolated static func list(_ directory: URL) -> [AnimationLibraryItem] {
         let fm = FileManager.default
@@ -186,7 +220,7 @@ public struct AnimationLibrarySection: View {
             }
         }
         .moduleCard(.blue)
-        .onAppear { actions.library.refresh() }
+        .onAppear { actions.library.refreshAsync() }
     }
 }
 

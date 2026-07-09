@@ -149,7 +149,7 @@ struct ReferenceDETests {
 struct DERegistryTests {
     @Test("builtin table: indices, keys, MSL names, layouts")
     func builtinTable() {
-        #expect(DERegistry.builtin.count == 7)
+        #expect(DERegistry.builtin.count == 8)
 
         let box = DERegistry.builtin[0]
         #expect(box.index == 0)
@@ -199,6 +199,8 @@ struct DERegistryTests {
             == ["power", "cX", "cY", "cZ"])
         #expect(DERegistry.descriptor(forKey: "mandelboxSphereProjection")?.paramLayout.map(\.name)
             == ["scale", "minRadius", "fixedRadius", "foldLimit", "projBlend", "projRadius"])
+        #expect(DERegistry.descriptor(forKey: "legacyMandelbox")?.paramLayout.map(\.name)
+            == ["scale", "minDistance", "sphereRadius", "foldLimit"])
 
         // Lookups.
         #expect(DERegistry.descriptor(forKey: "mandelbox")?.index == 0)
@@ -214,7 +216,8 @@ struct DERegistryTests {
             SIMD3(0, 0, 5),
             params: box.paramLayout.map(\.default),
             iterations: box.defaultIterations)
-        #expect(boxOut.x > 0 && boxOut.x.isFinite)
+        #expect(boxOut.x.isFinite)
+        #expect(boxOut.y.isFinite && boxOut.y >= 0)
 
         let bulb = DERegistry.descriptor(forKey: "mandelbulb")!
         let bulbOut = ReferenceDEs.mandelbulb(

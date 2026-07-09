@@ -101,6 +101,21 @@ struct LegacyCorpusTests {
         #expect(envelope.params["de.kleinian.crossRadius"]?.count == 1)
     }
 
+    @Test("Spiky: legacy mandelbox uses sphereRadius as the fold radius")
+    func spikyMandelboxRadiusMapping() throws {
+        let data = try Data(
+            contentsOf: scenesDir.appendingPathComponent("Spiky.threshscene"))
+        let envelope = try SceneCodec.decode(data)
+        #expect(envelope.fractalTypeKey == "legacyMandelbox")
+        let scale = try #require(envelope.params["de.legacyMandelbox.scale"]?.first)
+        #expect(abs(scale - 2.8) < 1e-6)
+        #expect(envelope.params["de.legacyMandelbox.foldLimit"] == [1])
+        #expect(envelope.params["de.legacyMandelbox.minDistance"] == [2.3174517])
+        let sphereRadius = try #require(envelope.params["de.legacyMandelbox.sphereRadius"]?.first)
+        #expect(abs(sphereRadius - 0.01) < 1e-6)
+        #expect(abs((envelope.params[ParamKey.engineMaxSteps.rawValue]?.first ?? 0) - 72) < 1e-6)
+    }
+
     @Test("Blue hero: mandelboxSphereProjection DE shape from formulaParamValues + zoom migrate")
     func mandelboxScaleAndZoomMapping() throws {
         let data = try Data(
@@ -167,7 +182,7 @@ struct LegacyCorpusTests {
         let clip = envelope.clip
 
         let scaleTrack = try #require(
-            clip.tracks.first { $0.param == .de("mandelbox", "scale") })
+            clip.tracks.first { $0.param == .de("legacyMandelbox", "scale") })
         #expect(scaleTrack.mode == .absolute)
         #expect(scaleTrack.keyframes.count == 8)
         // Keyframe 0: duration 0 → time 0; keyframe 1: duration 10 → time 10.
@@ -177,10 +192,13 @@ struct LegacyCorpusTests {
         // Legacy bezier easing → smooth segments.
         #expect(scaleTrack.keyframes[0].interpolation == .smooth)
 
-        // minDistance is minRadius² here too.
-        let minRadius = try #require(
-            clip.tracks.first { $0.param == .de("mandelbox", "minRadius") })
-        #expect(abs(minRadius.keyframes[0].values[0] - Float(12.501993).squareRoot()) < 1e-4)
+        // Legacy Mandelbox tracks old controls directly.
+        let sphereRadius = try #require(
+            clip.tracks.first { $0.param == .de("legacyMandelbox", "sphereRadius") })
+        #expect(abs(sphereRadius.keyframes[0].values[0] - 0.31832752) < 1e-5)
+        let minDistance = try #require(
+            clip.tracks.first { $0.param == .de("legacyMandelbox", "minDistance") })
+        #expect(abs(minDistance.keyframes[0].values[0] - 12.501993) < 1e-4)
 
         // Shared engine params always track.
         #expect(clip.tracks.contains { $0.param == .engineIterations })

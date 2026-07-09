@@ -12,7 +12,8 @@
 //   fractalType            → fractalTypeKey (name-level)
 //   position + worldRotationXYZW → camera
 //   fractalIterations / maxRaySteps / aoStrength → engine.* params
-//   fractalScale / foldingLimit / sphereRadius / minDistance → de.mandelbox.*
+//   fractalScale / foldingLimit / sphereRadius / minDistance
+//       → de.legacyMandelbox.* for plain original-app Mandelbox scenes
 //   scale × detailScale → scale.zoom integrator phase (octaves)
 //   colorScheme* / tonemapStrength → color.* grading params
 //   gradientState.gradient → palette + color.gradient.* params
@@ -83,11 +84,12 @@ public enum LegacyScene {
         }
 
         // --- identity ----------------------------------------------------
-        // The rebuild now has a dedicated `mandelboxSphereProjection` DE (the
-        // projection baked into the formula), so the legacy type name maps
-        // straight through instead of folding into base mandelbox + warp op.
+        // Original-app `mandelbox` has legacy parameter semantics distinct
+        // from the rebuild's modern Mandelbox. Keep sphere-projection scenes
+        // on their dedicated DE; plain legacy Mandelbox goes to
+        // `legacyMandelbox`.
         if case .string(let type)? = tree["fractalType"] {
-            tree["fractalTypeKey"] = .string(type)
+            tree["fractalTypeKey"] = .string(type == "mandelbox" ? "legacyMandelbox" : type)
         }
         // `name` carries over verbatim (same key both formats).
 
@@ -186,20 +188,15 @@ public enum LegacyScene {
             }
         }
 
-        // --- mandelbox DE params -------------------------------------------
-        // The original's mandelbox uniforms map 1:1 onto the rebuild's
-        // declared layout (mandelboxSDF_exact in the original's
-        // ProgressiveShaders.metal): fractalScale → scale, foldingLimit →
-        // foldLimit, sphereRadius → fixedRadius. Legacy `minDistance` is the
-        // mandelbox minRadius SQUARED (despite the name — it is passed as the
-        // `minDistance // minRadius²` argument), so it maps through sqrt.
+        // --- legacy mandelbox DE params ------------------------------------
+        // Original app parameters: `fractalScale` is the user-visible scale,
+        // `minDistance` participates in the fold scale divisor, `sphereRadius`
+        // is the one-radius sphere fold, and `foldingLimit` is the box fold.
         if case .string("mandelbox")? = tree["fractalType"] {
-            copyParam("fractalScale", to: .de("mandelbox", "scale"))
-            copyParam("foldingLimit", to: .de("mandelbox", "foldLimit"))
-            copyParam("sphereRadius", to: .de("mandelbox", "fixedRadius"))
-            if let mr2 = number("minDistance"), mr2 > 0 {
-                params["de.mandelbox.minRadius"] = .array([.number(mr2.squareRoot())])
-            }
+            copyParam("fractalScale", to: .de("legacyMandelbox", "scale"))
+            copyParam("minDistance", to: .de("legacyMandelbox", "minDistance"))
+            copyParam("sphereRadius", to: .de("legacyMandelbox", "sphereRadius"))
+            copyParam("foldingLimit", to: .de("legacyMandelbox", "foldLimit"))
         }
 
         // --- mandelboxSphereProjection DE params ---------------------------

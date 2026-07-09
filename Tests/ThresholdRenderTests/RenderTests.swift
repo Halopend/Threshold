@@ -101,7 +101,7 @@ struct RenderTests {
         #expect(throws: RenderError.self) { _ = try renderer.render(request) }
 
         var badDE = smokeRequest()
-        badDE.uniforms.meta.y = 7
+        badDE.uniforms.meta.y = 99  // past the builtin table (0...7)
         #expect(throws: RenderError.self) { _ = try renderer.render(badDE) }
 
         var badTable = smokeRequest()

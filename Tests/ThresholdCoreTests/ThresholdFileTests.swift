@@ -70,7 +70,7 @@ struct ThresholdFileTests {
             Issue.record("expected .scene")
             return
         }
-        #expect(envelope.fractalTypeKey == "mandelbox")
-        #expect(envelope.params["de.mandelbox.scale"] == [2.5])
+        #expect(envelope.fractalTypeKey == "legacyMandelbox")
+        #expect(envelope.params["de.legacyMandelbox.scale"] == [2.5])
     }
 }

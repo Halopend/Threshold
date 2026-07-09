@@ -30,7 +30,8 @@ public enum ReferenceDEs {
     /// Per iteration: box fold at `foldLimit` (clamp+reflect), sphere fold
     /// (`minRadius`/`fixedRadius`), multiply by `scale`, add p; the running
     /// derivative accumulates `dr = dr·f` through folds and `dr = dr·|scale| + 1`
-    /// through the affine step. Distance = |z| / |dr|.
+    /// through the affine step. Distance uses the original renderer's full
+    /// Rrmin estimate, not the always-positive |z|/|dr| approximation.
     ///
     /// - Parameter params: `[scale, minRadius, fixedRadius, foldLimit]`.
     public static func mandelbox(
@@ -69,7 +70,52 @@ public enum ReferenceDEs {
             trap = min(trap, length(z))
             if dot(z, z) > 1e8 { break } // diverged — further folds are inert
         }
-        return SIMD2(length(z) / abs(dr), trap)
+        let absScale = abs(scale)
+        let dist = (length(z) - (absScale - 1)) / dr
+            - pow(max(absScale, 1e-6), Float(1 - max(0, iterations)))
+        return SIMD2(dist, trap)
+    }
+
+    /// Original-app Mandelbox oracle.
+    ///
+    /// Params: `[scale, minDistance, sphereRadius, foldLimit]`.
+    /// The fold multiply uses `scale / minDistance`; the final Rrmin terms use
+    /// raw `scale`, matching `RenderPrecompute.makePrecomputedFractal` +
+    /// `Map()` in the old renderer.
+    public static func legacyMandelbox(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 4,
+                     "legacyMandelbox params = [scale, minDistance, sphereRadius, foldLimit]")
+        let rawScale = params[0]
+        let minDistance = max(params[1], 1e-6)
+        let sphereR2 = max(params[2] * params[2], 1e-12)
+        let invSphereR2: Float = 1 / sphereR2
+        let limit = SIMD3<Float>(repeating: params[3])
+        let foldScale = rawScale / minDistance
+        let absFoldScale = abs(foldScale)
+
+        var z = SIMD4<Float>(p.x, p.y, p.z, 1)
+        let z0 = z
+        var trap = length(p)
+
+        for _ in 0..<max(0, iterations) {
+            let folded = simd_clamp(SIMD3(z.x, z.y, z.z), -limit, limit) * 2 - SIMD3(z.x, z.y, z.z)
+            z.x = folded.x; z.y = folded.y; z.z = folded.z
+            let r2 = dot(folded, folded)
+            trap = min(trap, sqrt(r2))
+            let t = min(max(1 / max(r2, sphereR2), 1), invSphereR2)
+            z *= t
+            z = SIMD4(z.x * foldScale, z.y * foldScale, z.z * foldScale, z.w * absFoldScale) + z0
+            if dot(SIMD3(z.x, z.y, z.z), SIMD3(z.x, z.y, z.z)) > 1e8 { break }
+        }
+
+        let absScale = abs(rawScale)
+        let dist = (length(SIMD3(z.x, z.y, z.z)) - (absScale - 1)) / max(z.w, 1e-9)
+            - pow(max(absScale, 1e-6), Float(1 - max(0, iterations)))
+        return SIMD2(dist, trap)
     }
 
     /// Mandelbox with the shipping app's PER-FOLD sphere projection — the CPU

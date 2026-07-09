@@ -72,15 +72,22 @@ public enum LegacyAnimation {
             (.engineMaxSteps, { scalar($0, "baseMaxRaySteps") }),
         ]
         if isMandelbox {
-            extractors += [
-                (.de("mandelbox", "scale"), { scalar($0, "fractalScale") }),
-                (.de("mandelbox", "foldLimit"), { scalar($0, "foldingLimit") }),
-                (.de("mandelbox", "fixedRadius"), { scalar($0, "sphereRadius") }),
-                // Legacy minDistance is minRadius² (LegacyMigration).
-                (.de("mandelbox", "minRadius"), {
-                    scalar($0, "minDistance").flatMap { $0 > 0 ? $0.squareRoot() : nil }
-                }),
-            ]
+            let key = fractalType == "mandelbox" ? "legacyMandelbox" : "mandelbox"
+            if fractalType == "mandelbox" {
+                extractors += [
+                    (.de(key, "scale"), { scalar($0, "fractalScale") }),
+                    (.de(key, "minDistance"), { scalar($0, "minDistance") }),
+                    (.de(key, "sphereRadius"), { scalar($0, "sphereRadius") }),
+                    (.de(key, "foldLimit"), { scalar($0, "foldingLimit") }),
+                ]
+            } else {
+                extractors += [
+                    (.de(key, "scale"), { scalar($0, "fractalScale") }),
+                    (.de(key, "foldLimit"), { scalar($0, "foldingLimit") }),
+                    (.de(key, "minRadius"), { scalar($0, "sphereRadius") }),
+                    (.de(key, "fixedRadius"), { _ in 1.0 }),
+                ]
+            }
         }
         if fractalType == "kleinian" {
             let names = ["minX", "minY", "minZ", "sphereFold",

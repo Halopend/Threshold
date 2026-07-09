@@ -238,6 +238,7 @@ public enum ShadertoyExporter {
         let body: String
         switch de.key {
         case "mandelbox": body = deMandelbox(projected: false)
+        case "legacyMandelbox": body = deLegacyMandelbox
         case "mandelboxSphereProjection": body = deMandelbox(projected: true)
         case "mandelbulb": body = deMandelbulb(julia: false)
         case "mandelbulbJulia": body = deMandelbulb(julia: true)
@@ -273,13 +274,11 @@ public enum ShadertoyExporter {
                     z = mix(z, proj, clamp(P_projBlend, 0.0, 0.98));
                 }
         """ : ""
-        let ret = projected ? """
+        let ret = """
             float absScale = abs(P_scale);
             float dist = (length(z) - (absScale - 1.0)) / dr
                        - pow(absScale, float(1 - iterations));
             return vec2(dist, sqrt(trap2));
-        """ : """
-            return vec2(length(z) / abs(dr), sqrt(trap2));
         """
         return """
             float mR2 = P_minRadius * P_minRadius;
@@ -301,6 +300,28 @@ public enum ShadertoyExporter {
         \(ret)
         """
     }
+
+    private static let deLegacyMandelbox = """
+            float foldScale = P_scale / max(P_minDistance, 1e-6);
+            float sphereR2 = max(P_sphereRadius * P_sphereRadius, 1e-12);
+            float invSphereR2 = 1.0 / sphereR2;
+            vec4 z = vec4(p, 1.0);
+            vec4 z0 = z;
+            float trap2 = dot(p, p);
+            for (int i = 0; i < iterations; ++i) {
+                z.xyz = clamp(z.xyz, -P_foldLimit, P_foldLimit) * 2.0 - z.xyz;
+                float r2 = dot(z.xyz, z.xyz);
+                trap2 = min(trap2, r2);
+                float fac = clamp(1.0 / max(r2, sphereR2), 1.0, invSphereR2);
+                z *= fac;
+                z = z * vec4(foldScale, foldScale, foldScale, abs(foldScale)) + z0;
+                if (dot(z.xyz, z.xyz) > 1e8) { break; }
+            }
+            float absScale = abs(P_scale);
+            float dist = (length(z.xyz) - (absScale - 1.0)) / max(z.w, 1e-9)
+                       - pow(absScale, float(1 - iterations));
+            return vec2(dist, sqrt(trap2));
+    """
 
     private static func deMandelbulb(julia: Bool) -> String {
         let phase = julia ? "0.0" : "P_rotationPhase"

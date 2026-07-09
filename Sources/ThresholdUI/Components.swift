@@ -49,9 +49,16 @@ public struct TabStrip<T: Hashable>: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                .background(.thinMaterial,
+                            in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
                 .background(
-                    RoundedRectangle(cornerRadius: DS.Radius.inset)
-                        .fill(selected ? Color.accentColor.opacity(0.12) : .clear))
+                    RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                        .fill(selected ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.035)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                        .strokeBorder(
+                            selected ? Color.accentColor.opacity(0.34) : Color.secondary.opacity(0.12),
+                            lineWidth: selected ? 0.9 : 0.5))
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
@@ -113,7 +120,11 @@ public struct StatBox: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, DS.Spacing.sm)
-        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: DS.Radius.inset))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.inset, style: .continuous)
+                .strokeBorder(color.opacity(0.18), lineWidth: 0.7))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label): \(value)")
     }
@@ -405,6 +416,7 @@ public enum DisplayIcons {
     public static func fractal(_ deKey: String) -> String {
         switch deKey {
         case "mandelbox": return "cube.fill"
+        case "legacyMandelbox": return "cube.fill"
         case "mandelbulb": return "globe"
         case "kleinian": return "circle.grid.cross.fill"
         case "menger": return "square.grid.3x3.fill"

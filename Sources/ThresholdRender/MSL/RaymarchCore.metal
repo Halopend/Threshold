@@ -734,7 +734,49 @@ THRESH_DE_QUAL float2 de_mandelbox(float3 p, thread const ThreshDEContext& ctx)
         trap2 = min(trap2, zz);
         if (zz > 1e8f) { break; }          // diverged — further folds are inert
     }
-    return float2(length(z) / fabs(dr), sqrt(trap2));
+    // Full Rrmin Mandelbox estimate, matching the legacy renderer's Map().
+    // The plain length(z)/dr estimate stays positive in places the original
+    // registers a hit, which changes silhouettes on scenes like Spiky.
+    const float absScale = fabs(scale);
+    const float dist = (length(z) - (absScale - 1.0f)) / dr
+                     - powr(max(absScale, 1e-6f), float(1 - iterations));
+    return float2(dist, sqrt(trap2));
+}
+
+// params: [scale, minDistance, sphereRadius, foldLimit] + [iterations]
+// Original-app Mandelbox: the fold scale is scale/minDistance, but the final
+// Rrmin terms use raw scale. This preserves legacy scenes whose UI authored
+// Min Distance as an independent Mandelbox control.
+THRESH_DE_QUAL float2 de_legacyMandelbox(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float rawScale = ctx.params[0];
+    const float minDistance = max(ctx.params[1], 1e-6f);
+    const float sphereRadius = ctx.params[2];
+    const float limit = ctx.params[3];
+    const int iterations = threshDEIterations(ctx);
+
+    const float foldScale = rawScale / minDistance;
+    const float absFoldScale = fabs(foldScale);
+    const float sphereR2 = max(sphereRadius * sphereRadius, 1e-12f);
+    const float invSphereR2 = 1.0f / sphereR2;
+
+    float4 z = float4(p, 1.0f);
+    const float4 z0 = z;
+    float trap2 = dot(p, p);
+    for (int i = 0; i < iterations; ++i) {
+        z.xyz = clamp(z.xyz, -limit, limit) * 2.0f - z.xyz;
+        const float r2 = dot(z.xyz, z.xyz);
+        trap2 = min(trap2, r2);
+        const float t = clamp(1.0f / max(r2, sphereR2), 1.0f, invSphereR2);
+        z *= t;
+        z = z * float4(foldScale, foldScale, foldScale, absFoldScale) + z0;
+        if (dot(z.xyz, z.xyz) > 1e8f) { break; }
+    }
+
+    const float absScale = fabs(rawScale);
+    const float dist = (length(z.xyz) - (absScale - 1.0f)) / max(z.w, 1e-9f)
+                     - powr(max(absScale, 1e-6f), float(1 - iterations));
+    return float2(dist, sqrt(trap2));
 }
 
 // params: [scale, minRadius, fixedRadius, foldLimit, projBlend, projRadius]

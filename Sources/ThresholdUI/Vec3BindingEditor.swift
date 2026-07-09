@@ -104,6 +104,7 @@ public struct Vec3BindingEditor: View {
             }
             return parts.isEmpty ? "No axes assigned" : parts.joined(separator: "  ·  ")
         case let .scalar(key): return "→ \(params.label(for: key))"
+        case let .scalarAxis(key, axis): return "→ \(axis.rawValue.uppercased()): \(params.label(for: key))"
         case let .core(action): return "→ \(action.displayName)"
         }
     }
@@ -345,7 +346,11 @@ private struct MenuLabel: View {
         }
         .foregroundStyle(.primary)
         .padding(.horizontal, DS.Spacing.sm).padding(.vertical, 4)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.6))
     }
 }
 
