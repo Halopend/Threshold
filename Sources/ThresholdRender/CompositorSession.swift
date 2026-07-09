@@ -34,8 +34,8 @@ import ThresholdShaderIR
 /// AUDIT — `@unchecked Sendable`, same precedent as InteractiveSession:
 /// mailboxes/snapshot slot are compiler-checked Sendable; `context`, `layout`,
 /// `signals`, `initialScene` are Sendable `let`s; `stopRequested` is an
-/// Atomic; `onFrame` is written before `start(_:)` (documented contract) and
-/// read only by the render thread.
+/// Atomic; `phase` is a Mutex and `finished` a semaphore; `onFrame` is written
+/// before `start(_:)` (documented contract) and read only by the render thread.
 public final class CompositorSession: @unchecked Sendable {
 
     // MARK: Channels (Invariant 13)
@@ -57,6 +57,16 @@ public final class CompositorSession: @unchecked Sendable {
     private let signals: SignalTable
     private let initialScene: SceneEnvelope?
     private let stopRequested = Atomic<Bool>(false)
+
+    // MARK: Lifecycle state (joinable teardown — parity with InteractiveSession)
+
+    private enum Phase { case idle, running, stopped }
+    private let phase = Mutex<Phase>(.idle)
+    /// Signaled by the render loop on EVERY exit path (`defer` at loop entry),
+    /// so `stop()` can join it. Bounded wait — the loop may be parked in
+    /// `waitUntilRunning()` / `Clock().wait(until:)` when the stop lands and
+    /// won't notice `stopRequested` until it returns.
+    private let finished = DispatchSemaphore(value: 0)
 
     /// Per-frame input hook, called on the render thread with the frame's
     /// SESSION-clock time right before the step — the seam through which the
@@ -235,6 +245,14 @@ public final class CompositorSession: @unchecked Sendable {
     /// Spawn the render thread against a live LayerRenderer. Called from the
     /// CompositorLayer content closure when the immersive space opens.
     @MainActor public func start(_ layerRenderer: LayerRenderer) {
+        // Idempotent: only idle→running spawns. A stopped session does not
+        // restart (open the immersive space again for a fresh one).
+        let shouldStart = phase.withLock { p -> Bool in
+            guard p == .idle else { return false }
+            p = .running
+            return true
+        }
+        guard shouldStart else { return }
         stopRequested.store(false, ordering: .releasing)
         // World grab input: system pinches arrive through the layer's
         // spatial-event channel (the BorgVR pattern). Installed
@@ -252,16 +270,46 @@ public final class CompositorSession: @unchecked Sendable {
         thread.start()
     }
 
-    /// Ask the loop to exit (it also exits when the layer invalidates —
-    /// dismissing the immersive space tears it down without an explicit stop).
+    /// Ask the loop to exit and JOIN it (bounded). The loop also self-exits
+    /// when the layer invalidates — dismissing the immersive space tears it
+    /// down — in which case `finished` is already signaled and the join
+    /// returns immediately. Idempotent: only the first call after `start()`
+    /// joins; a never-started or already-stopped session returns at once.
     public func stop() {
+        let shouldJoin = phase.withLock { p -> Bool in
+            switch p {
+            case .idle: p = .stopped; return false  // never started
+            case .running: p = .stopped; return true
+            case .stopped: return false
+            }
+        }
+        guard shouldJoin else { return }
+
         ThresholdLog.session.notice("compositor session stop requested")
         stopRequested.store(true, ordering: .releasing)
+        // BOUNDED join: the loop may be parked in the compositor's
+        // waitUntilRunning()/Clock().wait(until:) and won't observe the flag
+        // until it returns. On timeout, say so and abandon the join — the
+        // thread closure retains `self`, so bailing leaks the thread, never
+        // crashes (same contract as InteractiveSession.stop()).
+        if finished.wait(timeout: .now() + 5) == .timedOut {
+            ThresholdLog.session.fault(
+                """
+                stop(): compositor render loop did not exit after 5s — likely \
+                parked in the compositor frame wait; abandoning join (thread leaked)
+                """)
+        } else {
+            ThresholdLog.session.notice("compositor session stopped (joined cleanly)")
+        }
     }
 
     // MARK: Render thread
 
     private func renderLoop(_ layer: LayerRenderer) {
+        // Signal the join on EVERY exit path — dead-on-arrival returns, layer
+        // invalidation, and stop-requested alike — so stop() never waits the
+        // full timeout on a loop that already exited.
+        defer { finished.signal() }
         // Render-thread-confined state comes to life HERE (ADR-004).
         let core = SessionCore(
             layout: layout,
