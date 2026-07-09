@@ -41,6 +41,27 @@ struct CommandMailboxTests {
         #expect(mailbox.didGrowBeyondInitialCapacity)  // provisional per ADR-004 item 2
     }
 
+    @Test("Growth is bounded: at maxCapacity the newest is dropped, not grown")
+    func boundedGrowth() {
+        // Simulate a wedged consumer: never drain, cap growth at 8.
+        let mailbox = CommandMailbox<Int>(capacity: 2, maxCapacity: 8)
+        for i in 0..<100 { _ = mailbox.publish(i) }
+        #expect(mailbox.didGrowBeyondInitialCapacity)
+        #expect(mailbox.didDropUnderBackpressure)
+        // Exactly `maxCapacity` earliest elements are retained, in order; the
+        // rest were rejected at publish (never enqueued past the cap).
+        let drained = mailbox.drain()
+        #expect(drained == Array(0..<8))
+        #expect(mailbox.pendingCount == 0)
+    }
+
+    @Test("publish reports drop with its Bool return")
+    func publishReturnsDropStatus() {
+        let mailbox = CommandMailbox<Int>(capacity: 2, maxCapacity: 4)
+        for i in 0..<4 { #expect(mailbox.publish(i)) }  // fills to the cap
+        #expect(!mailbox.publish(99))                    // rejected
+    }
+
     @Test("Concurrent publishes all arrive, per-producer order preserved")
     func concurrentPublish() {
         let producers = 4
@@ -81,6 +102,34 @@ struct LaneMailboxTests {
         engine.mailbox.publish(LaneWrite(lane: .user, slot: slot, value: 3))
         clock.advance()
         #expect(engine.resolve().values[slot] == 3)
+    }
+
+    @Test("drainInto coalesces to the latest write for each lane slot")
+    func drainIntoCoalescesToLatestWrite() throws {
+        let clock = FixedStepClock(step: 0.05)
+        let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
+        let slot = firstContentSlot
+
+        engine.mailbox.publish(LaneWrite(lane: .user, slot: slot, value: 1))
+        engine.mailbox.publish(LaneWrite(lane: .user, slot: slot, value: .nan))
+        clock.advance()
+
+        // The latest value wins before engine ingress validation. A stale
+        // finite drag sample must not survive behind a newer invalid sample.
+        #expect(engine.resolve().values[slot] == 0)
+    }
+
+    @Test("drainInto drops stale slot writes without killing the render path")
+    func drainIntoDropsStaleSlots() throws {
+        let clock = FixedStepClock(step: 0.05)
+        let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
+        let slot = firstContentSlot
+
+        engine.mailbox.publish(LaneWrite(lane: .user, slot: slot + 10_000, value: 100))
+        engine.mailbox.publish(LaneWrite(lane: .user, slot: slot, value: 7))
+        clock.advance()
+
+        #expect(engine.resolve().values[slot] == 7)
     }
 
     @Test("resolve drains the mailbox: a second resolve sees no stale writes")

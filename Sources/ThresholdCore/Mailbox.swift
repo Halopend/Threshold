@@ -21,41 +21,76 @@ import Synchronization
 /// publish path, documented as PROVISIONAL versus ADR-004 action item 2
 /// (allocation-free publish); `didGrowBeyondInitialCapacity` exposes the
 /// condition for telemetry/tests.
+///
+/// The ring only ever fills when the single consumer (the render thread) is
+/// NOT draining — i.e. it is wedged. A healthy session sits far below the
+/// initial capacity. So growth is bounded at `maxCapacity` (default 262144,
+/// ~64× the default ring): beyond it the render thread has demonstrably stalled
+/// for a very long time and further growth only trades a diagnosable wedge for
+/// an out-of-memory crash. At the cap `publish` DROPS the newest element and
+/// raises a one-time `.fault`, leaving a trail (the whole point on
+/// `debug/lockups`) instead of growing without limit. `didDropUnderBackpressure`
+/// exposes the condition for tests/telemetry.
 public final class CommandMailbox<Element: Sendable>: Sendable {
     private struct State: Sendable {
         var buffer: [Element?]
         var head: Int = 0
         var count: Int = 0
         var didGrow: Bool = false
+        var didDrop: Bool = false
     }
 
     private let state: Mutex<State>
+    private let maxCapacity: Int
 
-    public init(capacity: Int = 4096) {
+    public init(capacity: Int = 4096, maxCapacity: Int = 1 << 18) {
         precondition(capacity > 0)
+        precondition(maxCapacity >= capacity)
+        self.maxCapacity = maxCapacity
         state = Mutex(State(buffer: [Element?](repeating: nil, count: capacity)))
     }
 
     /// Enqueue from any thread. FIFO overall; per-producer program order is
-    /// preserved (each publish is atomic under the lock).
-    public func publish(_ element: Element) {
-        state.withLock { s in
+    /// preserved (each publish is atomic under the lock). Returns `false` iff
+    /// the element was DROPPED because the ring is full at `maxCapacity` (the
+    /// consumer is wedged); `true` on every normal enqueue.
+    @discardableResult
+    public func publish(_ element: Element) -> Bool {
+        let dropped: Bool = state.withLock { s in
             if s.count == s.buffer.count {
-                // Grow: double capacity, un-wrap into a fresh buffer.
+                guard s.buffer.count < maxCapacity else {
+                    // Wedged consumer: cap reached. Drop the newest, don't grow
+                    // into an OOM. One-time fault so the wedge is diagnosable.
+                    if !s.didDrop {
+                        s.didDrop = true
+                        ThresholdLog.session.fault(
+                            """
+                            command mailbox saturated at cap \(self.maxCapacity) \
+                            — consumer (render thread) is wedged; dropping \
+                            commands until it drains
+                            """)
+                    }
+                    return true
+                }
+                // Grow: double capacity (clamped to the cap), un-wrap into a
+                // fresh buffer.
+                let newCapacity = min(s.buffer.count * 2, maxCapacity)
                 var grown = [Element?]()
-                grown.reserveCapacity(s.buffer.count * 2)
+                grown.reserveCapacity(newCapacity)
                 for i in 0..<s.count {
                     grown.append(s.buffer[(s.head + i) % s.buffer.count])
                 }
                 grown.append(contentsOf: [Element?](
-                    repeating: nil, count: s.buffer.count * 2 - s.count))
+                    repeating: nil, count: newCapacity - s.count))
                 s.buffer = grown
                 s.head = 0
                 s.didGrow = true
             }
             s.buffer[(s.head + s.count) % s.buffer.count] = element
             s.count += 1
+            return false
         }
+        return !dropped
     }
 
     /// Dequeue everything, in publish order, and empty the ring. Render
@@ -80,5 +115,17 @@ public final class CommandMailbox<Element: Sendable>: Sendable {
     /// item 2 observability).
     public var didGrowBeyondInitialCapacity: Bool {
         state.withLock { $0.didGrow }
+    }
+
+    /// True if any element was ever dropped because the ring saturated at
+    /// `maxCapacity` (the consumer was wedged). Observability only.
+    public var didDropUnderBackpressure: Bool {
+        state.withLock { $0.didDrop }
+    }
+
+    /// Current queued element count. Observability only; producers may change
+    /// it immediately after this returns.
+    public var pendingCount: Int {
+        state.withLock { $0.count }
     }
 }
