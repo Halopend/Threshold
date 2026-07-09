@@ -1,0 +1,158 @@
+{
+  "abiVersion": 1,
+  "camera": {
+    "fovYRadians": 1.0471975,
+    "orientation": [
+      0,
+      0,
+      0,
+      1
+    ],
+    "position": [
+      0,
+      0,
+      3
+    ]
+  },
+  "fractalTypeKey": "mandelbulb",
+  "integratorPhases": {
+    "scale.zoom": 0
+  },
+  "name": "bench-mandelbulb",
+  "params": {
+    "camera.dolly": [
+      1
+    ],
+    "camera.orbitPitch": [
+      0
+    ],
+    "camera.orbitYaw": [
+      0
+    ],
+    "color.brightness": [
+      1
+    ],
+    "color.contrast": [
+      1
+    ],
+    "color.gamma": [
+      1
+    ],
+    "color.gradient.offset": [
+      0
+    ],
+    "color.gradient.repeat": [
+      1
+    ],
+    "color.gradient.smoothing": [
+      0
+    ],
+    "color.mapMode": [
+      0
+    ],
+    "color.saturation": [
+      1
+    ],
+    "color.tonemap": [
+      0
+    ],
+    "color.vibrance": [
+      0
+    ],
+    "de.kleinian.crossRadius": [
+      0.8399999737739563
+    ],
+    "de.kleinian.maxX": [
+      0.3499999940395355
+    ],
+    "de.kleinian.maxY": [
+      1
+    ],
+    "de.kleinian.maxZ": [
+      1.2200000286102295
+    ],
+    "de.kleinian.minX": [
+      -0.32519999146461487
+    ],
+    "de.kleinian.minY": [
+      -0.7861999869346619
+    ],
+    "de.kleinian.minZ": [
+      -0.09480000287294388
+    ],
+    "de.kleinian.sphereFold": [
+      0.6899999976158142
+    ],
+    "de.mandelbox.fixedRadius": [
+      1
+    ],
+    "de.mandelbox.foldLimit": [
+      1
+    ],
+    "de.mandelbox.minRadius": [
+      0.25
+    ],
+    "de.mandelbox.scale": [
+      2
+    ],
+    "de.mandelbulb.power": [
+      8
+    ],
+    "de.mandelbulbJulia.cX": [
+      0.20000000298023224
+    ],
+    "de.mandelbulbJulia.cY": [
+      -0.15000000596046448
+    ],
+    "de.mandelbulbJulia.cZ": [
+      0.3499999940395355
+    ],
+    "de.mandelbulbJulia.power": [
+      8
+    ],
+    "de.mengerSponge.offsetX": [
+      1
+    ],
+    "de.mengerSponge.offsetY": [
+      1
+    ],
+    "de.mengerSponge.offsetZ": [
+      1
+    ],
+    "de.mengerSponge.scale": [
+      3
+    ],
+    "de.quaternionJulia.cW": [
+      0
+    ],
+    "de.quaternionJulia.cX": [
+      -0.20000000298023224
+    ],
+    "de.quaternionJulia.cY": [
+      0.800000011920929
+    ],
+    "de.quaternionJulia.cZ": [
+      0
+    ],
+    "de.quaternionJulia.threshold": [
+      10
+    ],
+    "engine.aoStrength": [
+      0.5
+    ],
+    "engine.iterations": [
+      9
+    ],
+    "engine.maxDist": [
+      64
+    ],
+    "engine.shadowSoft": [
+      8
+    ],
+    "scale.zoomSpeed": [
+      0
+    ]
+  },
+  "version": 1,
+  "warpStack": []
+}

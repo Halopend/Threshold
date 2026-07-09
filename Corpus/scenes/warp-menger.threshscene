@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "twisted menger (warp stack)",
+  "fractalTypeKey": "mengerSponge",
+  "params": {
+    "de.mengerSponge.scale": [3],
+    "de.mengerSponge.offsetX": [1],
+    "de.mengerSponge.offsetY": [1],
+    "de.mengerSponge.offsetZ": [1],
+    "engine.iterations": [12]
+  },
+  "warpStack": [
+    { "kind": 9, "flags": 0, "strength": 0.5, "a": [1, 1, 1, 0], "b": [0, 0, 0, 0] },
+    { "kind": 1, "flags": 0, "strength": 0.5, "a": [0, 1, 0, 0], "b": [0, 0, 0, 0] }
+  ],
+  "camera": { "position": [0, 0, 6], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

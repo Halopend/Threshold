@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "deep menger sponge",
+  "fractalTypeKey": "mengerSponge",
+  "params": {
+    "de.mengerSponge.scale": [3],
+    "de.mengerSponge.offsetX": [1.2],
+    "de.mengerSponge.offsetY": [1],
+    "de.mengerSponge.offsetZ": [0.8],
+    "engine.iterations": [16]
+  },
+  "camera": { "position": [0, 0, 2.4], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

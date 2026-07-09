@@ -37,13 +37,23 @@ swift build --build-system native --product threshold-render
 
 | Fractal type (DE key)       | Scene(s)                                    | Golden |
 |-----------------------------|---------------------------------------------|--------|
-| `mandelbox`                 | classic-box, bench-mandelbox                 | classic-box (STALE) |
-| `mandelbulb`                | default-bulb, warped-bulb, crinkle           | default-bulb, warped-bulb (STALE) |
-| `mengerSponge`              | menger-sponge, colorful spheres              | pending |
-| `quaternionJulia`           | quaternion-julia                             | pending |
+| `mandelbox`                 | classic-box, bench-mandelbox, mandelbox-folded | classic-box (STALE) |
+| `mandelbulb`                | default-bulb, warped-bulb, crinkle, mandelbulb-power6, bench-mandelbulb | default-bulb, warped-bulb (STALE) |
+| `mengerSponge`              | menger-sponge, colorful spheres, menger-sponge-deep, warp-menger, bench-menger | pending |
+| `quaternionJulia`           | quaternion-julia, quaternion-julia-alt       | pending |
 | `mandelbulbJulia`           | mandelbulb-julia                             | pending |
 | `kleinian`                  | kleinian                                     | pending — renders blank¹ |
 | `mandelboxSphereProjection` | mandelbox-sphere-projection, boxflower2      | pending — blank at defaults¹ |
+
+`bench-*` scenes are the perf-matrix workloads (`Scripts/bench-suite.sh`); they
+double as golden-render targets. `mandelbox-folded`, `mandelbulb-power6`,
+`menger-sponge-deep`, `quaternion-julia-alt`, and `warp-menger` are variant
+scenes (alternate params / camera / warp stack) added to widen pixel coverage —
+all render real surfaces and are staged PENDING until goldens are blessed.
+
+Both suites now run in CI (`.github/workflows/ci.yml`): the golden gate is
+**informational** (non-gating) until the goldens are recorded, and the perf
+matrix is informational (shared runners can't hold the local fps baseline).
 
 **Goldens are intentionally not recorded yet** (as of 2026-07-06):
 

@@ -39,10 +39,43 @@ jobs:
         run: swift build --build-system native
 
       # Compiles the MSL at runtime via GPUContext and runs the 63 GPU-gated
-      # tests when a Metal device is present. On a device-less runner these
-      # tests skip (not fail), so the job stays green either way.
+      # tests. THRESHOLD_REQUIRE_GPU=1 makes GPUAvailabilityTests fail (not the
+      # 63 tests silently skip) if this Apple-silicon runner ever loses its
+      # Metal device — otherwise a broken image could report green with zero
+      # GPU coverage.
       - name: Test
         run: swift test --build-system native
+        env:
+          THRESHOLD_REQUIRE_GPU: "1"
+
+      # Golden-image regression gate. Non-gating for now: the recorded goldens
+      # predate the color/tonemap pipeline and legitimately MISMATCH, and 9 of
+      # 12 scenes have no golden yet (see Corpus/README.md). Once the goldens
+      # are re-recorded (`Scripts/golden-suite.sh --update all`), drop
+      # continue-on-error so a pixel drift fails the build.
+      # TODO(golden-gate): remove continue-on-error after goldens are blessed.
+      - name: Golden image suite (informational)
+        continue-on-error: true
+        run: Scripts/golden-suite.sh --no-build
+
+  perf:
+    name: perf suite (informational)
+    runs-on: macos-15   # Apple silicon (M-family) — comparable-ish to the local baseline.
+    timeout-minutes: 40
+    # Non-gating: GitHub's shared runners are slower and noisier than the local
+    # M-series baseline (bench-results/history.csv), so the ≥70-fps 2048² goal
+    # will not hold here. This job runs the full multi-fractal matrix to catch
+    # crashes / gross regressions and to surface the numbers in the log; it does
+    # not gate the build.
+    # TODO(perf-gate): gate on a pinned, dedicated runner with a runner-specific
+    # target once one is available.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (release)
+        run: swift build --build-system native -c release --product threshold-render
+      - name: Bench matrix
+        run: Scripts/bench-suite.sh --no-build --frames 120 -m "CI ${{ github.sha }}"
 
   app-build:
     name: visionOS app (xcodebuild)  # informational until a visionOS-SDK runner is pinned

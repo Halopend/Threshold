@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "quaternion julia (alt seed)",
+  "fractalTypeKey": "quaternionJulia",
+  "params": {
+    "de.quaternionJulia.cX": [-0.45],
+    "de.quaternionJulia.cY": [0.3],
+    "de.quaternionJulia.cZ": [0.1],
+    "de.quaternionJulia.cW": [0],
+    "de.quaternionJulia.threshold": [10],
+    "engine.iterations": [12]
+  },
+  "camera": { "position": [0, 0, 3], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

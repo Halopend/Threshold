@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "mandelbulb power 6",
+  "fractalTypeKey": "mandelbulb",
+  "params": {
+    "de.mandelbulb.power": [6],
+    "de.mandelbulb.rotationSpeed": [0],
+    "de.mandelbulb.rotationPhase": [0],
+    "engine.iterations": [10]
+  },
+  "camera": { "position": [0, 0, 3], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}

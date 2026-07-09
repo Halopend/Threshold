@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "folded mandelbox (negative scale)",
+  "fractalTypeKey": "mandelbox",
+  "params": {
+    "de.mandelbox.scale": [-1.5],
+    "de.mandelbox.minRadius": [0.5],
+    "de.mandelbox.fixedRadius": [1],
+    "de.mandelbox.foldLimit": [1],
+    "engine.iterations": [16]
+  },
+  "camera": { "position": [0, 0, 8], "orientation": [0, 0, 0, 1], "fovYRadians": 1.0472 }
+}
