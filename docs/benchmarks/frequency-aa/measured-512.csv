@@ -1,0 +1,9 @@
+mode,threshold,median_ms,fps,vs_baseline_percent,last_triggered_pixels,coverage_percent,mean_abs_rgb
+baseline,,1.6994,588.44,0.00,0,0.000,0.000
+frequency,0.50,5.8509,170.91,244.29,148160,56.519,1.910
+frequency,0.75,5.3171,188.07,212.88,107514,41.013,1.870
+frequency,1.00,3.8889,257.14,128.84,47526,18.130,0.846
+frequency,1.15,2.6413,378.60,55.42,,,0.206
+frequency,1.25,2.2061,453.29,29.81,3870,1.476,0.052
+frequency,1.35,2.5959,385.23,52.75,,,0.016
+frequency,1.50,2.0980,476.64,23.46,396,0.151,0.007

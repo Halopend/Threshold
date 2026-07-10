@@ -33,6 +33,14 @@ struct Options {
     var skipVolume = false     // world-space empty-space skip (fc 11) A/B
     var skipGrid = 64
     var skipDense = false       // dense direct-index vs hashed occupancy
+    var frequencyAA = false
+    var frequencyGrid = 64
+    var frequencyExtent: Float = 4
+    // 1.25 was the best practical 512² mandelbulb sweep point: it confines
+    // extra rays to ~1.5% of pixels instead of broadly filtering the image.
+    // This remains an experiment — per-scene sweeps may prefer another value.
+    var frequencyThreshold: Float = 1.25
+    var frequencyDiagnosticPath: String?
     var benchFrames = 0        // > 0 → benchmark mode
     var benchWarmup = 8
     var benchJSONPath: String?
@@ -64,6 +72,15 @@ struct Options {
             case "--skip-volume": opts.skipVolume = true
             case "--skip-grid": opts.skipGrid = intValue(next(arg), for: arg)
             case "--skip-dense": opts.skipDense = true
+            case "--frequency-aa": opts.frequencyAA = true
+            case "--frequency-grid": opts.frequencyGrid = intValue(next(arg), for: arg)
+            case "--frequency-extent":
+                guard let value = Float(next(arg)) else { die("\(arg) expects a number") }
+                opts.frequencyExtent = value
+            case "--frequency-threshold":
+                guard let value = Float(next(arg)) else { die("\(arg) expects a number") }
+                opts.frequencyThreshold = value
+            case "--frequency-diagnostic": opts.frequencyDiagnosticPath = next(arg)
             case "--bench": opts.benchFrames = intValue(next(arg), for: arg)
             case "--bench-warmup": opts.benchWarmup = intValue(next(arg), for: arg)
             case "--bench-json": opts.benchJSONPath = next(arg)
@@ -104,6 +121,11 @@ usage: threshold-render [scene.threshscene] [options]
   --bench-json <path>           write the benchmark result JSON
   --max-steps <n>               override engine.maxSteps (device-local, not
                                 scene-persisted; the perf suite pins it)
+  --frequency-aa                3D frequency-guided adaptive supersampling
+  --frequency-grid <n>          distance/convolution resolution (default 64)
+  --frequency-extent <units>    model-origin half-extent (default 4)
+  --frequency-threshold <value> AA trigger threshold (default 1.25)
+  --frequency-diagnostic <png>  write the centre frequency slice
 """
 
 func die(_ message: String) -> Never {
@@ -294,6 +316,24 @@ if opts.skipVolume {
     }
 } else {
     skipVolume = nil
+}
+
+let frequencyVolume: FrequencyVolume?
+if opts.frequencyAA {
+    do {
+        frequencyVolume = try FrequencyVolume(
+            context: context, gridResolution: opts.frequencyGrid,
+            worldHalfExtent: opts.frequencyExtent,
+            threshold: opts.frequencyThreshold)
+        if !opts.quiet {
+            print("frequency-AA ON (grid \(opts.frequencyGrid)³, "
+                + "extent ±\(opts.frequencyExtent), threshold \(opts.frequencyThreshold))")
+        }
+    } catch {
+        die("--frequency-aa failed: \(error)")
+    }
+} else {
+    frequencyVolume = nil
 }
 
 // External DE: compile → probe → accept, or die with the diagnostics
@@ -487,7 +527,8 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
         width: opts.width, height: opts.height)
     return try renderer.render(request, program: program,
                                specialized: specialized, readback: readback,
-                               skipVolume: skipVolume)
+                               skipVolume: skipVolume,
+                               frequencyVolume: frequencyVolume)
 }
 
 if opts.benchFrames > 0 {
@@ -523,6 +564,21 @@ if opts.benchFrames > 0 {
         if opts.outPathExplicit, let final = lastResult {
             writePNG(final, to: opts.outPath)
         }
+        if let path = opts.frequencyDiagnosticPath,
+           let diagnostic = frequencyVolume?.diagnosticImage() {
+            writePNG(RenderResult(
+                rgba8: diagnostic.rgba8, width: diagnostic.width,
+                height: diagnostic.height,
+                stats: MarchStats(totalSteps: 0, gpuMilliseconds: 0)),
+                to: path)
+        }
+        if let frequencyVolume, !opts.quiet {
+            let m = frequencyVolume.metrics
+            let mib = String(format: "%.2f", Double(m.residentBytes) / 1_048_576)
+            print("frequency-volume hits=\(m.hits) misses=\(m.misses) "
+                + "builds=\(m.builds) lastTriggered=\(m.lastTriggeredPixels) "
+                + "totalTriggered=\(m.totalTriggeredPixels) residentMiB=\(mib)")
+        }
     } catch {
         die("benchmark failed: \(error)")
     }
@@ -544,6 +600,14 @@ for frame in 0..<opts.frames {
 
 guard let final = lastResult else { die("no frames rendered") }
 writePNG(final, to: opts.outPath)
+if let path = opts.frequencyDiagnosticPath,
+   let diagnostic = frequencyVolume?.diagnosticImage() {
+    writePNG(RenderResult(
+        rgba8: diagnostic.rgba8, width: diagnostic.width,
+        height: diagnostic.height,
+        stats: MarchStats(totalSteps: 0, gpuMilliseconds: 0)),
+        to: path)
+}
 
 if let statsPath = opts.statsPath {
     let stats = RunStats(

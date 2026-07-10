@@ -269,7 +269,8 @@ public final class GPUContext: @unchecked Sendable {
     /// when requested. Shared by the compute (makeLinkedPipeline) and raster
     /// (makeSpecializedRaster) paths so the two never drift.
     static func specConstantValues(
-        auxOutputs: Bool, spec: MarchSpec?, seed: Bool = false, skipVolume: Bool = false
+        auxOutputs: Bool, spec: MarchSpec?, seed: Bool = false,
+        skipVolume: Bool = false, frequencyVolume: Bool = false
     ) -> MTLFunctionConstantValues {
         let constants = MTLFunctionConstantValues()
         var aux = auxOutputs
@@ -286,6 +287,8 @@ public final class GPUContext: @unchecked Sendable {
         // false → the march's skip branch and its buffer args vanish.
         var skip = skipVolume
         constants.setConstantValue(&skip, type: .bool, index: 11)
+        var frequency = frequencyVolume
+        constants.setConstantValue(&frequency, type: .bool, index: 13)
         if let spec {
             func setInt(_ value: Int, _ index: Int) {
                 var v = Int32(value)
@@ -311,7 +314,8 @@ public final class GPUContext: @unchecked Sendable {
     static func makeLinkedPipeline(
         device: MTLDevice, library: MTLLibrary, kernelName: String,
         deFunctions: [MTLFunction], auxOutputs: Bool = false,
-        spec: MarchSpec? = nil, seed: Bool = false, skipVolume: Bool = false
+        spec: MarchSpec? = nil, seed: Bool = false, skipVolume: Bool = false,
+        frequencyVolume: Bool = false
     ) throws -> MTLComputePipelineState {
         // The march + cone-prepass kernels reference function constants (THRESH_AUX
         // always; the bakes/cone gate in the specialized library), so they take
@@ -323,7 +327,8 @@ public final class GPUContext: @unchecked Sendable {
         let kernel: MTLFunction
         if constantKernels.contains(kernelName) {
             let constants = specConstantValues(
-                auxOutputs: auxOutputs, spec: spec, seed: seed, skipVolume: skipVolume)
+                auxOutputs: auxOutputs, spec: spec, seed: seed,
+                skipVolume: skipVolume, frequencyVolume: frequencyVolume)
             do {
                 kernel = try library.makeFunction(
                     name: kernelName, constantValues: constants)

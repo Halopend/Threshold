@@ -664,6 +664,48 @@ static inline float skipAdvance(float3 pos, float3 rd, float t,
     return t + max(exit, 0.0f) + 1e-4f * S.originExtent.w;
 }
 
+// ================= 3D convolved frequency + adaptive AA ===================
+// A model-origin-anchored distance field is convolved by
+// build_frequency_volume. The march records its closest DE approach; the
+// offscreen kernel reads frequency there and adds two symmetric subpixel rays
+// only above the requested threshold. Absent function constant 13 means the
+// arguments and closest-approach bookkeeping compile away.
+constant bool thresh_frequency_defined [[function_constant(13)]];
+constant bool THRESH_FREQUENCY = is_function_constant_defined(thresh_frequency_defined)
+    ? thresh_frequency_defined : false;
+#define THRESH_BUFFER_FREQUENCY_UNIFORMS 11
+#define THRESH_BUFFER_DISTANCE_VOLUME    12
+#define THRESH_BUFFER_FREQUENCY_VOLUME   13
+#define THRESH_BUFFER_FREQUENCY_TRIGGERS 14
+
+struct ThreshFrequencyUniforms {
+    float4 originExtent;
+    uint4  gridDim;
+    float  threshold;
+    float  strength;
+    uint   _pad0;
+    uint   _pad1;
+};
+
+static inline uint frequencyIndex(float3 p,
+                                  constant ThreshFrequencyUniforms& F) {
+    const float3 rel = (p - F.originExtent.xyz) / F.originExtent.w;
+    if (any(rel < 0.0f) || any(rel >= float3(F.gridDim.xyz))) {
+        return THRESH_SKIP_EMPTY_SLOT;
+    }
+    const uint3 c = uint3(rel);
+    return c.x + c.y * F.gridDim.x + c.z * F.gridDim.x * F.gridDim.y;
+}
+
+static inline float frequencyAt(float3 p,
+                                constant ThreshFrequencyUniforms& F,
+                                device const uint* volume) {
+    const uint i = frequencyIndex(p, F);
+    if (i == THRESH_SKIP_EMPTY_SLOT) { return 0.0f; }
+    const float f = as_type<float>(volume[i]);
+    return ((as_type<uint>(f) & 0x7F800000u) == 0x7F800000u) ? 0.0f : f;
+}
+
 // Stats instrumentation: the per-pixel atomic step-count add is telemetry,
 // not image data — a variant that bakes FALSE drops one device atomic per
 // thread per frame (totalSteps reads back 0). Generic always counts.
@@ -1336,6 +1378,7 @@ struct ThreshMarchResult {
     float  t;       // ray distance in WORLD units, clamped to maxDist on miss
     bool   hit;
     uint   steps;   // march steps taken (the caller adds to the stats atomic)
+    float3 closestPos; // THRESH_FREQUENCY: closest absolute DE approach
 };
 
 static inline ThreshMarchResult marchShade(
@@ -1368,6 +1411,8 @@ static inline ThreshMarchResult marchShade(
     bool hit = false;
     bool bad = false;
     uint steps = 0;
+    float closestRadius = INFINITY;
+    float3 closestPos = ro;
 
     // Enhanced sphere tracing (Keinert et al. 2014). `stepSafety` doubles as
     // the over-relaxation factor ω: at ω > 1 the march steps PAST the DE
@@ -1440,6 +1485,10 @@ static inline ThreshMarchResult marchShade(
             continue;
         }
         const float radius = dm.x;
+        if (THRESH_FREQUENCY && fabs(radius) < closestRadius) {
+            closestRadius = fabs(radius);
+            closestPos = pos;
+        }
         // Near-miss glow: rays grazing the surface (small radius) accumulate a
         // halo even if they never hit. Uniform branch → skipped entirely when
         // glow is off, so the march is bit-identical at the defaults.
@@ -1525,6 +1574,7 @@ static inline ThreshMarchResult marchShade(
     result.t = hit ? t : maxDist;
     result.hit = hit;
     result.steps = steps;
+    result.closestPos = closestPos;
     return result;
 }
 
@@ -1600,6 +1650,12 @@ kernel void march_offscreen(
                                                function_constant(THRESH_SKIP)]],
     device const uint* skipTable             [[buffer(THRESH_BUFFER_SKIP_TABLE),
                                                function_constant(THRESH_SKIP)]],
+    constant ThreshFrequencyUniforms& freqU  [[buffer(THRESH_BUFFER_FREQUENCY_UNIFORMS),
+                                               function_constant(THRESH_FREQUENCY)]],
+    device const uint* frequencyVolume       [[buffer(THRESH_BUFFER_FREQUENCY_VOLUME),
+                                               function_constant(THRESH_FREQUENCY)]],
+    device atomic_uint* frequencyTriggers    [[buffer(THRESH_BUFFER_FREQUENCY_TRIGGERS),
+                                               function_constant(THRESH_FREQUENCY)]],
     uint2 gid                                [[thread_position_in_grid]])
 {
 #ifdef THRESH_STATIC_DISPATCH
@@ -1634,6 +1690,27 @@ kernel void march_offscreen(
     ThreshMarchResult m = marchShade(ro, rd, U, params, ops, deTable, palette,
                                      tileStart,
                                      THRESH_SKIP ? &skipU : nullptr, skipTable);
+
+    // Edge-guided AA: the primary ray doubles as the classifier. High 3D
+    // frequency at its closest surface approach triggers two symmetric rays;
+    // a checkerboard rotation covers both diagonals without directional bias.
+    if (THRESH_FREQUENCY &&
+        frequencyAt(m.closestPos, freqU, frequencyVolume) * freqU.strength
+            >= freqU.threshold) {
+        atomic_fetch_add_explicit(&frequencyTriggers[0], 1u, memory_order_relaxed);
+        const float diagonal = ((gid.x ^ gid.y) & 1u) ? 1.0f : -1.0f;
+        const float2 delta = float2(0.28f, 0.28f * diagonal);
+        const float3 rdA = threshRayDir(pixel + delta, float(w), float(h),
+                                        aspect, fovTan, U.camQuat);
+        const float3 rdB = threshRayDir(pixel - delta, float(w), float(h),
+                                        aspect, fovTan, U.camQuat);
+        ThreshMarchResult a = marchShade(
+            ro, rdA, U, params, ops, deTable, palette, tileStart);
+        ThreshMarchResult b = marchShade(
+            ro, rdB, U, params, ops, deTable, palette, tileStart);
+        m.color = (m.color + a.color + b.color) * (1.0f / 3.0f);
+        m.steps += a.steps + b.steps;
+    }
 
     // Per-thread step count added ONCE into the device stats counter
     // (baked off in benchmark variants — pure telemetry).
@@ -1810,6 +1887,89 @@ kernel void build_skip_volume(
     } else if (!empty) {
         skipInsert(bi, table, S);            // hashed: only occupied bricks land
     }
+}
+
+// ----------------- distance source + 3D convolution -----------------------
+
+kernel void build_distance_volume(
+    constant ThreshFrameUniforms& U          [[buffer(THRESH_BUFFER_UNIFORMS)]],
+    device const float* params               [[buffer(THRESH_BUFFER_PARAMS)]],
+    device const ThreshWarpOp* ops           [[buffer(THRESH_BUFFER_WARP_OPS)]],
+#ifndef THRESH_STATIC_DISPATCH
+    visible_function_table<ThreshDE> deTable [[buffer(THRESH_BUFFER_DE_TABLE)]],
+#endif
+    constant ThreshFrequencyUniforms& F      [[buffer(THRESH_BUFFER_FREQUENCY_UNIFORMS)]],
+    device atomic_uint* distanceVolume       [[buffer(THRESH_BUFFER_DISTANCE_VOLUME)]],
+    uint3 gid                                [[thread_position_in_grid]])
+{
+#ifdef THRESH_STATIC_DISPATCH
+    const ThreshDETableStub deTable = {};
+#endif
+    if (any(gid >= F.gridDim.xyz)) { return; }
+    const float3 p = F.originExtent.xyz
+        + (float3(gid) + 0.5f) * F.originExtent.w;
+    const float d = mapScene(p, U, params, ops, deTable).x;
+    const uint i = gid.x + gid.y * F.gridDim.x
+        + gid.z * F.gridDim.x * F.gridDim.y;
+    atomic_store_explicit(&distanceVolume[i], as_type<uint>(d),
+                          memory_order_relaxed);
+}
+
+static inline uint frequencyFlat(uint3 p, uint3 dim) {
+    return p.x + p.y * dim.x + p.z * dim.x * dim.y;
+}
+
+kernel void build_frequency_volume(
+    constant ThreshFrequencyUniforms& F [[buffer(THRESH_BUFFER_FREQUENCY_UNIFORMS)]],
+    device const uint* distanceVolume   [[buffer(THRESH_BUFFER_DISTANCE_VOLUME)]],
+    device atomic_uint* frequencyVolume [[buffer(THRESH_BUFFER_FREQUENCY_VOLUME)]],
+    uint3 gid                           [[thread_position_in_grid]])
+{
+    if (any(gid >= F.gridDim.xyz)) { return; }
+    const uint outIndex = frequencyFlat(gid, F.gridDim.xyz);
+    if (any(gid == uint3(0u)) || any(gid + 1u >= F.gridDim.xyz)) {
+        atomic_store_explicit(&frequencyVolume[outIndex], as_type<uint>(0.0f),
+                              memory_order_relaxed);
+        return;
+    }
+
+    // 3D Sobel: derivative [-1,0,1] on one axis, [1,2,1] smoothing on the
+    // other two. One 3³ traversal accumulates all axes (27 reads, not 54).
+    float3 sobel = float3(0.0f);
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                const int3 q = int3(gid) + int3(x, y, z);
+                const float d = as_type<float>(distanceVolume[
+                    frequencyFlat(uint3(q), F.gridDim.xyz)]);
+                const float sx = (x == 0) ? 2.0f : 1.0f;
+                const float sy = (y == 0) ? 2.0f : 1.0f;
+                const float sz = (z == 0) ? 2.0f : 1.0f;
+                sobel.x += float(x) * sy * sz * d;
+                sobel.y += float(y) * sx * sz * d;
+                sobel.z += float(z) * sx * sy * d;
+            }
+        }
+    }
+    const float c = as_type<float>(distanceVolume[outIndex]);
+    const uint3 ex = uint3(1, 0, 0), ey = uint3(0, 1, 0), ez = uint3(0, 0, 1);
+    const float lap = fabs(
+        as_type<float>(distanceVolume[frequencyFlat(gid + ex, F.gridDim.xyz)])
+      + as_type<float>(distanceVolume[frequencyFlat(gid - ex, F.gridDim.xyz)])
+      + as_type<float>(distanceVolume[frequencyFlat(gid + ey, F.gridDim.xyz)])
+      + as_type<float>(distanceVolume[frequencyFlat(gid - ey, F.gridDim.xyz)])
+      + as_type<float>(distanceVolume[frequencyFlat(gid + ez, F.gridDim.xyz)])
+      + as_type<float>(distanceVolume[frequencyFlat(gid - ez, F.gridDim.xyz)])
+      - 6.0f * c) / max(F.originExtent.w, 1e-6f);
+    // A true SDF has |gradient|≈1; deviation and Laplacian isolate folds,
+    // curvature, and under-resolved discontinuities rather than flagging the
+    // whole smooth surface as an edge.
+    const float grad = length(sobel) / (32.0f * max(F.originExtent.w, 1e-6f));
+    const float frequency = fabs(grad - 1.0f) + 0.5f * lap;
+    const bool finite = (as_type<uint>(frequency) & 0x7F800000u) != 0x7F800000u;
+    atomic_store_explicit(&frequencyVolume[outIndex],
+                          as_type<uint>(finite ? frequency : 0.0f),
+                          memory_order_relaxed);
 }
 
 // ========================== stereo raster path ==============================
