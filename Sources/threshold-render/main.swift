@@ -33,6 +33,10 @@ struct Options {
     var skipVolume = false     // world-space empty-space skip (fc 11) A/B
     var skipGrid = 64
     var skipDense = false       // dense direct-index vs hashed occupancy
+    var distanceCache = false
+    var cacheExtent: Float?
+    var cacheCapacity = 4
+    var cacheDiagnosticPath: String?
     var benchFrames = 0        // > 0 → benchmark mode
     var benchWarmup = 8
     var benchJSONPath: String?
@@ -64,6 +68,10 @@ struct Options {
             case "--skip-volume": opts.skipVolume = true
             case "--skip-grid": opts.skipGrid = intValue(next(arg), for: arg)
             case "--skip-dense": opts.skipDense = true
+            case "--distance-cache": opts.distanceCache = true
+            case "--cache-extent": opts.cacheExtent = Float(next(arg))
+            case "--cache-capacity": opts.cacheCapacity = intValue(next(arg), for: arg)
+            case "--cache-diagnostic": opts.cacheDiagnosticPath = next(arg)
             case "--bench": opts.benchFrames = intValue(next(arg), for: arg)
             case "--bench-warmup": opts.benchWarmup = intValue(next(arg), for: arg)
             case "--bench-json": opts.benchJSONPath = next(arg)
@@ -104,6 +112,10 @@ usage: threshold-render [scene.threshscene] [options]
   --bench-json <path>           write the benchmark result JSON
   --max-steps <n>               override engine.maxSteps (device-local, not
                                 scene-persisted; the perf suite pins it)
+  --distance-cache              view-invariant final-distance volume (A/B)
+  --cache-extent <world units>  half-extent around model origin (default 8)
+  --cache-capacity <n>          geometry-state LRU entries (default 4)
+  --cache-diagnostic <path.png> write a centre-slice cache diagnostic
 """
 
 func die(_ message: String) -> Never {
@@ -280,14 +292,16 @@ do {
 // Skip-volume (function_constant 11) A/B: constructed only for --skip-volume
 // so a plain run is untouched. Built-ins only — ignored under an external DE.
 let skipVolume: SkipVolume?
-if opts.skipVolume {
+if opts.skipVolume || opts.distanceCache {
     do {
         skipVolume = try SkipVolume(
             context: context, gridResolution: opts.skipGrid,
-            mode: opts.skipDense ? .dense : .hashed)
+            mode: opts.distanceCache ? .distance : (opts.skipDense ? .dense : .hashed),
+            worldHalfExtent: opts.cacheExtent,
+            cacheCapacity: opts.cacheCapacity)
         if !opts.quiet {
             print("skip-volume ON (grid \(opts.skipGrid)³, "
-                + "\(opts.skipDense ? "dense" : "hashed"))")
+                + "\(opts.distanceCache ? "view-invariant distance cache" : (opts.skipDense ? "dense" : "hashed")))")
         }
     } catch {
         die("--skip-volume failed: \(error)")
@@ -523,6 +537,22 @@ if opts.benchFrames > 0 {
         if opts.outPathExplicit, let final = lastResult {
             writePNG(final, to: opts.outPath)
         }
+        if let path = opts.cacheDiagnosticPath,
+           let diagnostic = skipVolume?.diagnosticImage() {
+            writePNG(RenderResult(
+                rgba8: diagnostic.rgba8, width: diagnostic.width,
+                height: diagnostic.height,
+                stats: MarchStats(totalSteps: 0, gpuMilliseconds: 0)),
+                to: path)
+        }
+        if let cache = skipVolume, opts.distanceCache, !opts.quiet {
+            let m = cache.cacheMetrics
+            let residentMiB = String(
+                format: "%.2f", Double(m.residentBytes) / 1_048_576)
+            print("distance-cache hits=\(m.hits) misses=\(m.misses) "
+                + "builds=\(m.builds) evictions=\(m.evictions) "
+                + "residentMiB=\(residentMiB)")
+        }
     } catch {
         die("benchmark failed: \(error)")
     }
@@ -544,6 +574,14 @@ for frame in 0..<opts.frames {
 
 guard let final = lastResult else { die("no frames rendered") }
 writePNG(final, to: opts.outPath)
+if let path = opts.cacheDiagnosticPath,
+   let diagnostic = skipVolume?.diagnosticImage() {
+    let image = RenderResult(
+        rgba8: diagnostic.rgba8, width: diagnostic.width,
+        height: diagnostic.height,
+        stats: MarchStats(totalSteps: 0, gpuMilliseconds: 0))
+    writePNG(image, to: path)
+}
 
 if let statsPath = opts.statsPath {
     let stats = RunStats(

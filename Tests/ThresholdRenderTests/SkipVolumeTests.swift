@@ -68,6 +68,40 @@ struct SkipVolumeTests {
         #expect(skip.table != nil)
     }
 
+    @Test func distanceCacheIsViewInvariantAndGeometryKeyed() throws {
+        let ctx = try GPU.ctx()
+        let cache = try SkipVolume(
+            context: ctx, gridResolution: 16, mode: .distance,
+            worldHalfExtent: 4)
+        let requestA = makeRequest(.mandelbulb, cameraPos: SIMD3(0, 0, 3))
+        var requestB = requestA
+        requestB.uniforms.camPosFov = SIMD4(5, -2, 9, 0.4)
+
+        #expect(cache.prepare(
+            uniforms: requestA.uniforms, params: requestA.params, ops: requestA.ops))
+        #expect(cache.needsBuild)
+        // Before encoding there is no completed entry, but the origin itself
+        // already proves the volume is model-anchored rather than camera-led.
+        #expect(cache.uniforms.originExtent.x == -4)
+        #expect(cache.uniforms.originExtent.y == -4)
+        #expect(cache.uniforms.originExtent.z == -4)
+
+        let renderer = try OffscreenRenderer(context: ctx)
+        _ = try renderer.render(requestA, skipVolume: cache)
+        #expect(!cache.needsBuild)
+        #expect(cache.prepare(
+            uniforms: requestB.uniforms, params: requestB.params, ops: requestB.ops))
+        #expect(!cache.needsBuild, "camera-only edit should hit the cache")
+        #expect(cache.cacheMetrics.hits > 0)
+
+        // A parameter edit must select a distinct state.
+        var changed = requestA.params
+        changed[Int(requestA.uniforms.meta.w)] += 0.25
+        #expect(cache.prepare(
+            uniforms: requestB.uniforms, params: changed, ops: requestB.ops))
+        #expect(cache.needsBuild)
+    }
+
     // MARK: Engagement + correctness — the skip must ACTUALLY skip, and must
     // not change WHAT is rendered.
     //

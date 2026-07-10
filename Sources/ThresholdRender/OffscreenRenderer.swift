@@ -125,9 +125,11 @@ public final class OffscreenRenderer: @unchecked Sendable {
         // the caller hands us a SkipVolume.
         let useSkip = program == nil && skipVolume != nil
         if useSkip, let skip = skipVolume {
-            skip.prepare(uniforms: uniforms, params: request.params)
-            skip.encodeBuild(commandBuffer: commandBuffer, uniforms: uniforms,
-                             paramsBuffer: paramsBuffer, opsBuffer: opsBuffer)
+            skip.prepare(uniforms: uniforms, params: request.params, ops: request.ops)
+            if skip.needsBuild {
+                skip.encodeBuild(commandBuffer: commandBuffer, uniforms: uniforms,
+                                 paramsBuffer: paramsBuffer, opsBuffer: opsBuffer)
+            }
         }
 
         // Hierarchical prepass (perf round 15): one thread per 8×8 tile

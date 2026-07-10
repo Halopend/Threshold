@@ -646,20 +646,40 @@ static inline bool skipContains(uint brickIndex, device const uint* table,
 // or the build overflowed. The +epsilon lands the jump inside the next brick.
 static inline float skipAdvance(float3 pos, float3 rd, float t,
                                 constant ThreshSkipUniforms& S,
-                                device const uint* table) {
+                                device const uint* table,
+                                thread uint& lastOccupiedBrick) {
     const uint bi = skipBrickIndex(pos, S);
-    if (bi == THRESH_SKIP_EMPTY_SLOT) { return t; }     // outside the grid
+    if (bi == THRESH_SKIP_EMPTY_SLOT) {
+        lastOccupiedBrick = THRESH_SKIP_EMPTY_SLOT;
+        return t;                                        // outside the grid
+    }
+    // A ray commonly takes many short DE steps inside one near-surface voxel.
+    // Once that voxel has been classified occupied, avoid re-reading the same
+    // cache word until the ray crosses a voxel boundary.
+    if (bi == lastOccupiedBrick) { return t; }
     bool occupied;
     if (S.mode == 1u) {
         // DENSE: one direct indexed read (hardware-cacheable, no probe) — the
         // "cheapest possible per-step lookup" A/B against the hash.
         occupied = table[bi] != 0u;
+    } else if (S.mode == 2u) {
+        // DISTANCE CACHE: the final mapScene distance at the brick centre.
+        // Subtracting the centre-to-corner radius produces a conservative
+        // cell clearance. A positive clearance proves the whole cell empty.
+        const float cached = as_type<float>(table[bi]);
+        const bool finite = (as_type<uint>(cached) & 0x7F800000u) != 0x7F800000u;
+        const float circumradius = S.originExtent.w * 0.5f * 1.7320508f;
+        occupied = !finite || cached <= circumradius * (1.0f + S.margin);
     } else {
         // HASHED (BorgVR): overflow disables skip for the frame; else probe.
         if (table[S.tableSize] != 0u) { return t; }
         occupied = skipContains(bi, table, S);
     }
-    if (occupied) { return t; }                          // occupied ⇒ DE step
+    if (occupied) {
+        lastOccupiedBrick = bi;
+        return t;                                        // occupied ⇒ DE step
+    }
+    lastOccupiedBrick = THRESH_SKIP_EMPTY_SLOT;
     const float exit = skipBrickExit(pos, rd, S);
     return t + max(exit, 0.0f) + 1e-4f * S.originExtent.w;
 }
@@ -1368,6 +1388,7 @@ static inline ThreshMarchResult marchShade(
     bool hit = false;
     bool bad = false;
     uint steps = 0;
+    uint lastOccupiedBrick = THRESH_SKIP_EMPTY_SLOT;
 
     // Enhanced sphere tracing (Keinert et al. 2014). `stepSafety` doubles as
     // the over-relaxation factor ω: at ω > 1 the march steps PAST the DE
@@ -1408,7 +1429,8 @@ static inline ThreshMarchResult marchShade(
         // overflow) falls through to the normal step. The jump counts as a
         // loop iteration but NOT a march step (steps is DE-eval telemetry).
         if (THRESH_SKIP) {
-            const float skipT = skipAdvance(pos, rd, t, *skipU, skipTable);
+            const float skipT = skipAdvance(
+                pos, rd, t, *skipU, skipTable, lastOccupiedBrick);
             if (skipT > t) { t = skipT; continue; }
         }
 
@@ -1802,7 +1824,12 @@ kernel void build_skip_volume(
     const bool empty = finite && (dm.x > circumradius * (1.0f + S.margin));
     const uint bi = gid.x + gid.y * S.gridDim.x
         + gid.z * S.gridDim.x * S.gridDim.y;
-    if (S.mode == 1u) {
+    if (S.mode == 2u) {
+        // Preserve the actual final distance for reuse, diagnostics, and the
+        // convolution experiment. Atomic storage keeps the buffer type shared
+        // with the hashed mode; bit-casting is lossless for float32.
+        atomic_store_explicit(&table[bi], as_type<uint>(dm.x), memory_order_relaxed);
+    } else if (S.mode == 1u) {
         // DENSE: write occupancy (0 empty / 1 occupied) at the brick index —
         // the host cleared to 0, so an empty brick could be left implicit, but
         // writing both keeps the pass independent of the clear.

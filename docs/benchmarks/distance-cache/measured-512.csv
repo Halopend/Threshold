@@ -1,0 +1,9 @@
+mode,grid,median_ms,median_fps,total_steps,frames
+baseline,0,1.7006,588.01,141511980,30
+cache-cold,96,19.6500,50.89,2157778,1
+cache-warm,96,3.2539,307.32,64733340,30
+cache-warm-occupied-memo,96,3.3784,296.00,64733340,30
+cache-warm,32,2.2841,437.81,,20
+cache-warm,48,3.2916,303.81,,20
+cache-warm,64,3.7272,268.30,,20
+cache-warm,128,4.2157,237.21,,20
