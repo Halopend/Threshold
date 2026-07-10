@@ -126,4 +126,31 @@ struct SpecializationTests {
         }
         #expect(landed, "the background compile must eventually land")
     }
+
+    @Test(.enabled(if: GPU.available))
+    func cacheNegativelyCachesAndSurfacesCompilerFailure() async throws {
+        let ctx = try GPU.ctx()
+        let cache = SpecializationCache(context: ctx)
+        let name = "de_notreal"
+
+        // The stability gate schedules on the eighth lookup.
+        for _ in 0..<8 {
+            #expect(cache.lookup(deFunctionName: name) == nil)
+        }
+
+        var surfaced: String?
+        for _ in 0..<100 {
+            surfaced = cache.failureDescription(deFunctionName: name)
+            if surfaced != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(surfaced != nil, "the async compiler error must become terminal state")
+
+        // Further lookups stay on the generic fallback without scheduling a
+        // fresh compile storm for the same deterministic failure.
+        for _ in 0..<100 {
+            #expect(cache.lookup(deFunctionName: name) == nil)
+        }
+        #expect(cache.failureDescription(deFunctionName: name) == surfaced)
+    }
 }

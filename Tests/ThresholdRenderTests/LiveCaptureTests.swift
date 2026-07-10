@@ -58,8 +58,10 @@ struct LiveCaptureTests {
         try withLiveSession { session in
             let slot = ImageCaptureSlot()
             session.commands.publish(.captureImage(width: 96, height: 64, into: slot))
-            let result = poll(seconds: 5) { slot.take() }
-            let image = try #require(result, "captureImage must land within 5s of live loop")
+            let result = try #require(
+                poll(seconds: 5) { slot.take() },
+                "captureImage must finish within 5s of live loop")
+            let image = try result.get()
             #expect(image.width == 96 && image.height == 64)
             #expect(image.rgba8.count == 96 * 64 * 4)
             // The march produced SOMETHING (not all-zero black).

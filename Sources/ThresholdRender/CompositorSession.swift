@@ -31,6 +31,18 @@ import ThresholdCore
 import ThresholdShaderABI
 import ThresholdShaderIR
 
+/// Explicit ownership transfer for the SDK's non-Sendable LayerRenderer.
+/// The reference is immutable; `CompositorSession.start` creates this box and
+/// the dedicated compositor thread is the only code that dereferences it.
+/// This is narrower than marking the whole imported framework preconcurrency.
+private final class LayerRendererTransfer: @unchecked Sendable {
+    let renderer: LayerRenderer
+
+    init(_ renderer: LayerRenderer) {
+        self.renderer = renderer
+    }
+}
+
 /// AUDIT — `@unchecked Sendable`, same precedent as InteractiveSession:
 /// mailboxes/snapshot slot are compiler-checked Sendable; `context`, `layout`,
 /// `signals`, `initialScene` are Sendable `let`s; `stopRequested` is an
@@ -262,8 +274,9 @@ public final class CompositorSession: @unchecked Sendable {
         layerRenderer.onSpatialEvent = { [worldGrab] events in
             worldGrab.handle(events)
         }
-        let thread = Thread { [self] in
-            renderLoop(layerRenderer)
+        let transferred = LayerRendererTransfer(layerRenderer)
+        let thread = Thread { [self, transferred] in
+            renderLoop(transferred.renderer)
         }
         thread.name = "threshold.compositor"
         thread.qualityOfService = .userInteractive
@@ -541,6 +554,13 @@ public final class CompositorSession: @unchecked Sendable {
             sp.endInterval("core.step", stepState)
             let stepMs = Mono.ms(stepStart, Mono.now())
             sessionTime = sessionFrame.time
+            // The compositor shell has no offscreen export backend. Complete
+            // the request with an explicit terminal failure instead of leaving
+            // a caller to poll an empty slot forever.
+            if let capture = core.takePendingImageCapture() {
+                capture.slot.publish(
+                    failure: "still-image capture is unavailable in the visionOS compositor")
+            }
             // The governor's resolution scale becomes next frame's compositor
             // renderQuality. On this shell renderScale is NOT an intermediate
             // texture (that is the Mac/InteractiveSession path) — the drawable

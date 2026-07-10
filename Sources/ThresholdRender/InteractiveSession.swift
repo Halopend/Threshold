@@ -330,16 +330,16 @@ public final class InteractiveSession: @unchecked Sendable {
                         exportRequest, program: frame.externalProgram)
                     capture.slot.publish(result)
                 } catch {
-                    // Nothing lands in the slot — whoever polls it must not
-                    // wait forever on a capture that will never arrive.
+                    let message = "image capture failed (\(capture.width)x\(capture.height)): \(String(describing: error))"
+                    capture.slot.publish(failure: message)
                     ThresholdLog.render.error(
                         """
-                        image capture failed \
-                        (\(capture.width)x\(capture.height)): \
-                        \(String(describing: error), privacy: .public)
+                        \(message, privacy: .public)
                         """)
                 }
             } else {
+                capture.slot.publish(
+                    failure: "image capture failed: export renderer unavailable")
                 ThresholdLog.render.error(
                     "image capture requested but the export renderer never initialized")
             }
@@ -651,8 +651,13 @@ final class SessionGPUEncoder {
                     diagnostics.pipeline = auxOutputs ? .specializedAux : .specialized
                     diagnostics.bakedConstants = plan.spec.summary
                 } else {
-                    // Requested but the variant is still compiling off-thread.
-                    diagnostics.specializationPending = true
+                    // Distinguish a live background compile from a terminal
+                    // negative-cache entry. The generic pipeline renders in
+                    // both cases; the UI must not say "Compiling…" forever.
+                    diagnostics.specializationFailed = specializations.failureDescription(
+                        deFunctionName: plan.deFunctionName,
+                        spec: plan.spec, auxOutputs: auxOutputs) != nil
+                    diagnostics.specializationPending = !diagnostics.specializationFailed
                     diagnostics.pipeline = auxOutputs ? .genericAux : .generic
                 }
             } else {

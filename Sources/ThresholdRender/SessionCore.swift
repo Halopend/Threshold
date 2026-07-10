@@ -123,10 +123,14 @@ final class SessionCore {
         return Palette.crossfade(from: tween.from, to: palette, weight: Float(w))
     }
     private var frameIndex: UInt64 = 0
-    /// Latched image-export request (captureImage command). The shell's frame
-    /// loop consumes it via `takePendingImageCapture` right after building a
-    /// frame, so the export renders exactly what the screen shows.
-    private var pendingImageCapture: (width: Int, height: Int, slot: ImageCaptureSlot)?
+    /// Queued image-export requests (captureImage command). The shell's frame
+    /// loop consumes one via `takePendingImageCapture` after building each
+    /// frame, so bursts neither overwrite earlier requests nor create one
+    /// unbounded multi-export hitch.
+    private var pendingImageCaptures: [
+        (width: Int, height: Int, slot: ImageCaptureSlot)
+    ] = []
+    private var pendingImageCaptureHead = 0
 
     init(
         layout: CatalogLayout,
@@ -387,10 +391,18 @@ final class SessionCore {
             audioLevels: audioLevels)
     }
 
-    /// Removes and returns the latched image-export request, if any.
+    /// Removes and returns the oldest queued image-export request, if any.
     func takePendingImageCapture() -> (width: Int, height: Int, slot: ImageCaptureSlot)? {
-        defer { pendingImageCapture = nil }
-        return pendingImageCapture
+        guard pendingImageCaptureHead < pendingImageCaptures.count else { return nil }
+        let capture = pendingImageCaptures[pendingImageCaptureHead]
+        pendingImageCaptureHead += 1
+        if pendingImageCaptureHead == pendingImageCaptures.count {
+            // Keep the allocation for the usual low-volume reuse while making
+            // each dequeue O(1), even under a burst of capture commands.
+            pendingImageCaptures.removeAll(keepingCapacity: true)
+            pendingImageCaptureHead = 0
+        }
+        return capture
     }
 
     // MARK: - Commands
@@ -452,6 +464,13 @@ final class SessionCore {
                 command: applyScene '\(name, privacy: .public)' \
                 (\(transition == nil ? "snap" : "tween", privacy: .public))
                 """)
+        case .applyPreparedScene(let envelope, let program, let transition):
+            let name = envelope.name ?? "untitled"
+            log.info("""
+                command: applyPreparedScene '\(name, privacy: .public)' \
+                (\(program == nil ? "built-in" : "external", privacy: .public), \
+                \(transition == nil ? "snap" : "tween", privacy: .public))
+                """)
         case .setDE(let key):
             log.info("command: setDE \(key, privacy: .public)")
         case .setExternalDE(let program):
@@ -497,6 +516,14 @@ final class SessionCore {
         switch command {
         case .applyScene(let envelope, let transition):
             apply(scene: envelope, transition: transition)
+            historyEpoch &+= 1
+
+        case .applyPreparedScene(let envelope, let program, let transition):
+            // One command is the transaction boundary: scene-authored params,
+            // structure, and the program compiled for this exact envelope all
+            // become visible in the same frame.
+            apply(scene: envelope, transition: transition)
+            setExternal(program)
             historyEpoch &+= 1
 
         case .setDE(let key):
@@ -591,10 +618,10 @@ final class SessionCore {
             tuning = newTuning
 
         case .captureImage(let width, let height, let slot):
-            // Latched for the shell's frame loop: the request that renders
-            // this export is the SAME one the next frame presents, just at
-            // the export size (takePendingImageCapture).
-            pendingImageCapture = (width: width, height: height, slot: slot)
+            // Queued for the shell's frame loop: the request that renders this
+            // export is the SAME one a presented frame uses, just at the export
+            // size (takePendingImageCapture).
+            pendingImageCaptures.append((width: width, height: height, slot: slot))
 
         case .captureScene(let slot):
             // Authored content only: scene lane + structure. Transient lanes

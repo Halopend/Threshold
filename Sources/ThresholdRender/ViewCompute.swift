@@ -25,6 +25,7 @@
 import Foundation
 import Metal
 import Synchronization
+import ThresholdCore
 import ThresholdShaderABI
 import ThresholdShaderIR
 
@@ -471,6 +472,7 @@ final class ViewComputeSpecializationCache: Sendable {
         var ready: [String: SpecializedViewCompute] = [:]
         var inFlight: Set<String> = []
         var hits: [String: Int] = [:]
+        var failures: [String: String] = [:]
     }
 
     private let context: GPUContext
@@ -497,10 +499,13 @@ final class ViewComputeSpecializationCache: Sendable {
     ) -> SpecializedViewCompute? {
         let key = "\(deFunctionName)#\(spec.keyFragment)"
             + (aux ? "#aux" : "") + (seed ? "#seed" : "")
-        if let hit = state.withLock({ $0.ready[key] }) { return hit }
+        let cached = state.withLock { ($0.ready[key], $0.failures[key]) }
+        if let hit = cached.0 { return hit }
+        if cached.1 != nil { return nil }
 
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
+            if s.failures[key] != nil { return false }
             let hits = (s.hits[key] ?? 0) + 1
             s.hits[key] = hits
             guard hits >= compileAfterHits else { return false }
@@ -509,11 +514,15 @@ final class ViewComputeSpecializationCache: Sendable {
         if shouldCompile {
             let context = context
             buildQueue.async { [self] in
-                let library: MTLLibrary? = resolveLibrary(deFunctionName)
-                let compiled = library.flatMap {
-                    try? context.makeSpecializedViewCompute(
-                        from: $0, deFunctionName: deFunctionName, spec: spec,
+                var compiled: SpecializedViewCompute?
+                var failure: String?
+                do {
+                    let library = try resolveLibrary(deFunctionName)
+                    compiled = try context.makeSpecializedViewCompute(
+                        from: library, deFunctionName: deFunctionName, spec: spec,
                         auxOutputs: aux, seed: seed)
+                } catch {
+                    failure = String(describing: error)
                 }
                 state.withLock { s in
                     s.inFlight.remove(key)
@@ -523,19 +532,29 @@ final class ViewComputeSpecializationCache: Sendable {
                            let evict = s.ready.keys.first(where: { $0 != key }) {
                             s.ready.removeValue(forKey: evict)
                         }
+                    } else if let failure {
+                        s.failures[key] = failure
                     }
+                }
+                if let failure {
+                    ThresholdLog.render.error(
+                        """
+                        view-compute specialization disabled for \
+                        \(deFunctionName, privacy: .public) \
+                        [\(spec.summary, privacy: .public)]: \
+                        \(failure, privacy: .public); using generic pipeline
+                        """)
                 }
             }
         }
         return nil
     }
 
-    private func resolveLibrary(_ deFunctionName: String) -> MTLLibrary? {
+    private func resolveLibrary(_ deFunctionName: String) throws -> MTLLibrary {
         if let cached = state.withLock({ $0.libraries[deFunctionName] }) {
             return cached
         }
-        guard let library = try? context.compileSpecializedLibrary(
-            deFunctionName: deFunctionName) else { return nil }
+        let library = try context.compileSpecializedLibrary(deFunctionName: deFunctionName)
         state.withLock { $0.libraries[deFunctionName] = library }
         return library
     }

@@ -478,15 +478,15 @@ struct SessionCoreTests {
         var h = Harness()
         h.step()
 
-        // Scene apply (embedded) + program activation — the exact command
-        // pair InteractiveSession.applyScene(_:loader:) publishes. The scene
-        // authors the param via the raw "de.external.<name>" convention.
+        // Scene apply (embedded) + program activation — the exact SINGLE
+        // transaction InteractiveSession.applyScene(_:loader:) publishes. The
+        // scene authors the param via the raw "de.external.<name>" convention.
         var scene = SceneEnvelope(
             version: SceneCodec.currentVersion, fractalTypeKey: "external")
         scene.embeddedDE = embedded
         scene.params["de.external.radius"] = [1.5]
-        h.commands.publish(.applyScene(scene, transition: nil))
-        h.commands.publish(.setExternalDE(program))
+        h.commands.publish(.applyPreparedScene(
+            scene, externalProgram: program, transition: nil))
 
         let frame = h.step()
         let entry = try #require(frame.dynamicEntries.first)
@@ -584,6 +584,34 @@ struct SessionCoreTests {
         let data = try SceneCodec.encode(captured)
         let reopened = try SceneCodec.decode(data)
         #expect(reopened.params[ParamKey.engineAOStrength.rawValue] == [1.25])
+    }
+
+    @Test func imageCapturesQueueInCommandOrderAndReportTerminalFailure() throws {
+        var h = Harness()
+        h.step()
+
+        let firstSlot = ImageCaptureSlot()
+        let secondSlot = ImageCaptureSlot()
+        h.commands.publish(.captureImage(width: 64, height: 32, into: firstSlot))
+        h.commands.publish(.captureImage(width: 128, height: 96, into: secondSlot))
+        h.step()
+
+        let first = try #require(h.core.takePendingImageCapture())
+        let second = try #require(h.core.takePendingImageCapture())
+        #expect(first.width == 64 && first.height == 32 && first.slot === firstSlot)
+        #expect(second.width == 128 && second.height == 96 && second.slot === secondSlot)
+        #expect(h.core.takePendingImageCapture() == nil,
+                "taking both requests drains the FIFO")
+
+        firstSlot.publish(failure: "synthetic render failure")
+        let outcome = try #require(firstSlot.take())
+        switch outcome {
+        case .success:
+            Issue.record("expected the terminal capture failure")
+        case .failure(let failure):
+            #expect(failure.message == "synthetic render failure")
+        }
+        #expect(firstSlot.take() == nil, "take() drains the terminal outcome")
     }
 
     @Test func qualityGovernorDrivesResolutionOnlyAndNeverTouchesTheFractal() {

@@ -141,6 +141,10 @@ public struct RenderDiagnostics: Sendable, Equatable {
     /// Specialization was requested (enabled, built-in DE) but its variant is
     /// still compiling off-thread — this frame fell back to generic.
     public var specializationPending: Bool
+    /// The requested specialization failed to compile. The generic pipeline
+    /// remains active and the cache will not retry the same broken variant on
+    /// every frame.
+    public var specializationFailed: Bool
     /// Which function constants are baked into the active specialized variant
     /// (e.g. "iters=12, no-ops"); empty = none / not specialized.
     public var bakedConstants: String
@@ -154,11 +158,13 @@ public struct RenderDiagnostics: Sendable, Equatable {
 
     public init(
         pipeline: Pipeline = .generic, specializationPending: Bool = false,
+        specializationFailed: Bool = false,
         bakedConstants: String = "", renderScale: Float = 1, upscaling: Bool = false,
         reconstruction: String = "off"
     ) {
         self.pipeline = pipeline
         self.specializationPending = specializationPending
+        self.specializationFailed = specializationFailed
         self.bakedConstants = bakedConstants
         self.renderScale = renderScale
         self.upscaling = upscaling
@@ -274,21 +280,43 @@ public final class SceneCaptureSlot: Sendable {
 
 // MARK: - ImageCaptureSlot
 
+/// Terminal failure delivered through `ImageCaptureSlot`. The message is
+/// intentionally value-typed and Sendable: Metal/renderer error instances do
+/// not all cross concurrency domains safely, while their surfaced diagnostic
+/// text does.
+public struct ImageCaptureFailure: Error, Sendable, Equatable, CustomStringConvertible {
+    public let message: String
+
+    public init(_ message: String) {
+        self.message = message
+    }
+
+    public var description: String { message }
+}
+
 /// Single-slot handoff for a still-image capture: the render thread renders
 /// the CURRENT frame's request offscreen at the requested size and publishes
-/// the result; the requesting thread polls `take()`. Same shape as
+/// a terminal success or failure; the requesting thread polls `take()`. A
+/// failure is data, not an absent value, so callers never confuse a failed
+/// render with one that is still pending. Same channel shape as
 /// SceneCaptureSlot — command mailbox in, slot out (Invariant 13).
 public final class ImageCaptureSlot: Sendable {
-    private let slot = Mutex<RenderResult?>(nil)
+    public typealias Outcome = Result<RenderResult, ImageCaptureFailure>
+
+    private let slot = Mutex<Outcome?>(nil)
 
     public init() {}
 
     public func publish(_ result: RenderResult) {
-        slot.withLock { $0 = result }
+        slot.withLock { $0 = .success(result) }
     }
 
-    /// Removes and returns the captured image, if one has landed.
-    public func take() -> RenderResult? {
+    public func publish(failure message: String) {
+        slot.withLock { $0 = .failure(ImageCaptureFailure(message)) }
+    }
+
+    /// Removes and returns the terminal outcome, if one has landed.
+    public func take() -> Outcome? {
         slot.withLock { captured in
             defer { captured = nil }
             return captured
@@ -309,6 +337,15 @@ public enum SessionCommand: Sendable {
     /// discrete params, the warp-stack structure, the DE, and the zoom
     /// octave snap. `nil` snaps everything (startup/harness behavior).
     case applyScene(SceneEnvelope, transition: SceneTransition?)
+    /// Atomically apply a scene and its already-compiled external DE. This is
+    /// one mailbox element so no other producer can interleave a structural
+    /// command between the scene state and the matching program activation.
+    /// `externalProgram` is nil for a prepared built-in scene.
+    case applyPreparedScene(
+        SceneEnvelope,
+        externalProgram: ExternalDEProgram?,
+        transition: SceneTransition?
+    )
     /// Switch the active DE; params keep their lane state (plan §2.1:
     /// scene switching never loses values). Clears any active external DE.
     case setDE(key: String)

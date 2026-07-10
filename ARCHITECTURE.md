@@ -86,7 +86,14 @@ Key decisions:
      edit, binding change, DE swap). Drained once per frame *before* resolution, so a
      frame sees either the old structure or the new one, never a torn mix. This is also
      where "scene apply writes only the scene lane" is enforced — apply is a command,
-     not a pile of setter calls.
+     not a pile of setter calls. A structural operation that spans several fields is
+     represented by **one command** (for example, a prepared embedded-DE scene carries
+     its compiled program in the scene-apply command); callers never publish a
+     multi-command transaction that another producer could interleave.
+- Request/reply operations that cross the render boundary use a command plus a
+  Sendable result slot. Fallible replies publish a terminal `Result` — absence means
+  only "pending," never "failed silently." The live image-capture path follows this
+  rule, including unsupported-platform and renderer-initialization failures.
 - **FrameSnapshot is an immutable value type**, `Sendable` for real (all `let`, POD +
   a reference to an immutable op buffer). UI readback and the harness both consume
   snapshots from a published `latest` slot; nothing downstream ever reads live lanes,

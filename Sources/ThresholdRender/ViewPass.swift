@@ -15,6 +15,7 @@ import Foundation
 import Metal
 import simd
 import Synchronization
+import ThresholdCore
 import ThresholdShaderABI
 import ThresholdShaderIR
 
@@ -445,6 +446,7 @@ final class RasterSpecializationCache: Sendable {
         var ready: [String: SpecializedRaster] = [:]     // per (DE, spec)
         var inFlight: Set<String> = []
         var hits: [String: Int] = [:]
+        var failures: [String: String] = [:]
     }
 
     private let context: GPUContext
@@ -473,10 +475,13 @@ final class RasterSpecializationCache: Sendable {
     /// so the key is just (DE, spec).
     func lookup(deFunctionName: String, spec: MarchSpec) -> SpecializedRaster? {
         let key = "\(deFunctionName)#\(spec.keyFragment)"
-        if let hit = state.withLock({ $0.ready[key] }) { return hit }
+        let cached = state.withLock { ($0.ready[key], $0.failures[key]) }
+        if let hit = cached.0 { return hit }
+        if cached.1 != nil { return nil }
 
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
+            if s.failures[key] != nil { return false }
             let hits = (s.hits[key] ?? 0) + 1
             s.hits[key] = hits
             guard hits >= compileAfterHits else { return false }
@@ -488,12 +493,16 @@ final class RasterSpecializationCache: Sendable {
             let depthFormat = depthFormat
             let maxViewCount = maxViewCount
             buildQueue.async { [self] in
-                let library: MTLLibrary? = resolveLibrary(deFunctionName)
-                let compiled = library.flatMap {
-                    try? context.makeSpecializedRaster(
-                        from: $0, deFunctionName: deFunctionName, spec: spec,
+                var compiled: SpecializedRaster?
+                var failure: String?
+                do {
+                    let library = try resolveLibrary(deFunctionName)
+                    compiled = try context.makeSpecializedRaster(
+                        from: library, deFunctionName: deFunctionName, spec: spec,
                         colorFormat: colorFormat, depthFormat: depthFormat,
                         maxViewCount: maxViewCount)
+                } catch {
+                    failure = String(describing: error)
                 }
                 state.withLock { s in
                     s.inFlight.remove(key)
@@ -503,7 +512,18 @@ final class RasterSpecializationCache: Sendable {
                            let evict = s.ready.keys.first(where: { $0 != key }) {
                             s.ready.removeValue(forKey: evict)
                         }
+                    } else if let failure {
+                        s.failures[key] = failure
                     }
+                }
+                if let failure {
+                    ThresholdLog.render.error(
+                        """
+                        raster specialization disabled for \
+                        \(deFunctionName, privacy: .public) \
+                        [\(spec.summary, privacy: .public)]: \
+                        \(failure, privacy: .public); using generic pipeline
+                        """)
                 }
             }
         }
@@ -512,12 +532,11 @@ final class RasterSpecializationCache: Sendable {
 
     /// Get-or-compile the per-DE specialized source library (shared shape with
     /// the OS Metal cache dedups a rare concurrent double-compile).
-    private func resolveLibrary(_ deFunctionName: String) -> MTLLibrary? {
+    private func resolveLibrary(_ deFunctionName: String) throws -> MTLLibrary {
         if let cached = state.withLock({ $0.libraries[deFunctionName] }) {
             return cached
         }
-        guard let library = try? context.compileSpecializedLibrary(
-            deFunctionName: deFunctionName) else { return nil }
+        let library = try context.compileSpecializedLibrary(deFunctionName: deFunctionName)
         state.withLock { $0.libraries[deFunctionName] = library }
         return library
     }

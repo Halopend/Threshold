@@ -425,6 +425,10 @@ public final class SpecializationCache: Sendable {
         var ready: [String: SpecializedMarch] = [:]  // per (DE, iters, aux)
         var inFlight: Set<String> = []               // variant keys
         var hits: [String: Int] = [:]                 // miss stability gate
+        /// Negative cache for deterministic compiler/pipeline failures. The
+        /// generic pipeline is always correct; retrying a broken variant every
+        /// frame would only keep the serial compiler queue permanently busy.
+        var failures: [String: String] = [:]
     }
 
     private let context: GPUContext
@@ -456,10 +460,13 @@ public final class SpecializationCache: Sendable {
         deFunctionName: String, spec: MarchSpec = MarchSpec(), auxOutputs: Bool = false
     ) -> SpecializedMarch? {
         let key = Self.variantKey(deFunctionName, spec, auxOutputs)
-        if let hit = state.withLock({ $0.ready[key] }) { return hit }
+        let cached = state.withLock { ($0.ready[key], $0.failures[key]) }
+        if let hit = cached.0 { return hit }
+        if cached.1 != nil { return nil }
 
         let shouldCompile: Bool = state.withLock { s in
             if s.ready[key] != nil { return false }
+            if s.failures[key] != nil { return false }
             let hits = (s.hits[key] ?? 0) + 1
             s.hits[key] = hits
             guard hits >= compileAfterHits else { return false }
@@ -474,11 +481,15 @@ public final class SpecializationCache: Sendable {
                 // is merely wasteful — the OS Metal cache dedups — and never
                 // incorrect, so no separate in-flight tracking).
                 let started = ProcessInfo.processInfo.systemUptime
-                let library: MTLLibrary? = resolveLibrary(deFunctionName)
-                let compiled = library.flatMap {
-                    try? context.makeSpecializedMarch(
-                        from: $0, deFunctionName: deFunctionName,
+                var compiled: SpecializedMarch?
+                var failure: String?
+                do {
+                    let library = try resolveLibrary(deFunctionName)
+                    compiled = try context.makeSpecializedMarch(
+                        from: library, deFunctionName: deFunctionName,
                         spec: spec, auxOutputs: auxOutputs)
+                } catch {
+                    failure = String(describing: error)
                 }
                 let seconds = ProcessInfo.processInfo.systemUptime - started
                 if seconds > 2 {
@@ -493,28 +504,44 @@ public final class SpecializationCache: Sendable {
                 }
                 state.withLock { s in
                     s.inFlight.remove(key)
-                    // A failed compile leaves no entry: the generic pipeline
-                    // keeps rendering. inFlight was cleared, so the next lookup
-                    // miss retries (fine for transient OOM; a structurally bad
-                    // name simply never lands).
                     if let compiled {
                         s.ready[key] = compiled
                         if s.ready.count > maxReadyVariants,
                            let evict = s.ready.keys.first(where: { $0 != key }) {
                             s.ready.removeValue(forKey: evict)
                         }
+                    } else if let failure {
+                        s.failures[key] = failure
                     }
+                }
+                if let failure {
+                    ThresholdLog.render.error(
+                        """
+                        specialization disabled for \
+                        \(deFunctionName, privacy: .public) \
+                        [\(spec.summary, privacy: .public)] \
+                        \(auxOutputs ? "aux" : "base", privacy: .public): \
+                        \(failure, privacy: .public); using generic pipeline
+                        """)
                 }
             }
         }
         return nil
     }
 
+    /// Diagnostic for the live readout and tests. A non-nil value is terminal
+    /// for this cache instance; a new session/cache may try again.
+    func failureDescription(
+        deFunctionName: String, spec: MarchSpec = MarchSpec(), auxOutputs: Bool = false
+    ) -> String? {
+        let key = Self.variantKey(deFunctionName, spec, auxOutputs)
+        return state.withLock { $0.failures[key] }
+    }
+
     /// Get-or-compile the per-DE specialized source library.
-    private func resolveLibrary(_ deFunctionName: String) -> MTLLibrary? {
+    private func resolveLibrary(_ deFunctionName: String) throws -> MTLLibrary {
         if let lib = state.withLock({ $0.libraries[deFunctionName] }) { return lib }
-        guard let lib = try? context.compileSpecializedLibrary(
-            deFunctionName: deFunctionName) else { return nil }
+        let lib = try context.compileSpecializedLibrary(deFunctionName: deFunctionName)
         state.withLock { $0.libraries[deFunctionName] = lib }
         return lib
     }

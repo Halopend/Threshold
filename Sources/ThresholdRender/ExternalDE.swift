@@ -55,6 +55,19 @@ public enum ExternalDEError: Error, CustomStringConvertible {
     }
 }
 
+/// Submission can fail after an external DE has compiled if the render
+/// consumer is wedged and its bounded command mailbox is saturated.
+public enum SessionSubmissionError: Error, Sendable, CustomStringConvertible {
+    case commandMailboxFull
+
+    public var description: String {
+        switch self {
+        case .commandMailboxFull:
+            return "render command mailbox is full; scene was not submitted"
+        }
+    }
+}
+
 // MARK: - ExternalDEProgram
 
 /// A validated, ready-to-dispatch external DE: its descriptor (table index =
@@ -95,16 +108,20 @@ public final class ExternalDEProgram: @unchecked Sendable {
 #if os(macOS) || os(iOS)
 extension InteractiveSession {
     /// Apply a scene whose embedded DE (if any) is compiled + probed HERE —
-    /// off the render thread — before both commands are published together.
+    /// off the render thread — before one transactional command is published.
     /// Throws (scene not applied at all) when the embedded DE is rejected,
-    /// so a bad file can never half-apply.
+    /// or when the bounded mailbox rejects the command, so a scene can never
+    /// half-apply.
     public func applyScene(
         _ envelope: SceneEnvelope, loader: ExternalDELoader,
         transition: SceneTransition? = .default
     ) throws {
         let program = try envelope.embeddedDE.map { try loader.load($0) }
-        commands.publish(.applyScene(envelope, transition: transition))
-        commands.publish(.setExternalDE(program))
+        guard commands.publish(.applyPreparedScene(
+            envelope, externalProgram: program, transition: transition))
+        else {
+            throw SessionSubmissionError.commandMailboxFull
+        }
     }
 }
 #endif

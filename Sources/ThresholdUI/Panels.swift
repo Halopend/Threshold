@@ -905,6 +905,7 @@ public struct PipelineSection: View {
 
     private var status: (text: String, color: Color) {
         let d = mirror.diagnostics
+        if d.specializationFailed { return ("Fallback (compile failed)", .red) }
         if d.specializationPending { return ("Compiling…", .orange) }
         if d.pipeline.isSpecialized { return (d.pipeline.label, .green) }
         if d.pipeline == .external { return (d.pipeline.label, .blue) }

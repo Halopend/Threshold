@@ -243,7 +243,11 @@ final class AppModel {
     /// stretch individual sleeps well past their nominal 25 ms).
     func captureScene() async -> SceneEnvelope? {
         let slot = SceneCaptureSlot()
-        session.commands.publish(.captureScene(into: slot))
+        guard session.commands.publish(.captureScene(into: slot)) else {
+            appLog.error("captureScene: command mailbox full")
+            lastOpenError = SessionSubmissionError.commandMailboxFull.description
+            return nil
+        }
         appLog.info("captureScene: published")
         let deadline = Date().addingTimeInterval(4)
         while Date() < deadline {
@@ -285,11 +289,26 @@ final class AppModel {
     /// exports legitimately take a few seconds of polling.
     func exportImage(width: Int, height: Int) async -> Data? {
         let slot = ImageCaptureSlot()
-        session.commands.publish(.captureImage(width: width, height: height, into: slot))
+        guard session.commands.publish(
+            .captureImage(width: width, height: height, into: slot))
+        else {
+            appLog.error("exportImage: command mailbox full")
+            lastOpenError = SessionSubmissionError.commandMailboxFull.description
+            return nil
+        }
         appLog.info("exportImage: published \(width)x\(height)")
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
-            if let result = slot.take() {
+            if let outcome = slot.take() {
+                let result: RenderResult
+                switch outcome {
+                case .success(let captured):
+                    result = captured
+                case .failure(let failure):
+                    appLog.error("exportImage: \(failure.message, privacy: .public)")
+                    lastOpenError = failure.message
+                    return nil
+                }
                 guard let png = pngData(from: result) else {
                     appLog.error("exportImage: PNG encode failed")
                     lastOpenError = "PNG encode failed"
@@ -322,8 +341,9 @@ final class AppModel {
         Task.detached(priority: .userInitiated) {
             do {
                 let program = try envelope.embeddedDE.map { try loader.load($0) }
-                commands.publish(.applyScene(envelope, transition: .default))
-                commands.publish(.setExternalDE(program))
+                guard commands.publish(.applyPreparedScene(
+                    envelope, externalProgram: program, transition: .default))
+                else { throw SessionSubmissionError.commandMailboxFull }
             } catch {
                 let message = "\(filename): \(error)"
                 await MainActor.run { self.lastOpenError = message }
@@ -627,8 +647,9 @@ final class VisionAppModel {
                 Task.detached(priority: .userInitiated) {
                     do {
                         let program = try envelope.embeddedDE.map { try loader.load($0) }
-                        commands.publish(.applyScene(envelope, transition: .default))
-                        commands.publish(.setExternalDE(program))
+                        guard commands.publish(.applyPreparedScene(
+                            envelope, externalProgram: program, transition: .default))
+                        else { throw SessionSubmissionError.commandMailboxFull }
                     } catch {
                         let message = "\(filename): \(error)"
                         await MainActor.run { self.lastOpenError = message }
@@ -651,7 +672,10 @@ final class VisionAppModel {
 
     func captureScene() async -> SceneEnvelope? {
         let slot = SceneCaptureSlot()
-        session.commands.publish(.captureScene(into: slot))
+        guard session.commands.publish(.captureScene(into: slot)) else {
+            lastOpenError = SessionSubmissionError.commandMailboxFull.description
+            return nil
+        }
         let deadline = Date().addingTimeInterval(4)
         while Date() < deadline {
             if var envelope = slot.take() {
