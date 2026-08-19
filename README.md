@@ -1,4 +1,15 @@
-BETA VERSION
+BETA VERSION - 
+Other branch is more stable, but slower. This is more lean and organized.
+Scene compatibility with other version dubious, but this is far better organized and quicker to iterate (compile, understand, extend).
+
+Potential cross-platform support is feasible from this code base.
+Vision OS support iffy.
+
+Messaging system fragile.
+
+Otherwise, I consider this the superior version with better growth potential.
+
+
 
 # Threshold
 
