@@ -1,3 +1,5 @@
+BETA VERSION
+
 # Threshold
 
 A live fractal raymarcher for macOS and visionOS: distance-estimated fractals
