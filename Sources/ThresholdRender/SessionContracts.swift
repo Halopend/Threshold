@@ -73,8 +73,9 @@ public struct RenderTuning: Sendable, Equatable {
     /// reproduces the block-9 hardcoded 3× margin.
     public var coneStability: ConeStability
     /// Manual internal render scale in (0, 1] used when the fps governor is
-    /// OFF: the march runs at `drawable × scale` and MetalFX upscales to full
-    /// resolution. 1 = full-res. Ignored while the governor drives the scale.
+    /// OFF: the interactive march runs at `drawable × scale` and a stateless
+    /// spatial compute pass expands it to full resolution. 1 = full-res.
+    /// Ignored while the governor drives the scale.
     public var manualRenderScale: Float
 
     public init(
@@ -116,9 +117,9 @@ public struct RenderTuning: Sendable, Equatable {
 public struct RenderDiagnostics: Sendable, Equatable {
     public enum Pipeline: String, Sendable, Equatable {
         case generic         // table-dispatch, full-res
-        case genericAux      // table-dispatch + temporal-upscale inputs
+        case genericAux      // legacy temporal-upscale diagnostics
         case specialized     // direct-call inlined DE variant
-        case specializedAux  // direct-call + temporal-upscale inputs
+        case specializedAux  // legacy temporal-upscale diagnostics
         case external        // an external DE program's own pipeline
         case raster          // visionOS Compositor stereo fragment path
         case viewCompute     // visionOS Compositor per-view COMPUTE backend
@@ -148,9 +149,9 @@ public struct RenderDiagnostics: Sendable, Equatable {
     /// Which function constants are baked into the active specialized variant
     /// (e.g. "iters=12, no-ops"); empty = none / not specialized.
     public var bakedConstants: String
-    /// Internal render scale (governor × MetalFX); 1 = full-res.
+    /// Internal render scale selected by the governor; 1 = full-res.
     public var renderScale: Float
-    /// MetalFX temporal upscaling engaged this frame.
+    /// A reduced-resolution upscale path engaged this frame.
     public var upscaling: Bool
     /// Custom temporal reconstruction mode this frame ("off" | "stabilize" |
     /// "taau") — the compute backend's readout (march.temporalRecon).
@@ -189,6 +190,8 @@ public struct RenderSnapshot: Sendable {
     public let deKey: String
     /// The AUTHORED warp stack (pre-simplification) — what editors display.
     public let warpStack: [WarpOpDTO]
+    /// The AUTHORED post-processing stack in its exact sequential order.
+    public let postProcessStack: [PostProcessFilterDTO]
     public let paused: Bool
     /// The active gradient palette — what the gradient editor displays.
     public let palette: Palette
@@ -212,7 +215,8 @@ public struct RenderSnapshot: Sendable {
     public init(
         resolved: ResolvedParams, frameIndex: UInt64, time: Double,
         gpuMilliseconds: Double, totalSteps: UInt64, deKey: String,
-        warpStack: [WarpOpDTO], paused: Bool, palette: Palette,
+        warpStack: [WarpOpDTO], postProcessStack: [PostProcessFilterDTO] = [],
+        paused: Bool, palette: Palette,
         animation: AnimationPlaybackState = .idle,
         dynamicEntries: [CatalogEntry] = [],
         scaleOctave: Int32 = 0,
@@ -226,6 +230,7 @@ public struct RenderSnapshot: Sendable {
         self.totalSteps = totalSteps
         self.deKey = deKey
         self.warpStack = warpStack
+        self.postProcessStack = postProcessStack
         self.paused = paused
         self.palette = palette
         self.animation = animation
@@ -356,6 +361,9 @@ public enum SessionCommand: Sendable {
     case setExternalDE(ExternalDEProgram?)
     /// Replace the authored warp stack.
     case setWarpStack([WarpOpDTO])
+    /// Replace the authored post-processing stack. Array order is execution
+    /// order; stable filter IDs keep row edits targeted across reorders.
+    case setPostProcessStack([PostProcessFilterDTO])
     /// Grab-what-you-see slider edit: the render thread computes the
     /// user-lane write that makes the resolved value equal `targetResolved`
     /// (inversion needs live engine state, which is render-thread confined).
@@ -420,6 +428,8 @@ public enum AnimationTransportCommand: Sendable, Equatable {
 final class FrameStatsSlot: Sendable {
     struct Stats: Sendable {
         var gpuMilliseconds: Double = 0
+        /// Consumed once by the live quality controller; display metrics persist.
+        var governorMilliseconds: Double = 0
         var totalSteps: UInt64 = 0
         /// Temporal-seeding restart-valve trips this frame (phase A2): rays
         /// whose history seed failed the DE validation tap and re-marched
@@ -432,8 +442,18 @@ final class FrameStatsSlot: Sendable {
     func store(gpuMilliseconds: Double, totalSteps: UInt64,
                seedRestarts: UInt64 = 0) {
         slot.withLock {
-            $0 = Stats(gpuMilliseconds: gpuMilliseconds, totalSteps: totalSteps,
+            $0 = Stats(gpuMilliseconds: gpuMilliseconds, governorMilliseconds: gpuMilliseconds, totalSteps: totalSteps,
                        seedRestarts: seedRestarts)
+        }
+    }
+
+    /// Single render-thread consumer. Repeated callbacks with no GPU completion
+    /// must not repeatedly decrease quality or recover using stale headroom.
+    func loadForControl() -> Stats {
+        slot.withLock {
+            let result = $0
+            $0.governorMilliseconds = 0
+            return result
         }
     }
 

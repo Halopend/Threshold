@@ -419,10 +419,11 @@ public enum DisplayIcons {
         case "legacyMandelbox": return "cube.fill"
         case "mandelbulb": return "globe"
         case "kleinian": return "circle.grid.cross.fill"
-        case "menger": return "square.grid.3x3.fill"
+        case "mengerSponge": return "square.grid.3x3.fill"
         case "quaternionJulia": return "atom"
         case "mandelbulbJulia": return "moon.stars.fill"
         case "mandelboxSphereProjection": return "cube.transparent.fill"
+        case "theliPseudoKleinian": return "hexagon.circle.fill"
         default: return "cube.transparent"
         }
     }

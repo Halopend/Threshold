@@ -79,6 +79,57 @@ public enum GestureSource: Sendable, Hashable, Codable {
         case .tapPalm, .fist: return .scalar
         }
     }
+
+    /// The source's rank in the resolver's CANONICAL arbitration order
+    /// (GestureLaneResolver.resolve): family escalation first — precision
+    /// one-finger gestures before whole-hand gestures (`tapThumb` ▷ `tapPalm`
+    /// ▷ `swipe` ▷ `fist`) — then `left` before `right`, then fingers index ▷
+    /// middle ▷ ring ▷ pinky (non-finger families use finger rank 0).
+    ///
+    /// Two facts must stay true as the source vocabulary grows:
+    ///  1. The order is TOTAL and stable across processes and builds (it
+    ///     arbitrates replace-composition targets — see resolve's doc — so
+    ///     dictionary iteration order must never decide ownership).
+    ///  2. Lower rank = more precise/deliberate source. A replace target
+    ///     keeps the low-rank (most precise) armed source and ignores the
+    ///     rest; coarse whole-hand gestures yield to a finer one on the
+    ///     same parameter rather than fighting it.
+    public var arbitrationRank: Int {
+        let family: Int
+        switch self {
+        case .tapThumb: family = 0
+        case .tapPalm: family = 1
+        case .swipe: family = 2
+        case .fist: family = 3
+        }
+        switch self {
+        case let .tapThumb(hand, finger):
+            return family * 9 + hand.rank * 4 + finger.rank
+        case let .tapPalm(hand, finger):
+            return family * 9 + hand.rank * 4 + finger.rank
+        case let .swipe(hand):
+            return family * 9 + hand.rank * 4
+        case let .fist(hand):
+            return family * 9 + hand.rank * 4
+        }
+    }
+}
+
+private extension GestureHand {
+    /// Hand ordering inside a family (left ▷ right).
+    var rank: Int { self == .left ? 0 : 1 }
+}
+
+private extension GestureFinger {
+    /// Finger ordering inside a hand (index ▷ middle ▷ ring ▷ pinky).
+    var rank: Int {
+        switch self {
+        case .index: return 0
+        case .middle: return 1
+        case .ring: return 2
+        case .pinky: return 3
+        }
+    }
 }
 
 /// The dimensionality of a source's output — the constraint a binding must

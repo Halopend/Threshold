@@ -1,0 +1,27 @@
+{
+  "name" : "Icosahedral Bloom",
+  "version" : 1,
+  "warpStack" : [
+    {
+      "a" : [ 5, 3, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 8,
+      "strength" : 1
+    },
+    {
+      "a" : [ 0.5, 1.4, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 11,
+      "strength" : 0.6
+    },
+    {
+      "a" : [ 2, 0, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 15,
+      "strength" : 1
+    }
+  ]
+}

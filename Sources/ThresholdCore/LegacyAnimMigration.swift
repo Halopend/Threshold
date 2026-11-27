@@ -72,7 +72,8 @@ public enum LegacyAnimation {
             (.engineMaxSteps, { scalar($0, "baseMaxRaySteps") }),
         ]
         if isMandelbox {
-            let key = fractalType == "mandelbox" ? "legacyMandelbox" : "mandelbox"
+            // Must match LegacyMigration: sphere-projection scenes land on their own DE.
+            let key = fractalType == "mandelbox" ? "legacyMandelbox" : "mandelboxSphereProjection"
             if fractalType == "mandelbox" {
                 extractors += [
                     (.de(key, "scale"), { scalar($0, "fractalScale") }),

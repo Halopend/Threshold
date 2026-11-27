@@ -50,6 +50,33 @@ struct LegacyFormulaTests {
         #expect(customCount == 15, "the corpus carries 15 custom scenes, saw \(customCount)")
     }
 
+    @Test func authoredFormulaValuesMigrateByLegacySlot() throws {
+        // Box authors CSize X = -0.592 against a declared default of 0.486:
+        // the scene must carry the authored value, not fall back.
+        let box = try SceneCodec.decode(Data(
+            contentsOf: scenesDir.appendingPathComponent("Box.threshscene")))
+        let csx = try #require(box.params["de.external.CSize X"]?.first)
+        #expect(abs(csx - -0.59239715) < 1e-6)
+        #expect(abs((box.params["de.external.TwiddleRXY"]?.first ?? 0) - 0.9025176) < 1e-6)
+        // Undeclared formulaParamValues slots get no external param.
+        #expect(box.params.keys.filter { $0.hasPrefix("de.external.") }.count == 6)
+    }
+
+    @Test func sparseLegacySlotsRouteToTheirOwnIndex() throws {
+        // Embedded Mandelbulb declares slots 0,1,2,4: PolarRotation is the
+        // 4th declared param (ctx.params[3]) but the formula reads params[4].
+        let scene = try SceneCodec.decode(Data(
+            contentsOf: scenesDir.appendingPathComponent("Embedded Mandelbulb.threshscene")))
+        let source = try #require(scene.embeddedDE?.source)
+        #expect(source.contains("fp.params[4] = ctx.params[3];"))
+        #expect(!source.contains("fp.params[3] = ctx.params[3];"))
+        #expect(scene.params["de.external.PolarRotation"] == [0])
+        // Contiguous formulas keep the original loop text (stable hash).
+        let box = try SceneCodec.decode(Data(
+            contentsOf: scenesDir.appendingPathComponent("Box.threshscene")))
+        #expect(box.embeddedDE?.source.contains("i < 6 && uint(i) + 1u < ctx.paramCount") == true)
+    }
+
     @Test(.enabled(if: GPU.available))
     func migratedFormulaRendersEndToEnd() throws {
         // One exemplar all the way to pixels: decode → load → render the

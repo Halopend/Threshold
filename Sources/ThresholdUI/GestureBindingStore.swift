@@ -110,6 +110,14 @@ public final class GestureBindingStore {
     }
 
     /// Drop bindings (in BOTH scopes) that reference params absent from `keys`.
+    ///
+    /// - Warning: pass keys valid for the SCOPE they prune — for the GLOBAL
+    ///   scope that is the STATIC catalog vocabulary (engine + camera + scale
+    ///   + color), not one fractal's dynamic params; a global binding to a
+    ///   param only fractal B declares must survive a switch to fractal A.
+    ///   Prefer pruning each scope against its own vocabulary. (Currently
+    ///   uncalled; the contract was loose enough to over-prune global
+    ///   bindings had it been wired to the active fractal's keys.)
     public func pruneOrphans(forFractal fractal: String, keeping keys: Set<ParamKey>) {
         for scope in [GestureScope.global, .fractal(fractal)] {
             var table = set.table(for: scope)

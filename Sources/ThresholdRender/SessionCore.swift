@@ -69,6 +69,9 @@ final class SessionCore {
     private var tuning = RenderTuning.envDefault
     /// The AUTHORED warp stack — what snapshots/editors show.
     private(set) var authoredStack: [WarpOpDTO] = []
+    /// The AUTHORED post-processing stack. Unlike warp ops there is no
+    /// simplification step: order and duplicate filter kinds are semantic.
+    private(set) var authoredPostProcessStack: [PostProcessFilterDTO] = []
     /// The simplified buffer the GPU sees (plan §5.2). Rebuilt only on
     /// structural change, not per frame.
     private(set) var gpuOps: [ThreshWarpOp] = []
@@ -207,9 +210,9 @@ final class SessionCore {
         // Quality governor (ADR-003): resolution is the ONLY lever. The
         // factor ≈ pixel-cost fraction, so √factor per axis; each shell
         // applies the scale through its platform mechanism (visionOS:
-        // compositor renderQuality; Mac/iOS: MetalFX temporal upscale).
+        // compositor renderQuality; Mac/iOS: spatial compute upscale).
         // Quantized to 1/20ths so the additive-recovery creep doesn't
-        // thrash texture/scaler allocations every frame. Iteration/step
+        // thrash texture allocations every frame. Iteration/step
         // writes were deliberately removed — they reshape the fractal
         // (docs/perf-notes.md perf block 5).
         // The user's Render Quality setting is the CEILING in both modes
@@ -226,6 +229,9 @@ final class SessionCore {
         } else {
             renderScale = qualityCeiling
         }
+        updateStepBudgetRescue(
+            renderedScale: renderScale, governorConfig: governorConfig,
+            gpuMilliseconds: gpuMilliseconds)
 
         clock.update(now: timestamp)
 
@@ -373,7 +379,9 @@ final class SessionCore {
                 // The GPU sees the crossfaded palette mid-transition; the
                 // frame's `palette` below stays the AUTHORED one (what the
                 // gradient editor shows and captureScene saves).
-                palette: displayedPalette.stops, width: width, height: height,
+                palette: displayedPalette.stops,
+                postProcessStack: authoredPostProcessStack,
+                width: width, height: height,
                 renderScale: renderScale, tuning: tuning,
                 worldVolatility: worldVolatility),
             resolved: resolved,
@@ -381,6 +389,7 @@ final class SessionCore {
             time: clock.now,
             deKey: descriptor.key,
             warpStack: authoredStack,
+            postProcessStack: authoredPostProcessStack,
             paused: paused,
             palette: palette,
             animation: animationPlayer.playbackState,
@@ -422,6 +431,7 @@ final class SessionCore {
         result.reserveCapacity(drained.count)
         var latestEdits: [UserEditKey: SessionCommand] = [:]
         var editOrder: [UserEditKey] = []
+        var latestPostProcess: SessionCommand?
 
         func flushEdits() {
             guard !editOrder.isEmpty else { return }
@@ -434,18 +444,34 @@ final class SessionCore {
             editOrder.removeAll(keepingCapacity: true)
         }
 
+        func flushPostProcess() {
+            if let latestPostProcess {
+                result.append(latestPostProcess)
+            }
+            latestPostProcess = nil
+        }
+
         for command in drained {
             if case .userEdit(let slot, _) = command {
                 let key = UserEditKey(slot: slot)
                 if latestEdits.updateValue(command, forKey: key) == nil {
                     editOrder.append(key)
                 }
+            } else if case .setPostProcessStack = command {
+                // Slider ticks are replacement state, not a sequence of
+                // operations. Replay only the newest stack before the next
+                // unrelated command so a busy frame cannot spend time
+                // encoding dozens of stale UI states.
+                flushEdits()
+                latestPostProcess = command
             } else {
                 flushEdits()
+                flushPostProcess()
                 result.append(command)
             }
         }
         flushEdits()
+        flushPostProcess()
         return result
     }
 
@@ -480,6 +506,8 @@ final class SessionCore {
                 """)
         case .setWarpStack(let stack):
             log.debug("command: setWarpStack (\(stack.count) ops)")
+        case .setPostProcessStack(let stack):
+            log.debug("command: setPostProcessStack (\(stack.count) filters)")
         case .clearUserEdit(let slot):
             log.debug("command: clearUserEdit slot \(slot)")
         case .commitUserEdit(let slot, _):
@@ -542,6 +570,9 @@ final class SessionCore {
 
         case .setWarpStack(let stack):
             setWarpStack(stack)
+
+        case .setPostProcessStack(let stack):
+            authoredPostProcessStack = stack
 
         case .userEdit(let slot, let target):
             // Grab-what-you-see: write the user-lane value whose composition
@@ -632,6 +663,7 @@ final class SessionCore {
                 fractalTypeKey: externalProgram != nil
                     ? lastBuiltinDescriptor.key : descriptor.key,
                 warpStack: authoredStack,
+                postProcessStack: authoredPostProcessStack,
                 camera: camera,
                 embeddedDE: externalProgram != nil ? activeEmbeddedDE : nil,
                 abiVersion: EmbeddedDE.currentABIVersion)
@@ -644,6 +676,17 @@ final class SessionCore {
             // the scene.
             envelope.bindings = bindingEngine.bindings
             envelope.lfos = lfoEngine.lfos
+            // External-DE params live in the dynamic arena (not the static
+            // layout the codec walks) — persist them under the scene-file
+            // key the activation path reads back (`de.external.<name>`).
+            if let program = externalProgram,
+               externalParamSlots.count == program.descriptor.paramLayout.count {
+                for (i, param) in program.descriptor.paramLayout.enumerated() {
+                    let raw = engine.currentValue(
+                        lane: .scene, slot: externalParamSlots.lowerBound + i) ?? param.default
+                    envelope.params["de.external.\(param.name)"] = [raw.isFinite ? raw : param.default]
+                }
+            }
             slot.publish(envelope)
         }
     }
@@ -677,7 +720,10 @@ final class SessionCore {
                 composition: .additive,
                 smoothing: .continuous,  // same feel as built-ins (ADR-005)
                 persistence: .scene,
-                capabilities: [.musicBindable, .animatable],
+                // Mirrors DEDescriptor.registerParams' default (DE params are
+                // the legacy gesture vocabulary): the same capabilities the
+                // built-in path declares, so gesture availability matches.
+                capabilities: [.musicBindable, .gestureBindable, .animatable],
                 group: .shape)
             engine.registerDynamic(spec, atSlot: slots.lowerBound + i)
             dynamicEntries.append(CatalogEntry(slot: slots.lowerBound + i, spec: spec))
@@ -723,6 +769,7 @@ final class SessionCore {
         }
         SceneCodec.apply(envelope, layout: layout, engine: engine, transition: transition)
         setWarpStack(envelope.warpStack)
+        authoredPostProcessStack = envelope.postProcessStack
         camera = envelope.camera
         octave = envelope.scaleOctave
         // Palette is scene content; a scene without one keeps the current
@@ -771,6 +818,86 @@ final class SessionCore {
             tween.elapsed += dt
             paletteTween = tween.elapsed >= tween.duration ? nil : tween
         }
+    }
+
+    /// Step-budget rescue — the second-stage quality lever (opt-in via
+    /// `QualityGovernorConfig.stepBudgetRescue`; only the visionOS shell arms
+    /// it — see the config's doc).
+    ///
+    /// The governor's resolution lever is deliberately the ONLY quality lever
+    /// (ADR-003 / docs/perf-notes.md block 5: iteration/step writes reshape
+    /// the fractal). But resolution cannot save a scene whose per-pixel march
+    /// cost overruns the budget BY ITSELF: pinned at the resolution floor, a
+    /// heavy scene (Kleinian-class DEs, deep iterations) still runs 2–5× past
+    /// `targetMilliseconds` and the shell degrades to a reprojected
+    /// slideshow — the Vision Pro latency signature. When the resolution
+    /// lever is PINNED AT ITS FLOOR and the GPU is still past budget, shed
+    /// the march step cap multiplicatively (engine.maxSteps is
+    /// .multiplicative, so this is one system-lane write above the scene lane
+    /// and below user edits — Invariant 16's principled home) instead of
+    /// falling off the 90 fps cliff. Off-budget frames recover one level down.
+    ///
+    /// Honored trade: lowering the step cap shortens misses and can clip
+    /// far detail — a LOOK change, entered only when doing nothing reads as
+    /// a broken scene. Bounded: the shed ladder is 6 quantized levels, each
+    /// at most one baked pipeline variant per DE in the specialization caches.
+    private static let stepRescueLadder: [Float] = [1, 0.85, 0.7, 0.55, 0.4, 0.25]
+    private var stepRescueLevel: Int = 0
+
+    private func updateStepBudgetRescue(
+        renderedScale: Float, governorConfig: QualityGovernorConfig?,
+        gpuMilliseconds: Double
+    ) {
+        guard let config = governorConfig, config.stepBudgetRescue else {
+            // Not armed (Mac default, or the governor off): the user owns the
+            // whole budget; make sure a rescue engaged by a previous managed
+            // phase is unhooked.
+            recoverToNeutral()
+            return
+        }
+        // No fresh completion is not evidence that GPU load has improved.
+        guard gpuMilliseconds > 0, gpuMilliseconds.isFinite else { return }
+        let pinnedAtFloor = renderedScale <= config.minRenderScale + 0.001
+        let overBudget = gpuMilliseconds > config.targetMilliseconds * 1.05
+        let underBudget = gpuMilliseconds > 0
+            && gpuMilliseconds < config.targetMilliseconds * 0.75
+
+        if pinnedAtFloor, overBudget {
+            shedSteps()
+        } else if underBudget {
+            recoverSteps()
+        }
+    }
+
+    private func shedSteps() {
+        guard stepRescueLevel < Self.stepRescueLadder.count - 1 else { return }
+        applyStepRescue(level: stepRescueLevel + 1)
+    }
+
+    private func recoverSteps() {
+        guard stepRescueLevel > 0 else { return }
+        applyStepRescue(level: stepRescueLevel - 1)
+    }
+
+    /// Write the shed multiplier for the CURRENT level on the system lane
+    /// when it changes (latest-value-wins; no per-frame mailbox traffic).
+    private func applyStepRescue(level: Int) {
+        let clamped = max(0, min(Self.stepRescueLadder.count - 1, level))
+        guard clamped != stepRescueLevel else { return }
+        stepRescueLevel = clamped
+        let shed = Self.stepRescueLadder[clamped]
+        // `engine.write(lane:key:values:)` returns false for unknown keys —
+        // engine.maxSteps is a fixed engine slot, so the ignore is formality.
+        _ = engine.write(lane: .system, key: ParamKey.engineMaxSteps, values: [shed])
+        ThresholdLog.render.info(
+            """
+            step-budget rescue \(shed < 1 ? "engaged" : "released"): \
+            maxSteps ×\(shed)
+            """)
+    }
+
+    private func recoverToNeutral() {
+        applyStepRescue(level: 0)
     }
 
     /// One exponential step of a camera pose toward a target: position and

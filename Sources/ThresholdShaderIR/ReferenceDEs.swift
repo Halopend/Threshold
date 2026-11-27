@@ -14,6 +14,11 @@
 //   menger          params = [scale, offsetX, offsetY, offsetZ]
 //   quaternionJulia params = [cX, cY, cZ, cW, threshold]
 //   mandelbulbJulia params = [power, cX, cY, cZ]
+
+//   theliPseudoKleinian params = [size, cSizeX, cSizeY, cSizeZ,
+//                                 cX, cY, cZ, deOffset,
+//                                 offsetX, offsetY, offsetZ, mnIterations,
+//                                 mnScale, mnOffsetX, mnOffsetY, mnOffsetZ]
 //
 // Encoder convention (see DERegistry): the DE param slice uploaded to the GPU
 // is the declared params in layout order with the iteration count appended as
@@ -172,7 +177,7 @@ public enum ReferenceDEs {
         // plain |z|/dr stays tiny-positive there and the march never lands.
         let absScale = abs(scale)
         let dist = (length(z) - (absScale - 1)) / dr
-            - powf(absScale, Float(1 - iterations))
+            - pow(max(absScale, 1e-6), Float(1 - iterations))
         return SIMD2(dist, trap)
     }
 
@@ -292,6 +297,111 @@ public enum ReferenceDEs {
             trap = min(trap, length(z))
         }
         return SIMD2((length(z) - 1) / dr, trap)
+    }
+
+    /// Theli-at's Scale-1 Julia-box Style Pseudo Kleinian Hybrid (Knighty's
+    /// standalone formulation). Per iteration: a scale-1 box fold
+    /// (`2·clamp(z, −CSize, CSize) − z`) and a one-sided sphere fold
+    /// (`k = max(size/r², 1)`), with `z ← z·k + C` and the accumulated fold
+    /// derivative `deFactor ← deFactor·k`; the orbit stops once its Chebyshev
+    /// norm reaches 60. The distance is then the Menger-like base shape of
+    /// the orbit tail `abs(baseShape(z − Offset)) —
+    /// `|baseShape·(0.5/deFactor) − DEoffset|`.
+    ///
+    /// 1:1 port of the original app's `DE_TheliPseudoKleinian_Dist` (the
+    /// distance-only lane of Formulas/TheliPseudoKleinian/TheliPseudoKleinian.h),
+    /// minus the legacy per-formula rotation (not a rebuild DE input — see
+    /// kleinian / mengerSponge). The orbit-trap channel follows the rebuild
+    /// convention (min |z| over ALL main iterations, seeded with the sample
+    /// point), not the legacy colorIterations-gated trap.
+    ///
+    /// - Parameter params:
+    ///   `[size, cSizeX, cSizeY, cSizeZ, cX, cY, cZ, deOffset, offsetX,
+    ///   offsetY, offsetZ, mnIterations, mnScale, mnOffsetX, mnOffsetY,
+    ///   mnOffsetZ]` — the ORIGINAL app's formulaParamValues[0...15] order
+    ///   (normative for the legacy migration).
+    public static func theliPseudoKleinian(
+        _ p: SIMD3<Float>,
+        params: [Float],
+        iterations: Int
+    ) -> SIMD2<Float> {
+        precondition(params.count >= 16,
+                     "theliPseudoKleinian params = [size, cSizeX, cSizeY, cSizeZ, "
+                     + "cX, cY, cZ, deOffset, offsetX, offsetY, offsetZ, mnIterations, "
+                     + "mnScale, mnOffsetX, mnOffsetY, mnOffsetZ]")
+        let size = max(params[0], 0)
+        let cSize = SIMD3(max(params[1], 1e-4), max(params[2], 1e-4), max(params[3], 1e-4))
+        let c = SIMD3(params[4], params[5], params[6])
+        let deOffset = params[7]
+        let offset = SIMD3(params[8], params[9], params[10])
+        // Legacy: clamp(int(params[11]), 0, 20) — truncation-then-clamp. Clamping
+        // the float into [0, 20] first and truncating after is identical for
+        // every finite value and keeps conversion overflow- and NaN-safe.
+        let rawMn = params[11]
+        let mnIterations = rawMn.isFinite ? Int(min(max(rawMn, 0), 20)) : 0
+        let mnScale = params[12]
+        let mnOffset = SIMD3(params[13], params[14], params[15])
+
+        var z = p
+        var deFactor: Float = 1
+        var trap2 = dot(z, z)
+
+        // Legacy escape radius is on the Chebyshev norm, checked before each
+        // iteration (initial sample included).
+        var rInf = max(max(abs(z.x), abs(z.y)), abs(z.z))
+
+        var i = 0
+        while i < max(0, iterations) && rInf < 60 {
+            z = simd_clamp(z, -cSize, cSize) * 2 - z
+            let k = max(size / max(dot(z, z), 1e-6), 1)
+            z = z * k + c         // sphere fold ×k + C; the fold derivative
+            deFactor *= k         //   accumulates the same factor (legacy p.w)
+
+            rInf = max(max(abs(z.x), abs(z.y)), abs(z.z))
+            trap2 = min(trap2, dot(z, z))
+            i += 1
+        }
+
+        let base = theliMengerBaseShape(z - offset, mnIterations: mnIterations,
+                                        mnScale: mnScale, mnOffset: mnOffset)
+        let de = abs(base * (0.5 / max(deFactor, 1e-6)) - deOffset)
+        return SIMD2(de, sqrt(trap2))
+    }
+
+    /// The legacy `DE_TheliHybridMengerShape`: abs + descending sort folds
+    /// with a squashed z-component (1/3, then (1/3)·MnOffset.z), scaled by
+    /// MnScale toward `MnOffset·(1 − MnScale)` each iteration, terminating on
+    /// 20 squared-length; distance = (z.x − MnOffset.x)·|MnScale|^(−n).
+    private static func theliMengerBaseShape(
+        _ start: SIMD3<Float>, mnIterations: Int, mnScale: Float, mnOffset: SIMD3<Float>
+    ) -> Float {
+        let oneThird: Float = 1.0 / 3.0
+        var invScalePow: Float = 1
+        let invAbsMnScale = 1 / max(abs(mnScale), 1e-4)
+        let zFold = oneThird * mnOffset.z
+        let mnBias = -mnScale * mnOffset + mnOffset
+
+        // Initial fold.
+        var z = abs(start)
+        var sum = z.x + z.y + z.z
+        var zMax = max(max(z.x, z.y), z.z)
+        var zMin = min(min(z.x, z.y), z.z)
+        z = SIMD3(zMax, sum - (zMax + zMin), oneThird + abs(zMin - oneThird))
+
+        var n = 0
+        while n < mnIterations && dot(z, z) < 100 {
+            z = z * mnScale + mnBias
+            z = abs(z)
+            sum = z.x + z.y + z.z
+            zMax = max(max(z.x, z.y), z.z)
+            zMin = min(min(z.x, z.y), z.z)
+            z = SIMD3(zMax, sum - (zMax + zMin), zFold + abs(zMin - zFold))
+            // |mnScale|^(−n) accumulated without log/exp (legacy safePow).
+            invScalePow = min(invScalePow * invAbsMnScale, 1e12)   // mnScale≈0: stay finite
+            n += 1
+        }
+
+        return (z.x - mnOffset.x) * invScalePow
     }
 
     /// Quaternion Julia set: `q ← q² + c` from `q₀ = (p, 0)` with the running

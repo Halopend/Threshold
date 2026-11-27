@@ -161,9 +161,9 @@ public struct InputSettingsSection: View {
             }
             #endif
             #if os(visionOS)
-            Toggle("Two-Hand World Grab", isOn: $worldGrab)
+            Toggle("World Grab", isOn: $worldGrab)
             if worldGrab {
-                Text("Pinch with both hands to move, turn, and scale the fractal in space — turn this off to snap it back.")
+                Text("Pinch with one hand to move and turn; use two hands to scale. Turn this off to snap back.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)

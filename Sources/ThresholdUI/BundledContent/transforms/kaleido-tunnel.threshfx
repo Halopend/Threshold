@@ -1,0 +1,27 @@
+{
+  "name" : "Kaleido Tunnel",
+  "version" : 1,
+  "warpStack" : [
+    {
+      "a" : [ 3, 0, 0, 0 ],
+      "b" : [ 1, 1, 1, 0 ],
+      "flags" : 0,
+      "kind" : 16,
+      "strength" : 1
+    },
+    {
+      "a" : [ 6, 0, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 7,
+      "strength" : 1
+    },
+    {
+      "a" : [ 0, 1, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 1,
+      "strength" : 0.4
+    }
+  ]
+}

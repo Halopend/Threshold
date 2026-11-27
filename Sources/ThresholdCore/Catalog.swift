@@ -193,7 +193,7 @@ public final class Catalog {
         try! catalog.registerEngine(
             ParamSpec(key: .engineMaxSteps, label: "Max March Steps",
                       range: 1...4096, default: 256,
-                      composition: .multiplicative, persistence: .deviceLocal,
+                      composition: .multiplicative, persistence: .scene,
                       capabilities: [.snapOnSceneTransition],
                       group: .performance),
             atSlot: EngineSlot.maxSteps.rawValue)
@@ -268,7 +268,9 @@ public final class Catalog {
             ParamSpec(key: .engineBubbleBlend, label: "Bubble Blend",
                       range: 0...1, default: 0.25,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .performance),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .performance),
             atSlot: EngineSlot.bubbleBlend.rawValue)
 
         // Color pipeline (plan §5.5). Grading + palette-sampling controls;
@@ -285,7 +287,9 @@ public final class Catalog {
             ParamSpec(key: .colorGradientOffset, label: "Color Offset",
                       range: 0...1, default: 0,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.gradOffset.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorGradientSmoothing, label: "Gradient Smoothing",
@@ -302,37 +306,49 @@ public final class Catalog {
             ParamSpec(key: .colorSaturation, label: "Saturation",
                       range: 0...2, default: 1,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.saturation.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorContrast, label: "Contrast",
                       range: 0...2, default: 1,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.contrast.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorVibrance, label: "Vibrance",
                       range: 0...1, default: 0,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.vibrance.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorBrightness, label: "Brightness",
                       range: 0...2, default: 1,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.brightness.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorGamma, label: "Gamma",
                       range: 0.1...4, default: 1,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.gamma.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .colorTonemap, label: "Filmic Tonemap",
                       range: 0...1, default: 0,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.tonemap.rawValue)
 
         // Atmosphere (legacy Effects ▸ Static): glow, bloom, fog + fog tint.
@@ -350,7 +366,9 @@ public final class Catalog {
             ParamSpec(key: .atmosphereGlowIntensity, label: "Glow Intensity",
                       range: 0...2, default: 0.3,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.glowIntensity.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .atmosphereBloomEnabled, label: "Bloom",
@@ -361,7 +379,9 @@ public final class Catalog {
             ParamSpec(key: .atmosphereBloomStrength, label: "Bloom Strength",
                       range: 0...2, default: 0.2,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.bloomStrength.rawValue)
         try! catalog.registerEngine(
             ParamSpec(key: .atmosphereFogEnabled, label: "Fog",
@@ -372,7 +392,9 @@ public final class Catalog {
             ParamSpec(key: .atmosphereFogIntensity, label: "Fog Density",
                       range: 0...1, default: 0.32,
                       composition: .replace, smoothing: .continuous,
-                      persistence: .scene, group: .color),
+                      persistence: .scene,
+                      capabilities: [.musicBindable, .animatable],
+                      group: .color),
             atSlot: EngineSlot.fogIntensity.rawValue)
         // Fog tint (float3, linear rgb) at slots 26..28. Legacy default is a
         // very dark blue; irrelevant until fog is enabled.

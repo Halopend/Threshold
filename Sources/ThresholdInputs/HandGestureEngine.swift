@@ -68,6 +68,8 @@ public final class HandGestureEngine: @unchecked Sendable {
     private let uiSuppressed = OSAllocatedUnfairLock<Bool>(initialState: false)
     private let arming = OSAllocatedUnfairLock<[GestureSource: Float]>(initialState: [:])
 
+    private var boundSlots: Set<Int> = []
+    private var cameraSlots: Set<Int> = []
     private var frameDrives: [GestureSource: GestureDrive] = [:]
     private var frameTable = GestureBindingTable()
     private var frameArming: [GestureSource: Float] = [:]
@@ -109,6 +111,11 @@ public final class HandGestureEngine: @unchecked Sendable {
 
     /// Drop all in-flight gesture state without committing (scene load).
     public func reset() {
+        for slot in boundSlots.union(cameraSlots) {
+            mailbox.publish(.clear(lane: .gesture, slot: slot))
+        }
+        boundSlots.removeAll(keepingCapacity: true)
+        cameraSlots.removeAll(keepingCapacity: true)
         left = HandState()
         right = HandState()
         yaw = 0; pitch = 0; logDolly = 0
@@ -122,7 +129,13 @@ public final class HandGestureEngine: @unchecked Sendable {
         left leftFrame: HandFrame?, right rightFrame: HandFrame?,
         sessionTime: Double, dt: Double, grabActive: Bool = false
     ) {
-        frameTable = bindings.withLock { $0 }
+        let nextTable = bindings.withLock { $0 }
+        if nextTable != frameTable {
+            // A held displacement belongs to its original mapping. Rebinding
+            // must release old targets and begin from a fresh hand anchor.
+            reset()
+            frameTable = nextTable
+        }
         frameDrives.removeAll(keepingCapacity: true)
         frameArming.removeAll(keepingCapacity: true)
         let suppress = grabActive || uiSuppressed.withLock { $0 }
@@ -138,10 +151,14 @@ public final class HandGestureEngine: @unchecked Sendable {
             pinchSignal: .handRightPinch, positionSignal: .handRightPosition,
             palmSignal: .handRightPalm, forearmSignal: .handRightForearm)
 
-        for write in GestureLaneResolver.resolve(
-            drives: frameDrives, table: frameTable, layout: layout) {
-            mailbox.publish(write)
+        let writes = GestureLaneResolver.resolve(
+            drives: frameDrives, table: frameTable, layout: layout)
+        let activeSlots = Set(writes.map(\.slot))
+        for slot in boundSlots.subtracting(activeSlots).subtracting(cameraSlots) {
+            mailbox.publish(.clear(lane: .gesture, slot: slot))
         }
+        for write in writes { mailbox.publish(write) }
+        boundSlots = activeSlots
         arming.withLock { $0 = frameArming }
     }
 
@@ -228,7 +245,7 @@ public final class HandGestureEngine: @unchecked Sendable {
         // ── FIST (pose-exclusive: only when the hand is genuinely a fist) ──
         let fistSrc = GestureSource.fist(hand: handEnum)
         let fistTick = state.fistGate.update(
-            strength: (palmCenter != nil && fingertips.count == 4) ? fist : nil, dt: dt)
+            strength: (palmCenter != nil && fingertips.count == 4) ? (stable ? fist : 0) : nil, dt: dt)
         emitArming(fistSrc, fistTick)
         if fistTick.engaged { frameDrives[fistSrc] = .scalar(stable ? fist : 0) }
 
@@ -386,7 +403,7 @@ public final class HandGestureEngine: @unchecked Sendable {
             } else {
                 logDolly = min(max(logDolly + delta.z * Self.logDollyPerMeter, -3), 3)
                 if let dollySlot {
-                    mailbox.publish(LaneWrite(lane: .gesture, slot: dollySlot, value: exp(logDolly)))
+                    publish(dollySlot, exp(logDolly))
                 }
             }
         } else if tick.justReleased {
@@ -411,7 +428,7 @@ public final class HandGestureEngine: @unchecked Sendable {
             // Grace expired mid-drag: keep the last committed pose (no jump).
             if isRight { publish(yawSlot, yaw); publish(pitchSlot, pitch) }
             else if let dollySlot {
-                mailbox.publish(LaneWrite(lane: .gesture, slot: dollySlot, value: exp(logDolly)))
+                publish(dollySlot, exp(logDolly))
             }
             state.cameraAnchor = nil
         }
@@ -424,6 +441,7 @@ public final class HandGestureEngine: @unchecked Sendable {
 
     private func publish(_ slot: Int?, _ value: Float) {
         guard let slot else { return }
+        cameraSlots.insert(slot)
         mailbox.publish(LaneWrite(lane: .gesture, slot: slot, value: value))
     }
 }

@@ -311,7 +311,7 @@ public final class InteractiveSession: @unchecked Sendable {
             now: update.targetTimestamp,
             width: texture.width,
             height: texture.height,
-            gpuMilliseconds: stats.gpuMilliseconds)
+            gpuMilliseconds: stats.governorMilliseconds)
         sp.endInterval("core.step", stepState)
         let stepMs = Mono.ms(stepStart, Mono.now())
 
@@ -347,11 +347,8 @@ public final class InteractiveSession: @unchecked Sendable {
 
         let encodeStart = Mono.now()
         let encodeState = sp.beginInterval("encode")
-        // An octave rebase rescales world coordinates between frames, which
-        // invalidates the temporal upscaler's reprojection — reset history.
         let diagnostics = gpu.encode(
-            frame.request, program: frame.externalProgram, to: drawable,
-            resetHistory: gpu.noteOctave(frame.scaleOctave))
+            frame.request, program: frame.externalProgram, to: drawable)
         sp.endInterval("encode", encodeState)
         let encodeMs = Mono.ms(encodeStart, Mono.now())
 
@@ -393,8 +390,48 @@ private final class DisplayLinkProxy: NSObject, CAMetalDisplayLinkDelegate {
 /// presents, and never calls waitUntilCompleted: stats come back through a
 /// ring of 3 buffers + completion handlers.
 final class SessionGPUEncoder {
+    /// One-shot ownership of an in-flight semaphore release. Metal normally
+    /// settles it from the completion callback; the render thread may settle
+    /// it first when `status` is already terminal but callback delivery is
+    /// delayed. The CAS prevents a later callback from double-signalling or
+    /// reading a stats ring slot after the render thread has reclaimed it.
+    private final class CompletionPermit: Sendable {
+        private let claimed = Atomic<Bool>(false)
+        private let semaphore: DispatchSemaphore
+
+        init(semaphore: DispatchSemaphore) { self.semaphore = semaphore }
+
+        func claim() -> Bool {
+            claimed.compareExchange(
+                expected: false, desired: true,
+                successOrdering: .acquiringAndReleasing,
+                failureOrdering: .relaxed).exchanged
+        }
+
+        func signal() { semaphore.signal() }
+    }
+
+    private struct PendingFrame {
+        let commandBuffer: MTLCommandBuffer
+        let permit: CompletionPermit
+        let queueGeneration: UInt64
+    }
+
+    private final class QueueFaultState: Sendable {
+        let faulted = Atomic<Bool>(false)
+        let activeGeneration = Atomic<UInt64>(0)
+    }
+
     private let context: GPUContext
-    private let queue: MTLCommandQueue
+    private var queue: MTLCommandQueue
+    /// A GPU timeout poisons its command queue: subsequent submissions finish
+    /// immediately with `.submissionsIgnored`. Completion handlers publish the
+    /// fault; the render thread replaces the queue before encoding again.
+    private let queueFaultState = QueueFaultState()
+    private var queueGeneration: UInt64 = 0
+    /// Quantize the continuous quality governor so reduced-resolution texture
+    /// allocations change at bounded intervals rather than every frame.
+    private static let spatialScaleBuckets: Float = 16
     /// Ring of 3: deep enough that the slot being encoded is never the slot
     /// the GPU is executing (drawable backpressure caps frames in flight at
     /// the layer's maximumDrawableCount, default 3). Zeroed by a blit fill at
@@ -407,8 +444,8 @@ final class SessionGPUEncoder {
     /// delivering drawables even when the GPU is frames behind, so without
     /// this the queue grows until makeCommandBuffer blocks at its own limit
     /// (~64) — seconds of present latency and judder on heavy scenes. Depth 3
-    /// matches the stats ring and the layer's drawable pool; the wait is the
-    /// deliberate pacing point (it shows up as `encode` in the profiler).
+    /// matches the stats ring and the layer's drawable pool; a full set drops
+    /// the presentation immediately so pacing never blocks the display link.
     private let inflight = DispatchSemaphore(value: 3)
     /// GPU-fault check for every completed command buffer (observability
     /// phase 1) — a faulting GPU must never again freeze the image silently.
@@ -416,9 +453,62 @@ final class SessionGPUEncoder {
     /// The most recently committed command buffers, parallel to statsRing —
     /// held ONLY so a stall can report what each in-flight frame is doing.
     /// Written on the render thread; `status` reads are thread-safe.
-    private var pending: [MTLCommandBuffer?] = [nil, nil, nil]
-    /// Consecutive `inflight` timeouts (render-thread confined; resets on
-    /// recovery). Rate-limits the stall logging.
+    private var pending: [PendingFrame?] = [nil, nil, nil]
+
+    private func reclaimCompletedPermits() -> Int {
+        var recovered = 0
+        for (index, pendingFrame) in pending.enumerated() {
+            guard let frame = pendingFrame else { continue }
+            let status = frame.commandBuffer.status
+            guard status == .completed || status == .error else { continue }
+            guard frame.permit.claim() else { continue }
+
+            // The winning claimant must publish the measurement too; otherwise
+            // delayed callbacks leave the governor blind while permits recover.
+            if status == .completed {
+                let steps = UInt64(statsRing[index].contents().load(as: UInt32.self))
+                let ms = max(0, frame.commandBuffer.gpuEndTime - frame.commandBuffer.gpuStartTime) * 1000
+                statsSlot.store(gpuMilliseconds: ms, totalSteps: steps)
+            }
+            frame.permit.signal()
+            health.check(frame.commandBuffer)
+            if status == .error,
+               queueFaultState.activeGeneration.load(ordering: .acquiring)
+                    == frame.queueGeneration {
+                queueFaultState.faulted.store(true, ordering: .releasing)
+            }
+            recovered += 1
+        }
+        return recovered
+    }
+
+    /// Replace a command queue after Metal reports a terminal GPU error.
+    /// Returns false only if the device cannot create a recovery queue.
+    private func recoverFaultedQueueIfNeeded() -> Bool {
+        let claimed = queueFaultState.faulted.compareExchange(
+            expected: true, desired: false,
+            successOrdering: .acquiringAndReleasing,
+            failureOrdering: .relaxed).exchanged
+        guard claimed else { return true }
+        guard let replacement = context.device.makeCommandQueue() else {
+            queueFaultState.faulted.store(true, ordering: .releasing)
+            return false
+        }
+
+        queueGeneration &+= 1
+        queueFaultState.activeGeneration.store(
+            queueGeneration, ordering: .releasing)
+        // No old-generation completion can re-arm the latch after this store.
+        queueFaultState.faulted.store(false, ordering: .releasing)
+        replacement.label = "threshold.render.queue.recovery.\(queueGeneration)"
+        queue = replacement
+        ThresholdLog.render.fault(
+            "GPU queue recovered after command-buffer failure")
+        return true
+    }
+
+    /// Consecutive frames dropped for GPU backpressure (render-thread
+    /// confined; resets on recovery). Rate-limits the stall logging.
     private var stalls: UInt64 = 0
     /// Dropped-frame count (render-thread confined). Every silent early exit
     /// in `encode()` routes through `drop(_:)` so a repeatedly-failing encode
@@ -438,17 +528,9 @@ final class SessionGPUEncoder {
     /// Direct-call DE pipeline variants (Specialization.swift). `lookup` is
     /// non-blocking: frames render generic until a variant compiles.
     private let specializations: SpecializationCache
-    /// MetalFX temporal upscaling — the platform mechanism behind the
-    /// governor's renderScale on Mac/iOS (visionOS uses the compositor's
-    /// renderQuality instead). nil on devices without MetalFX temporal
-    /// support: those render at full resolution and the scale is ignored.
-    private let upscaler: TemporalUpscaler?
-    /// Halton(2,3) sequence position for the temporal jitter.
-    private var jitterIndex: UInt32 = 0
-    /// Previous frame's camera — the motion-vector reprojection input.
-    private var prevUniforms: ThreshFrameUniforms?
-    /// Previous frame's zoom-rebase octave (see noteOctave).
-    private var lastOctave: Int32?
+    /// Ordered full-frame effects, applied after spatial upscaling so radii are
+    /// expressed in presentation pixels and never feed temporal history.
+    private let postProcessor: PostProcessor
     /// The pipeline choice made last encode — returned on dropped frames so the
     /// diagnostics readout doesn't flicker to a default (render-thread only).
     private var lastDiagnostics = RenderDiagnostics()
@@ -456,14 +538,6 @@ final class SessionGPUEncoder {
     /// statsRing): frame N+1's prepass must not overwrite the texture frame
     /// N's march is still reading. Rebuilt on size change.
     private var coneRing: [MTLTexture?] = [nil, nil, nil]
-
-    /// Swift mirror of RaymarchCore.metal's ThreshAuxUniforms (private
-    /// live-path contract, buffer 7 / textures 1–2 — not ABI).
-    private struct AuxUniforms {
-        var prevCamPosFov: SIMD4<Float>
-        var prevCamQuat: SIMD4<Float>
-        var jitter: SIMD4<Float>
-    }
 
     init(context: GPUContext) throws {
         guard let queue = context.device.makeCommandQueue() else {
@@ -484,46 +558,20 @@ final class SessionGPUEncoder {
         self.queue = queue
         self.statsRing = ring
         self.specializations = SpecializationCache(context: context)
-        // Layer contract is .bgra8Unorm (configure(layer:)) — the scaler's
-        // formats are fixed to match. nil = MetalFX temporal unsupported.
-        self.upscaler = TemporalUpscaler(
-            device: context.device, colorFormat: .bgra8Unorm)
+        self.postProcessor = try PostProcessor(context: context)
     }
 
     /// Stats of the most recently COMPLETED frame (zeros until one finishes).
     func lastCompleted() -> FrameStatsSlot.Stats {
-        statsSlot.load()
-    }
-
-    /// Record this frame's zoom-rebase octave; returns true when it changed
-    /// (world coordinates rescaled → temporal history must reset).
-    func noteOctave(_ octave: Int32) -> Bool {
-        defer { lastOctave = octave }
-        return lastOctave != nil && lastOctave != octave
-    }
-
-    /// Halton low-discrepancy sequence — the standard temporal-AA jitter
-    /// pattern (bases 2 and 3 for x/y).
-    private static func halton(_ index: UInt32, base: UInt32) -> Float {
-        var result: Float = 0
-        var f: Float = 1
-        var i = index
-        while i > 0 {
-            f /= Float(base)
-            result += f * Float(i % base)
-            i /= base
-        }
-        return result
+        statsSlot.loadForControl()
     }
 
     /// Encode one frame into the drawable's texture and present it. A failed
     /// allocation drops the frame (the drawable returns to the pool) — the
-    /// live loop must never crash or block. `resetHistory` discards the
-    /// temporal upscaler's accumulated frames (octave rebase, camera cut —
-    /// anything that invalidates last frame's world coordinates).
+    /// live loop must never crash or block.
     @discardableResult
     func encode(_ request: RenderRequest, program: ExternalDEProgram? = nil,
-                to drawable: CAMetalDrawable, resetHistory: Bool = false) -> RenderDiagnostics {
+                to drawable: CAMetalDrawable) -> RenderDiagnostics {
         let texture = drawable.texture
         guard texture.width > 0, texture.height > 0 else {
             return drop("zero-size drawable")
@@ -536,28 +584,31 @@ final class SessionGPUEncoder {
             return drop("uniform validation failed: \(String(describing: reason))")
         }
 
-        guard let paramsBuffer = try? context.makeFloatBuffer(
-                  request.params, label: "session param table"),
-              let opsBuffer = try? context.makeOpsBuffer(request.ops)
-        else { return drop("param/ops buffer allocation failed") }
+        // Pace the loop to the GPU without EVER blocking the display-link
+        // callback. A Metal timeout takes roughly four seconds to surface;
+        // even a bounded one-second wait therefore made the app visibly hang
+        // four times before the driver finally returned an error. Keep the UI
+        // and session clock live by dropping this presentation immediately.
+        let recoveredBeforeWait = reclaimCompletedPermits()
+        if recoveredBeforeWait > 0 {
+            ThresholdLog.render.notice(
+                "reclaimed \(recoveredBeforeWait) completed frame permit(s) before acquire")
+        }
+        guard recoverFaultedQueueIfNeeded() else {
+            return drop("GPU queue recovery allocation failed")
+        }
 
-        // Pace the loop to the GPU: block until a frame slot frees. BOUNDED —
-        // an unbounded wait here is how a GPU fault used to freeze the app
-        // with no diagnostics: completion handlers stop firing, the third
-        // wait blocks the render thread forever, and Xcode's hang detector
-        // (main-thread only) never notices. On timeout, report what each
-        // in-flight buffer is doing and drop the frame; the loop stays alive
-        // to recover if the GPU does.
-        if inflight.wait(timeout: .now() + 1) == .timedOut {
+        let acquiredPermit = inflight.wait(timeout: .now()) == .success
+        if !acquiredPermit {
             stalls += 1
-            if stalls <= 5 || stalls % 30 == 0 {
+            if stalls == 1 || stalls % 120 == 0 {
                 let states = pending.compactMap { $0 }
-                    .map { CommandBufferHealth.describe($0.status) }
+                    .map { CommandBufferHealth.describe($0.commandBuffer.status) }
                     .joined(separator: ", ")
                 ThresholdLog.render.fault(
                     """
-                    render pipeline stalled (#\(self.stalls)): no command \
-                    buffer completed in 1s — dropping frame; in-flight: \
+                    GPU backpressure (#\(self.stalls)): dropping without \
+                    blocking; in-flight: \
                     [\(states, privacy: .public)]
                     """)
             }
@@ -565,7 +616,7 @@ final class SessionGPUEncoder {
         }
         if stalls > 0 {
             ThresholdLog.render.notice(
-                "render pipeline recovered after \(self.stalls) dropped frame(s)")
+                "GPU pipeline resumed after \(self.stalls) non-blocking drop(s)")
             stalls = 0
         }
         // Every path after this point either commits (the completed handler
@@ -573,13 +624,19 @@ final class SessionGPUEncoder {
         var committed = false
         defer { if !committed { inflight.signal() } }
 
+        guard let paramsBuffer = try? context.makeFloatBuffer(
+                  request.params, label: "session param table"),
+              let opsBuffer = try? context.makeOpsBuffer(request.ops)
+        else { return drop("param/ops buffer allocation failed") }
+
         guard let commandBuffer = CommandBufferHealth.makeCommandBuffer(on: queue)
         else { return drop("makeCommandBuffer returned nil") }
         commandBuffer.label = "session frame"
 
         let statsBuffer = statsRing[ringCursor]
         let pendingSlot = ringCursor
-        ringCursor = (ringCursor + 1) % statsRing.count
+        // ringCursor advances only after commit (below): a dropped frame must
+        // not skip a slot, or the next frame could reuse an in-flight one.
 
         // Zero the step counter on the ring slot's reuse (blit fill: ordered
         // on the queue, no CPU/GPU race).
@@ -589,53 +646,50 @@ final class SessionGPUEncoder {
         blit.fill(buffer: statsBuffer, range: 0..<MemoryLayout<UInt32>.stride, value: 0)
         blit.endEncoding()
 
-        // Render scale (the governor's ONLY lever): march at reduced
-        // resolution into the MetalFX pass's inputs, temporal-upscale, copy
-        // to the drawable. Any reason it can't engage — external DE (no aux
-        // pipeline variant yet), unsupported device, scale out of MetalFX
-        // range — falls back to a full-resolution direct render; never a
-        // dropped frame.
+        // Render scale (the governor's ONLY lever): march into a conventional
+        // reduced-resolution 2D texture, then bilinear-upscale with a small
+        // Metal compute pass. This is intentionally stateless and stays on the
+        // same GPU command queue: the former MetalFX temporal scaler could
+        // wedge its cross-engine work while the rest of the UI stayed alive.
+        // Allocation failure falls back to a full-resolution direct render.
         let scale = min(max(request.renderScale, 0), 1)
-        var fx: TemporalUpscaler.Pass?
-        var effectiveScale = scale
-        if program == nil, scale < 0.985, let upscaler {
-            // MetalFX temporal scaling caps at `maxScaleFactor`× per dimension
-            // (3×) with a 32px minimum input edge. A request below that floor
-            // (Render Quality under ~33%) used to fail `prepare`'s ratio guard
-            // and fall through to a FULL-RESOLUTION direct render — spiking GPU
-            // cost precisely when the user asked for LESS, which can saturate
-            // the GPU and stall the UI. Clamp the march input UP to the
-            // smallest MetalFX-supported size instead, so low quality stays
-            // cheap and the upscaler keeps engaging rather than disengaging.
-            let floor = TemporalUpscaler.minimumInputSize(
-                forOutputWidth: texture.width, height: texture.height)
-            let inputW = max(Int((Float(texture.width) * scale).rounded()), floor.width)
-            let inputH = max(Int((Float(texture.height) * scale).rounded()), floor.height)
-            fx = upscaler.prepare(
-                inputWidth: inputW,
-                inputHeight: inputH,
-                outputWidth: texture.width,
-                outputHeight: texture.height)
-            // Report the scale actually marched (clamped), not the request, so
-            // the readout reflects reality instead of an unreachable target.
-            if fx != nil { effectiveScale = Float(inputW) / Float(texture.width) }
+        var spatialPass: PostProcessor.SpatialPass?
+        var effectiveScale: Float = 1
+        if scale < 0.985 {
+            let bucketedScale = max(
+                1 / Self.spatialScaleBuckets,
+                (scale * Self.spatialScaleBuckets).rounded()
+                    / Self.spatialScaleBuckets)
+            let inputW = min(
+                texture.width,
+                max(32, Int((Float(texture.width) * bucketedScale).rounded())))
+            let inputH = min(
+                texture.height,
+                max(32, Int((Float(texture.height) * bucketedScale).rounded())))
+            if inputW < texture.width || inputH < texture.height {
+                do {
+                    spatialPass = try postProcessor.prepareSpatialPass(
+                        inputWidth: inputW,
+                        inputHeight: inputH,
+                        matching: texture,
+                        inFlightSlot: pendingSlot)
+                    effectiveScale = Float(inputW) / Float(texture.width)
+                } catch {
+                    ThresholdLog.render.error(
+                        "spatial upscale allocation failed; rendering full resolution: \(String(describing: error), privacy: .public)")
+                }
+            }
         }
-        let auxOutputs = fx != nil
-        let marchTarget = fx?.color ?? texture
+        let spatialUpscaling = spatialPass != nil
+        let marchTarget = spatialPass?.input ?? texture
 
         // Built-in DE with no external program active: render through the
-        // specialized (direct-call, inlined) variant once it has compiled —
-        // the aux (temporal-input) twin when upscaling. Tuning (from the UI /
-        // env) can disable specialization for an A/B, or toggle the iteration
-        // bake. Every choice is recorded in `diagnostics` for the UI readout.
+        // specialized (direct-call, inlined) variant once it has compiled.
+        // Spatial scaling needs color only, so the normal pipeline works for
+        // both built-in and external DE programs.
         var specialized: SpecializedMarch?
-        // Effective scale: the governor's requested `scale` only takes effect
-        // when MetalFX actually engaged (fx != nil). If temporal upscaling is
-        // unsupported on this device, we render full-res regardless — report
-        // that honestly (a 100% readout despite a governor request IS the
-        // signal that the resolution lever is a no-op here).
         var diagnostics = RenderDiagnostics(
-            renderScale: auxOutputs ? effectiveScale : 1, upscaling: auxOutputs)
+            renderScale: effectiveScale, upscaling: spatialUpscaling)
         if program != nil {
             diagnostics.pipeline = .external
         } else {
@@ -646,9 +700,9 @@ final class SessionGPUEncoder {
             if let plan = EncodePreamble.specializationPlan(for: request, deIndex: deIndex) {
                 specialized = specializations.lookup(
                     deFunctionName: plan.deFunctionName,
-                    spec: plan.spec, auxOutputs: auxOutputs)
+                    spec: plan.spec, auxOutputs: false)
                 if specialized != nil {
-                    diagnostics.pipeline = auxOutputs ? .specializedAux : .specialized
+                    diagnostics.pipeline = .specialized
                     diagnostics.bakedConstants = plan.spec.summary
                 } else {
                     // Distinguish a live background compile from a terminal
@@ -656,16 +710,16 @@ final class SessionGPUEncoder {
                     // both cases; the UI must not say "Compiling…" forever.
                     diagnostics.specializationFailed = specializations.failureDescription(
                         deFunctionName: plan.deFunctionName,
-                        spec: plan.spec, auxOutputs: auxOutputs) != nil
+                        spec: plan.spec, auxOutputs: false) != nil
                     diagnostics.specializationPending = !diagnostics.specializationFailed
-                    diagnostics.pipeline = auxOutputs ? .genericAux : .generic
+                    diagnostics.pipeline = .generic
                 }
             } else {
-                diagnostics.pipeline = auxOutputs ? .genericAux : .generic
+                diagnostics.pipeline = .generic
             }
         }
         // Pipeline transitions are rare and load-bearing (specialized variant
-        // landed, external DE engaged, MetalFX toggled) — one breadcrumb each.
+        // landed or external DE engaged) — one breadcrumb each.
         if diagnostics.pipeline != lastDiagnostics.pipeline {
             let baked = diagnostics.bakedConstants.isEmpty
                 ? "" : " [\(diagnostics.bakedConstants)]"
@@ -679,7 +733,7 @@ final class SessionGPUEncoder {
 
         // Hierarchical cone prepass (perf block 9, ported from the offscreen
         // path): one thread per 8×8 tile of the MARCH TARGET (the reduced-
-        // resolution texture when MetalFX is engaged) finds the tile's safe
+        // resolution texture when spatial scaling is engaged) finds the tile's safe
         // start depth. Ring slot matches the stats ring so in-flight frames
         // never share a texture.
         var coneTexture: MTLTexture? = nil
@@ -687,7 +741,7 @@ final class SessionGPUEncoder {
             let tile = 8   // MUST match THRESH_CONE_TILE in RaymarchCore.metal
             let cw = (marchTarget.width + tile - 1) / tile
             let ch = (marchTarget.height + tile - 1) / tile
-            let slot = (ringCursor + statsRing.count - 1) % statsRing.count
+            let slot = pendingSlot
             var coneTex = coneRing[slot]
             if coneTex == nil || coneTex!.width != cw || coneTex!.height != ch {
                 let desc = MTLTextureDescriptor.texture2DDescriptor(
@@ -730,20 +784,19 @@ final class SessionGPUEncoder {
         // failure), render generic this frame instead of tripping validation.
         if program == nil, specialized?.conePrepass != nil, coneTexture == nil {
             specialized = nil
-            diagnostics.pipeline = auxOutputs ? .genericAux : .generic
+            diagnostics.pipeline = .generic
             lastDiagnostics = diagnostics
         }
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return drop("march encoder allocation failed") }
         encoder.label = "session march"
-        // SYNC-POINT: render binding contract — same buffer indices / palette
-        // layout / pipeline precedence as OffscreenRenderer and ViewPassEncoder,
-        // plus the aux (temporal-upscale input) pipeline twin unique to this
-        // shell. Indices and precedence must match across all three.
+        // SYNC-POINT: render binding contract — same buffer indices, palette
+        // layout, and pipeline precedence as OffscreenRenderer and
+        // ViewPassEncoder. Indices and precedence must match across all three.
         encoder.setComputePipelineState(
             program?.marchPipeline ?? specialized?.pipeline
-                ?? (auxOutputs ? context.marchAuxPipeline : context.marchPipeline))
+                ?? context.marchPipeline)
         withUnsafeBytes(of: uniforms) { raw in
             encoder.setBytes(
                 raw.baseAddress!, length: raw.count, index: Int(THRESH_BUFFER_UNIFORMS))
@@ -752,7 +805,7 @@ final class SessionGPUEncoder {
         encoder.setBuffer(opsBuffer, offset: 0, index: Int(THRESH_BUFFER_WARP_OPS))
         encoder.setBuffer(statsBuffer, offset: 0, index: Int(THRESH_BUFFER_STATS))
         if let table = program?.marchDETable ?? specialized?.deTable
-            ?? (auxOutputs ? context.marchAuxDETable : context.marchDETable) {
+            ?? context.marchDETable {
             encoder.setVisibleFunctionTable(
                 table, bufferIndex: GPUContext.deTableBufferIndex)
         }
@@ -766,27 +819,6 @@ final class SessionGPUEncoder {
             encoder.setTexture(coneTexture, index: 3)
         }
 
-        // Temporal-input bindings (aux pipeline only): previous camera for
-        // motion vectors, this frame's Halton(2,3) sub-pixel jitter, and the
-        // depth/motion targets. Private contract with RaymarchCore's
-        // THRESH_AUX variant (buffer 7, textures 1–2).
-        var jitter = SIMD2<Float>(0, 0)
-        if let fx {
-            jitterIndex &+= 1
-            jitter = SIMD2(Self.halton(jitterIndex, base: 2) - 0.5,
-                           Self.halton(jitterIndex, base: 3) - 0.5)
-            let prev = prevUniforms ?? uniforms  // first frame: zero motion
-            var aux = AuxUniforms(
-                prevCamPosFov: prev.camPosFov,
-                prevCamQuat: prev.camQuat,
-                jitter: SIMD4(jitter.x, jitter.y, 0, 0))
-            withUnsafeBytes(of: &aux) { raw in
-                encoder.setBytes(raw.baseAddress!, length: raw.count, index: 7)
-            }
-            encoder.setTexture(fx.depth, index: 1)
-            encoder.setTexture(fx.motion, index: 2)
-        }
-
         let threadsPerGroup = MTLSize(width: 8, height: 8, depth: 1)
         let groups = MTLSize(
             width: (marchTarget.width + 7) / 8,
@@ -795,20 +827,27 @@ final class SessionGPUEncoder {
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerGroup)
         encoder.endEncoding()
 
-        if let fx {
-            upscaler?.encode(
-                commandBuffer: commandBuffer,
-                jitterPixels: jitter,
-                forceReset: resetHistory)
-            // Same size and format — a plain copy into the drawable.
-            guard let copy = commandBuffer.makeBlitCommandEncoder()
-            else { return drop("MetalFX copy encoder allocation failed") }
-            copy.label = "session fx copy"
-            copy.copy(from: fx.output, to: texture)
-            copy.endEncoding()
+        var postSource = texture
+        if let spatialPass {
+            do {
+                try postProcessor.encodeSpatial(
+                    commandBuffer: commandBuffer, pass: spatialPass)
+                postSource = spatialPass.output
+            } catch {
+                return drop("spatial upscale encode failed: \(String(describing: error))")
+            }
         }
-        prevUniforms = request.uniforms
-
+        do {
+            try postProcessor.encode(
+                commandBuffer: commandBuffer,
+                source: postSource,
+                destination: texture,
+                stack: request.postProcessStack,
+                time: uniforms.scaleCtx.x,
+                inFlightSlot: pendingSlot)
+        } catch {
+            return drop("post-processing encode failed: \(String(describing: error))")
+        }
         commandBuffer.present(drawable)
 
         // AUDIT — nonisolated(unsafe): the completion handler reads the stats
@@ -818,19 +857,44 @@ final class SessionGPUEncoder {
         // carries the value out.
         nonisolated(unsafe) let completedStats = statsBuffer
         let slot = statsSlot
-        let inflight = inflight
         let health = health
+        let permit = CompletionPermit(semaphore: inflight)
+        let committedGeneration = queueGeneration
+        let faultState = queueFaultState
         commandBuffer.addCompletedHandler { completed in
-            health.check(completed)
+            // Publish queue poison even when the render thread already
+            // reclaimed this permit from a terminal status. The generation
+            // check prevents late callbacks from an abandoned queue from
+            // poisoning its replacement.
+            if completed.status == .error,
+               faultState.activeGeneration.load(ordering: .acquiring)
+                    == committedGeneration {
+                faultState.faulted.store(true, ordering: .releasing)
+            }
+            guard permit.claim() else { return }
+            // Copy everything backed by this ring slot BEFORE releasing it:
+            // the render thread may immediately acquire the permit and reuse
+            // the buffer. Release as soon as those copies are safe, though —
+            // health/error inspection and the mutex-backed stats publication
+            // are observability work and must never hold frame pacing hostage.
+            // A delayed completion callback previously produced one-second
+            // encode stalls even while Metal already reported this buffer as
+            // `.completed`.
             let steps = UInt64(completedStats.contents().load(as: UInt32.self))
             // Command-buffer GPU timestamps, not ambient time (Invariant 9).
             let ms = max(0, completed.gpuEndTime - completed.gpuStartTime) * 1000.0
-            slot.store(gpuMilliseconds: ms, totalSteps: steps)
-            inflight.signal()
+            permit.signal()
+            if completed.status == .completed {
+                slot.store(gpuMilliseconds: ms, totalSteps: steps)
+            }
+            health.check(completed)
         }
         commandBuffer.commit()
         committed = true
-        pending[pendingSlot] = commandBuffer
+        ringCursor = (ringCursor + 1) % statsRing.count
+        pending[pendingSlot] = PendingFrame(
+            commandBuffer: commandBuffer, permit: permit,
+            queueGeneration: committedGeneration)
         return lastDiagnostics
     }
 }

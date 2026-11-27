@@ -18,6 +18,10 @@ public struct RenderRequest: Sendable {
     /// Gradient palette stops (linear rgb + position), packed to the ABI's
     /// ThreshPalette at encode time. Empty → the built-in default palette.
     public var palette: [GradientStop]
+    /// Ordered post-processing filters. The renderer applies enabled entries
+    /// sequentially in array order; duplicates are intentional and retain
+    /// their stable scene-authored identities.
+    public var postProcessStack: [PostProcessFilterDTO]
     public var width: Int
     public var height: Int
     /// Resolution scale in (0, 1]: the live encoder marches into an
@@ -38,6 +42,7 @@ public struct RenderRequest: Sendable {
 
     public init(uniforms: ThreshFrameUniforms, params: [Float],
                 ops: [ThreshWarpOp], palette: [GradientStop] = [],
+                postProcessStack: [PostProcessFilterDTO] = [],
                 width: Int, height: Int, renderScale: Float = 1,
                 tuning: RenderTuning = RenderTuning(),
                 worldVolatility: Float = 0) {
@@ -45,6 +50,7 @@ public struct RenderRequest: Sendable {
         self.params = params
         self.ops = ops
         self.palette = palette
+        self.postProcessStack = postProcessStack
         self.width = width
         self.height = height
         self.renderScale = renderScale

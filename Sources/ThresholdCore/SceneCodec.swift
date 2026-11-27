@@ -145,6 +145,7 @@ public enum SceneCodec {
         engine: ModulationEngine,
         fractalTypeKey: String,
         warpStack: [WarpOpDTO] = [],
+        postProcessStack: [PostProcessFilterDTO] = [],
         camera: CameraDTO = .default,
         name: String? = nil,
         tags: [String] = [],
@@ -185,10 +186,24 @@ public enum SceneCodec {
             embeddedDE: embeddedDE,
             params: params,
             integratorPhases: phases,
-            warpStack: warpStack,
+            // Same persistence-boundary rule for the stacks (non-finite → 0).
+            warpStack: warpStack.map { op in
+                var op = op
+                op.strength = finiteOrZero(op.strength)
+                op.a = op.a.map(finiteOrZero); op.b = op.b.map(finiteOrZero)
+                return op
+            },
+            postProcessStack: postProcessStack.map { filter in
+                var filter = filter
+                filter.strength = finiteOrZero(filter.strength)
+                filter.a = filter.a.map(finiteOrZero); filter.b = filter.b.map(finiteOrZero)
+                return filter
+            },
             camera: camera
         )
     }
+
+    private static func finiteOrZero(_ v: Float) -> Float { v.isFinite ? v : 0 }
 
     // MARK: Apply (lane-scoped, authoritative)
 

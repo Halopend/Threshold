@@ -62,8 +62,8 @@ public enum ShadertoyExporter {
             value("de.\(scene.fractalTypeKey).\(name)", fallback)
         }
 
-        let iterations = Int(value("engine.iterations", Float(de.defaultIterations)))
-        let maxSteps = Int(value("engine.maxSteps", 256))
+        let iterations = clampedInt(value("engine.iterations", Float(de.defaultIterations)), 1...256)
+        let maxSteps = clampedInt(value("engine.maxSteps", 256), 1...4096)
         let maxDist = value("engine.maxDist", 64)
         let stepSafety = value("engine.stepSafety", de.stepRelaxation)
         let aoStrength = value("engine.aoStrength", 0.5)
@@ -133,6 +133,11 @@ public enum ShadertoyExporter {
         if animated {
             lines.append("// Integrator phase(s) re-animated from iTime.")
         }
+        let activePost = scene.postProcessStack.filter { $0.enabled }.count
+        if activePost > 0 {
+            lines.append(
+                "// NOTE: \(activePost) full-frame post-processing filter(s) are not translated to Shadertoy.")
+        }
         lines.append("")
         return lines.joined(separator: "\n") + "\n"
     }
@@ -156,7 +161,7 @@ public enum ShadertoyExporter {
         const float GRAD_REPEAT = \(f(value("color.gradient.repeat", 1)));
         const float GRAD_OFFSET = \(f(value("color.gradient.offset", 0)));
         const float GRAD_SMOOTH = \(f(value("color.gradient.smoothing", 0)));
-        const int   MAP_MODE    = \(Int(value("color.mapMode", 0)));
+        const int   MAP_MODE    = \(clampedInt(value("color.mapMode", 0), 0...3));
         const float SATURATION  = \(f(value("color.saturation", 1)));
         const float CONTRAST    = \(f(value("color.contrast", 1)));
         const float VIBRANCE    = \(f(value("color.vibrance", 0)));
@@ -244,6 +249,7 @@ public enum ShadertoyExporter {
         case "mandelbulbJulia": body = deMandelbulb(julia: true)
         case "kleinian": body = deKleinian
         case "mengerSponge": body = deMenger
+        case "theliPseudoKleinian": body = deTheliPseudoKleinian
         case "quaternionJulia": body = deQuaternionJulia
         // A registered DE with no GLSL body must fail loudly, not silently
         // export a unit sphere. Guards against adding a DERegistry.builtin
@@ -391,6 +397,58 @@ public enum ShadertoyExporter {
                 trap2 = min(trap2, dot(z, z));
             }
             return vec2((length(z) - 1.0) / dr, sqrt(trap2));
+        """
+
+    private static let deTheliPseudoKleinian = """
+            // Theli-at's Scale-1 Julia-box Pseudo Kleinian hybrid (Knighty):
+            // box fold at ±CSize + one-sided sphere fold carrying the fold
+            // derivative, finished by a Menger-like base shape on the tail.
+            float size = max(P_size, 0.0);
+            vec3 cSize = max(vec3(P_cSizeX, P_cSizeY, P_cSizeZ), vec3(1e-4));
+            vec3 c = vec3(P_cX, P_cY, P_cZ);
+            float deOffset = P_deOffset;
+            vec3 offsetV = vec3(P_offsetX, P_offsetY, P_offsetZ);
+            int mnIterations = int(clamp(P_mnIterations, 0.0, 20.0));
+            float mnScale = P_mnScale;
+            vec3 mnOffset = vec3(P_mnOffsetX, P_mnOffsetY, P_mnOffsetZ);
+
+            vec3 z = p;
+            float deFactor = 1.0;
+            float trap2 = dot(z, z);
+            float rInf = max(max(abs(z.x), abs(z.y)), abs(z.z));
+            for (int i = 0; i < iterations && rInf < 60.0; ++i) {
+                z = clamp(z, -cSize, cSize) * 2.0 - z;      // scale-1 box fold
+                float k = max(size / max(dot(z, z), 1e-6), 1.0);
+                z = z * k + c;                              // sphere fold + C
+                deFactor *= k;
+                rInf = max(max(abs(z.x), abs(z.y)), abs(z.z));
+                trap2 = min(trap2, dot(z, z));
+            }
+
+            // Menger-like base shape of the orbit tail (z − Offset).
+            vec3 m = z - offsetV;
+            float kOneThird = 1.0 / 3.0;
+            float invScalePow = 1.0;
+            float invAbsMnScale = 1.0 / max(abs(mnScale), 1e-4);
+            float zFold = kOneThird * mnOffset.z;
+            vec3 mnBias = -mnScale * mnOffset + mnOffset;
+            m = abs(m);
+            float sum = m.x + m.y + m.z;
+            float zMax = max(max(m.x, m.y), m.z);
+            float zMin = min(min(m.x, m.y), m.z);
+            m = vec3(zMax, sum - (zMax + zMin), kOneThird + abs(zMin - kOneThird));
+            for (int n = 0; n < mnIterations && dot(m, m) < 100.0; ++n) {
+                m = m * mnScale + mnBias;
+                m = abs(m);
+                sum = m.x + m.y + m.z;
+                zMax = max(max(m.x, m.y), m.z);
+                zMin = min(min(m.x, m.y), m.z);
+                m = vec3(zMax, sum - (zMax + zMin), zFold + abs(zMin - zFold));
+                invScalePow *= invAbsMnScale;
+            }
+            float base = (m.x - mnOffset.x) * invScalePow;
+            return vec2(abs(base * (0.5 / max(deFactor, 1e-6)) - deOffset),
+                        sqrt(trap2));
         """
 
     private static let deQuaternionJulia = """
@@ -763,4 +821,11 @@ public enum ShadertoyExporter {
         }
         return s
     }
+}
+
+/// Float → Int without trapping on huge/non-finite scene values.
+private func clampedInt(_ v: Float, _ range: ClosedRange<Int>) -> Int {
+    guard v.isFinite else { return range.lowerBound }
+    let c = min(max(v.rounded(.towardZero), Float(range.lowerBound)), Float(range.upperBound))
+    return Int(c)
 }

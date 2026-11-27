@@ -1,0 +1,27 @@
+{
+  "name" : "Nested Spheres",
+  "version" : 1,
+  "warpStack" : [
+    {
+      "a" : [ 1, 0, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 12,
+      "strength" : 1
+    },
+    {
+      "a" : [ 1, 0, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 14,
+      "strength" : 1
+    },
+    {
+      "a" : [ 0, 0, 0, 0 ],
+      "b" : [ 0, 0, 0, 0 ],
+      "flags" : 0,
+      "kind" : 4,
+      "strength" : 1
+    }
+  ]
+}

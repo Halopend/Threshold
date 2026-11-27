@@ -261,6 +261,48 @@ extension DEDescriptor {
         stepRelaxation: 0.9
     )
 
+    /// Theli-at's Scale-1 Julia-box Style Pseudo Kleinian Hybrid (Knighty's
+    /// standalone formulation): per iteration a scale-1 box fold at ±CSize,
+    /// then a one-sided sphere fold `k = max(size/r², 1)` that multiplies the
+    /// accumulated fold derivative, and finally a Menger-like base shape
+    /// (abs + sort folds at MnScale, squashed z-axis) evaluated on the orbit
+    /// tail `z − Offset`: distance = |base·(0.5/deFactor) − DEoffset|.
+    /// Param layout, defaults, and ranges match the original app's
+    /// formulaParamValues[0...15] (Formulas/catalog.json "theliPseudoKleinian")
+    /// so the legacy migration maps them positionally, 1:1. The legacy
+    /// per-formula rotation is not a DE input here — same choice as
+    /// kleinian/mengerSponge (orientation belongs to the warp stack).
+    public static let theliPseudoKleinian = DEDescriptor(
+        index: 8,
+        key: "theliPseudoKleinian",
+        displayName: "Theli Pseudo Kleinian",
+        mslFunctionName: "de_theli_pseudo_kleinian",
+        equation: "Menger(zₙ − Offset) over zₙ₊₁ = sphereFold(boxFold(zₙ, ±CSize))·size/r² + C",
+        paramLayout: [
+            Param(name: "size", default: 1.0, range: 0.0...2.0),
+            Param(name: "cSizeX", default: 1.0, range: 0.0...2.0),
+            Param(name: "cSizeY", default: 1.0, range: 0.0...2.0),
+            Param(name: "cSizeZ", default: 1.0, range: 0.0...2.0),
+            Param(name: "cX", default: 0.0, range: -2.0...2.0),
+            Param(name: "cY", default: 0.0, range: -2.0...2.0),
+            Param(name: "cZ", default: 0.0, range: -2.0...2.0),
+            Param(name: "deOffset", default: 0.0, range: 0.0...0.1),
+            Param(name: "offsetX", default: 0.0, range: -2.0...2.0),
+            Param(name: "offsetY", default: 0.0, range: -2.0...2.0),
+            Param(name: "offsetZ", default: 0.0, range: -2.0...2.0),
+            Param(name: "mnIterations", default: 2.0, range: 0.0...20.0),
+            Param(name: "mnScale", default: 3.0, range: 0.0...4.0),
+            Param(name: "mnOffsetX", default: 1.0, range: 0.0...2.0),
+            Param(name: "mnOffsetY", default: 1.0, range: 0.0...2.0),
+            Param(name: "mnOffsetZ", default: 1.0, range: 0.0...2.0),
+        ],
+        defaultIterations: 12,
+        // The legacy per-type ω cap's default branch (Shaders.metal
+        // relaxedOmegaCap: "Kleinian family, custom formulas, future types"
+        // → 1.2) — the hybrid can locally overestimate like the log-DEs.
+        stepRelaxation: 1.2
+    )
+
     /// Julia-mode Mandelbulb: the mandelbulb iteration with a fixed additive
     /// constant instead of p. The original's Bailout/DerivBias/PolarRotation
     /// knobs were escape-hatch tuning, not shape — dropped; bailout is the
@@ -289,7 +331,7 @@ public enum DERegistry {
     public static let builtin: [DEDescriptor] = [
         .mandelbox, .mandelbulb, .kleinian, .mengerSponge,
         .quaternionJulia, .mandelbulbJulia, .mandelboxSphereProjection,
-        .legacyMandelbox,
+        .legacyMandelbox, .theliPseudoKleinian,
     ]
 
     public static func descriptor(forKey key: String) -> DEDescriptor? {
@@ -320,7 +362,11 @@ extension DEDescriptor {
     public func registerParams(
         into catalog: Catalog,
         group: GroupID = .shape,
-        capabilities: Capabilities = [.musicBindable, .animatable]
+        // DE params are the legacy gesture vocabulary (per-finger bindings
+        // drove fractal parameters), so they declare gesture-bindable
+        // alongside music/animation — the gesture availability contract is
+        // derived from this declaration (BindableParams.gestureTargets).
+        capabilities: Capabilities = [.musicBindable, .gestureBindable, .animatable]
     ) throws -> [Int] {
         var slots: [Int] = []
         slots.reserveCapacity(paramLayout.count)

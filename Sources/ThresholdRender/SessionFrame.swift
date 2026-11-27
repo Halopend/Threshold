@@ -18,6 +18,8 @@ struct SessionFrame {
     /// The AUTHORED warp stack (pre-simplification) — `request.ops` carries
     /// the simplified buffer the GPU sees.
     let warpStack: [WarpOpDTO]
+    /// The AUTHORED post-processing stack in execution order.
+    let postProcessStack: [PostProcessFilterDTO]
     let paused: Bool
     /// The active gradient palette — what the gradient editor displays.
     let palette: Palette
@@ -53,6 +55,7 @@ struct SessionFrame {
             totalSteps: totalSteps,
             deKey: deKey,
             warpStack: warpStack,
+            postProcessStack: postProcessStack,
             paused: paused,
             palette: palette,
             animation: animation,

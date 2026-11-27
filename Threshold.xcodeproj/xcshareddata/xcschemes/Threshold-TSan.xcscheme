@@ -10,13 +10,14 @@
          <BuildActionEntry
             buildForTesting = "YES"
             buildForRunning = "YES"
-            buildForProfiling = "NO"
+            buildForProfiling = "YES"
             buildForArchiving = "NO"
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "000000000000000100000000"
                BuildableName = "Threshold.app"
+               BlueprintName = "Threshold"
                ReferencedContainer = "container:Threshold.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -49,6 +50,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
             BuildableName = "Threshold.app"
+            BlueprintName = "Threshold"
             ReferencedContainer = "container:Threshold.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -65,6 +67,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "000000000000000100000000"
             BuildableName = "Threshold.app"
+            BlueprintName = "Threshold"
             ReferencedContainer = "container:Threshold.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

@@ -3,7 +3,7 @@
 // RESOLUTION scale only (renderScale = √factor, so factor ≈ the pixel-cost
 // fraction). Resolution is the one lever that never changes the fractal
 // itself — each platform applies it through its native mechanism
-// (visionOS: compositor renderQuality; Mac/iOS: MetalFX temporal upscale).
+// (visionOS: compositor renderQuality; Mac/iOS: spatial compute upscale).
 //
 // Deliberately NOT a lever anymore: iterations/maxSteps system-lane writes.
 // Measured 2026-07-03: reducing iterations visibly changes the DE (the
@@ -22,14 +22,27 @@ public struct QualityGovernorConfig: Sendable, Equatable {
     public var targetMilliseconds: Double
     /// The lowest resolution scale the governor may reach (per axis). Past
     /// it, the honest outcome is a lower frame rate, not a soup of pixels.
-    /// Platform shells pick this by upscaler quality: MetalFX temporal
-    /// reconstructs well down to ~0.35; the visionOS compositor upscaler is
-    /// tuned around milder scales (0.5).
+    /// Platform shells pick this by upscaler quality. The default 0.5 keeps
+    /// spatial reconstruction legible; reconstruction-aware visionOS modes
+    /// may opt into a lower floor.
     public var minRenderScale: Float
+    /// Second-stage step-budget rescue: when the resolution lever is pinned
+    /// at `minRenderScale` AND the GPU still runs past `targetMilliseconds`,
+    /// shed the march step cap multiplicatively down a bounded ladder (the
+    /// scene keeps its look while the frame stays inside budget). Deliberately
+    /// OFF by default — it changes the march (shorter misses), so a platform
+    /// opts in where the alternative is sustained reprojected slideshow at a
+    /// fraction of the frame rate today's Vision Pro shells. Recovery mirrors
+    /// the AIMD shape: relax one level per under-budget frame.
+    public var stepBudgetRescue: Bool
 
-    public init(targetMilliseconds: Double = 8.0, minRenderScale: Float = 0.5) {
+    public init(
+        targetMilliseconds: Double = 8.0, minRenderScale: Float = 0.5,
+        stepBudgetRescue: Bool = false
+    ) {
         self.targetMilliseconds = targetMilliseconds
         self.minRenderScale = minRenderScale
+        self.stepBudgetRescue = stepBudgetRescue
     }
 
     /// The shipping default for the current platform (single definition —
@@ -38,7 +51,8 @@ public struct QualityGovernorConfig: Sendable, Equatable {
     /// compositor present/reproject headroom. Mac: 120 Hz-friendly 8 ms.
     public static var platformDefault: QualityGovernorConfig {
         #if os(visionOS)
-        QualityGovernorConfig(targetMilliseconds: 10.0, minRenderScale: 0.5)
+        QualityGovernorConfig(
+            targetMilliseconds: 10.0, minRenderScale: 0.5, stepBudgetRescue: true)
         #else
         QualityGovernorConfig(targetMilliseconds: 8.0, minRenderScale: 0.35)
         #endif

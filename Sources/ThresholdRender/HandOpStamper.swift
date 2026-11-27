@@ -51,9 +51,15 @@ public enum HandOpStamper {
         left: Hand,
         base: ThreshFrameUniforms,
         anchorPosition: SIMD3<Float>,
-        roomScale: Float = 1
+        roomScale: Float = 1,
+        grab: WorldGrabTransform = .identity
     ) -> [ThreshWarpOp] {
-        ops.map { op in
+        // Same observer fold as the eyes (CompositorViewMath.viewUniforms),
+        // so a grabbed world keeps hand effects under the hands.
+        let (anchorPosition, roomScale) = grab.isIdentity
+            ? (anchorPosition, roomScale)
+            : grab.observerMap(anchorPosition: anchorPosition, roomScale: roomScale)
+        return ops.map { op in
             let flags = WarpFlags(rawValue: op.flags)
             let drivenRight = flags.contains(.driveRightHand)
             let drivenLeft = flags.contains(.driveLeftHand)
@@ -62,7 +68,8 @@ public enum HandOpStamper {
 
             func fractal(_ room: SIMD3<Float>) -> SIMD3<Float> {
                 CompositorViewMath.fractalPoint(
-                    room: room, base: base, anchorPosition: anchorPosition,
+                    room: grab.isIdentity ? room : grab.observerPoint(room),
+                    base: base, anchorPosition: anchorPosition,
                     roomScale: roomScale)
             }
 

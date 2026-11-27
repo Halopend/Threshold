@@ -85,12 +85,16 @@ public final class GPUContext: @unchecked Sendable {
     /// — see resolveLibrary(). A Mutex-guarded cache keeps the Sendable audit
     /// honest: the `let` box never changes, the guarded value is written once.
     private let resolveLibraryCache = Mutex<MTLLibrary?>(nil)
+    /// Lazily-compiled ordered post-processing library. Kept separate from
+    /// the march program so custom-DE compilation never recompiles image
+    /// effects and every render shell shares one compiled library.
+    private let postProcessLibraryCache = Mutex<MTLLibrary?>(nil)
 
     let marchPipeline: MTLComputePipelineState
     /// `march_offscreen` with THRESH_AUX baked true: writes depth + motion
-    /// aux textures and jitters ray-gen — the input pass for MetalFX
-    /// temporal upscaling (live Mac/iOS path only; the offscreen/golden
-    /// path never touches it).
+    /// aux textures and jitters ray-gen. Retained for isolated temporal
+    /// reconstruction experiments; the shipping interactive path uses the
+    /// ordinary color-only pipeline plus spatial upscale.
     let marchAuxPipeline: MTLComputePipelineState
     let evalOpsPipeline: MTLComputePipelineState
     let evalDistPipeline: MTLComputePipelineState
@@ -402,6 +406,35 @@ extension GPUContext {
             } catch {
                 throw RenderError.shaderCompileFailed(
                     "TemporalResolve: \(String(describing: error))")
+            }
+            cached = library
+            return library
+        }
+    }
+}
+
+// MARK: - Post-processing library (module-internal)
+
+extension GPUContext {
+    /// The full-frame post-processing library (MSL/PostProcess.metal),
+    /// compiled on first use and shared by every encoder built from this
+    /// context. It intentionally has no dependency on the march ABI.
+    func postProcessLibrary() throws -> MTLLibrary {
+        try postProcessLibraryCache.withLock { cached in
+            if let cached { return cached }
+            guard let url = Bundle.module.url(
+                forResource: "PostProcess", withExtension: "metal",
+                subdirectory: "MSL")
+            else { throw RenderError.missingResource("MSL/PostProcess.metal") }
+            let source = try String(contentsOf: url, encoding: .utf8)
+            let options = MTLCompileOptions()
+            options.mathMode = Self.mathModeOverride ?? .safe
+            let library: MTLLibrary
+            do {
+                library = try device.makeLibrary(source: source, options: options)
+            } catch {
+                throw RenderError.shaderCompileFailed(
+                    "PostProcess: \(String(describing: error))")
             }
             cached = library
             return library

@@ -88,6 +88,16 @@ public struct WorldGrabTransform: Sendable, Equatable {
         return m
     }
 
+    /// The grab folded into the room→fractal map's arguments (header
+    /// algebra): room points go through `observerPoint` / eye poses through
+    /// `observerMatrix`, and the scale part lands here —
+    /// `anchor′ = s·anchor`, `roomScale′ = roomScale / s`.
+    public func observerMap(
+        anchorPosition: SIMD3<Float>, roomScale: Float
+    ) -> (anchorPosition: SIMD3<Float>, roomScale: Float) {
+        (scale * anchorPosition, roomScale / scale)
+    }
+
     // MARK: Composition (all pivots in room space)
 
     public func translated(by delta: SIMD3<Float>) -> WorldGrabTransform {
@@ -161,6 +171,7 @@ public final class WorldGrabSession: Sendable {
     }
 
     private struct State {
+        var suppressed = false
         /// Committed transform (BorgVR's `lastModelTransform`).
         var committed = WorldGrabTransform.identity
         /// Live transform (committed ∘ in-flight gesture).
@@ -196,7 +207,21 @@ public final class WorldGrabSession: Sendable {
     }
 
     public func reset() {
-        state.withLock { $0 = State() }
+        state.withLock { s in
+            let suppressed = s.suppressed
+            s = State()
+            s.suppressed = suppressed
+        }
+    }
+
+    /// Pause input while retaining the current view. Resume starts a new grab.
+    public func setSuppressed(_ suppressed: Bool) {
+        state.withLock { s in
+            guard s.suppressed != suppressed else { return }
+            commit(&s)
+            s.suppressed = suppressed
+            s.doubleLatch = false
+        }
     }
 
     /// Feed one delivery of pinch events (BorgVR handleSpatialEvents shape:
@@ -208,7 +233,9 @@ public final class WorldGrabSession: Sendable {
             state.withLock { s in
                 if !(s.live.isIdentity && s.committed.isIdentity)
                     || s.singleStart != nil || s.doubleStart != nil {
+                    let suppressed = s.suppressed
                     s = State()
+                    s.suppressed = suppressed
                 }
             }
             return
@@ -218,6 +245,7 @@ public final class WorldGrabSession: Sendable {
         // shape as a release, which commits: the safe decay.
         let active = events.filter { $0.phase == .active && $0.isFinite }
         state.withLock { s in
+            guard !s.suppressed else { return }
             switch active.count {
             case 2:
                 handleScale(active[0], active[1], &s)

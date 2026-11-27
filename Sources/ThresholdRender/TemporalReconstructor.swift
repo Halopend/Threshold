@@ -180,9 +180,9 @@ final class TemporalReconstructor {
 
     // MARK: Jitter
 
-    /// Halton radical inverse — the SAME low-discrepancy sequence the Mac
-    /// MetalFX path jitters with (InteractiveSession); one copy per language
-    /// side, pinned against each other by TemporalResolveTests.
+    /// Halton radical inverse — the same low-discrepancy sequence used by the
+    /// legacy Mac MetalFX experiment; one copy per language side, pinned
+    /// against each other by TemporalResolveTests.
     static func halton(_ index: Int, base: Int) -> Float {
         var result: Float = 0
         var f: Float = 1

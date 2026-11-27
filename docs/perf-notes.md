@@ -621,3 +621,66 @@ original 3x audit is either PORTED (1,2,3,5,7,9,10 + fast-math), REFUTED
 (8), or REMAINS by design (4: redundant with the cone prepass's empty-space
 skip; 6/11: sub-ms hit-shading tail, revisit only if a scene shows a
 shading-bound profile; 12–14: launch-latency, not steady-state ms).
+## visionOS external-DE rendering + step-budget rescue + legacy maxSteps fidelity — 2026-09-30
+
+Three fixes aimed at the two device-reported problems: external-DE scenes
+rendered NOTHING on Vision Pro, and heavy scenes sat pinned at the resolution
+floor past budget (reprojected slideshow = the "latency" complaint).
+
+**1. External DEs on both compositor backends (de.external now all shells).**
+`ExternalDEProgram` gains platform-variant pipelines: a fragment-linked raster
+PSO + fragment-stage table for `ViewPassEncoder` (the shipping visionOS
+backend), and `march_view_compute` plain/aux/aux+seed compute variants for
+`ViewComputeEncoder`. Both build OFF-THREAD on first use (utility queue,
+Mutex-guarded cells, negative-cache on failure) and drop frames until they
+land — the Standing async-specialization contract; the loader's compute pair
+unchanged. No cone prepass / specialization for external content (same
+trade-off as the interactive compute path). `CompositorSession` threads the
+frame's `SessionFrame.externalProgram` into both encoders; diagnostics gained
+an `.external` composition. Static dispatch (Simulator) stays drop-frame.
+
+**2. Step-budget rescue (opt-in governor stage, visionOS-only).**
+`QualityGovernorConfig.stepBudgetRescue` (default OFF) — armed by
+`CompositorSession.governorDefault` only. SessionCore: while the governor's
+resolution lever is PINNED at its floor and the GPU still runs >5% past
+budget, shed `engine.maxSteps` multiplicatively down a 6-level ladder
+(1 → 0.85 → 0.7 → 0.55 → 0.4 → 0.25) via ONE system-lane write per level
+change; under-budget frames relax one level per frame. Rationale: resolution
+pinned at its floor cannot recover a scene whose per-pixel cost alone is
+10×+ the budget; the measured objection to step/iteration writes (they
+reshape the DE) remains honored for the NORMAL range — the shed engages only
+where the alternative is a sustained slideshow-off-budget.
+
+**3. Legacy `maxRaySteps` fidelity + `.thresh` alias.**
+`engine.maxSteps` was `deviceLocal` while `SceneCodec.apply` skips
+non-scene params — so the legacy migration's maxRaySteps copy was SILENTLY
+DROPPED and every migrated scene marched at the default 256/px (measured:
+Inverted_Kleinian authored 96 ran exactly 256, 18.8 ms @ 320² — 2.5× the
+cost). maxSteps → `.scene` persistence (maxDist already was; matches the
+legacy app's content model); `ThresholdFile` now accepts the legacy `.thresh`
+scene extension.
+
+Device numbers remain the open item (PERF_LOG rule); the step-shed ladder's
+levels are a starting point for an on-headset sweep.
+### Step-rescue ladder cost ladder (measured, off-device) — 2026-09-30
+
+The rescue's expected per-level GPU cost, measured with the offscreen CLI
+under the PERF pipeline (`--specialize`: cone prepass + all bakes + fast
+math), 320×240 × 20 frames, real scenes at their authored caps:
+
+    level    Goop_again   Inverted_Kleinian   Warp_V2 (theli)
+    ×1.00      4.90 ms        2.93 ms            3.74 ms
+    ×0.85      4.34           2.18               3.18
+    ×0.70      3.34           1.87               3.03
+    ×0.55      2.92           1.69               2.72
+    ×0.40      2.20           1.37               2.03
+    ×0.25      1.62           1.20               1.43
+
+Step-bound as promised: time tracks the shed multiplier nearly linearly
+(steps scale identically). Full shed ≈ 3× on a heavy Kleinian/theli frame at
+this size — plus the resolution lever's independent square-law on top.
+Projection sanity for the heaviest library scenes (e.g. Goop_again at AVP
+per-eye scale ≈ 30+ generic ms): cone+specialize+fast-math ~3×, shed ×0.25
+~3×, renderQuality floor 0.5 ~2.6× area → lands ≈ 8–14 ms/eye-frame — the
+rescue plausibly holds the budget where resolution alone could never.
+DEVICE NUMBERS STILL REQUIRED (ladder levels + ceiling are the sweep knobs).

@@ -303,16 +303,6 @@ public struct HandConstellationPanel: View {
                 }
             }
 
-            Section("Action") {
-                ForEach(CoreGestureAction.allCases, id: \.self) { action in
-                    Button {
-                        assign(.core(action), to: source)
-                    } label: {
-                        Label(action.displayName, systemImage: isCore(binding, action) ? "checkmark" : "bolt")
-                    }
-                }
-            }
-
             if binding != nil {
                 Divider()
                 Button("Clear Finger", role: .destructive) { assign(nil, to: source) }
@@ -429,11 +419,6 @@ public struct HandConstellationPanel: View {
 
     private func isVectorGroup(_ binding: GestureBinding?, _ group: Vec3Group) -> Bool {
         if case let .vector(target) = binding { return target == group.target }
-        return false
-    }
-
-    private func isCore(_ binding: GestureBinding?, _ action: CoreGestureAction) -> Bool {
-        if case let .core(current) = binding { return current == action }
         return false
     }
 

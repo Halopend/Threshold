@@ -4,6 +4,7 @@
 // never SystemRandomNumberGenerator; every "random" test reproduces from its
 // seed).
 
+import Foundation
 @testable import ThresholdCore
 import ThresholdRender
 @testable import ThresholdUI
@@ -67,6 +68,7 @@ func makeSnapshot(
     totalSteps: UInt64 = 0,
     deKey: String = "mandelbox",
     warpStack: [WarpOpDTO] = [],
+    postProcessStack: [PostProcessFilterDTO] = [],
     paused: Bool = false,
     palette: Palette = Palette(stops: []),
     animation: AnimationPlaybackState = .idle,
@@ -80,6 +82,7 @@ func makeSnapshot(
         totalSteps: totalSteps,
         deKey: deKey,
         warpStack: warpStack,
+        postProcessStack: postProcessStack,
         paused: paused,
         palette: palette,
         animation: animation,
@@ -91,6 +94,15 @@ func dto(kind: UInt32, strength: Float) -> WarpOpDTO {
     WarpOpDTO(
         kind: kind, flags: 0, strength: strength,
         a: [Float(kind), 0, 0, 0], b: [0, Float(kind), 0, 0])
+}
+
+/// A post-process DTO with a deterministic stable identity.
+func postFilter(_ kind: PostProcessKind, suffix: Int) -> PostProcessFilterDTO {
+    let tail = String(format: "%012X", suffix)
+    return PostProcessFilterDTO(
+        id: UUID(uuidString: "20000000-0000-0000-0000-\(tail)")!,
+        kind: kind, enabled: true, strength: 1,
+        a: [0, 0, 0, 0], b: [0, 0, 0, 0])
 }
 
 @MainActor

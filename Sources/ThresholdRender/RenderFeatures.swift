@@ -62,11 +62,23 @@ public enum RenderFeatureTable {
         RenderFeature(id: "color.palette", paths: [.offscreen, .interactive, .compositor]),
         // Warp-op stack applied before de_main (plan §5.2).
         RenderFeature(id: "warp.stack", paths: [.offscreen, .interactive, .compositor]),
-        // External (runtime-compiled) DE programs. NOT on the compositor yet:
-        // the raster pipeline links built-ins only (spike scope) — embedded-DE
-        // scenes apply their params/palette but render on compute shells.
+        // Ordered full-frame filter composition after temporal
+        // reconstruction/upscaling. All shells use PostProcessor's identical
+        // ping-pong contract; the compositor raster path inserts a private
+        // copy when its system drawable is not shader-readable.
         RenderFeature(
-            id: "de.external", paths: [.offscreen, .interactive], requiredOnAll: false),
+            id: "postprocess.stack",
+            paths: [.offscreen, .interactive, .compositor]),
+        // External (runtime-compiled) DE programs — all three shells: each
+        // compositor backend dispatches the program's own lazily-built variant
+        // (fragment-linked raster / per-view compute), no cone prepass or
+        // specialization for external content, mirroring the interactive
+        // compute path. Static-dispatch shells (the Simulator) keep the
+        // standing drop-frame behavior.
+        RenderFeature(
+            id: "de.external",
+            paths: [.offscreen, .interactive, .compositor],
+            requiredOnAll: false),
         // Hierarchical cone-march prepass (perf block 9, raster port block 11):
         // coarse tile dispatch + THRESH_CONE-gated march start. Now on all
         // three shells — the compositor uses a per-view prepass (rays through
@@ -76,10 +88,10 @@ public enum RenderFeatureTable {
             id: "march.conePrepass",
             paths: [.offscreen, .interactive, .compositor],
             requiredOnAll: false),
-        // Reduced-resolution march + reconstruction/present upscale (the
-        // temporal-reconstruction plan, phase 0+). Interactive realizes it
-        // through MetalFX temporal; the compositor's COMPUTE backend through
-        // TemporalReconstructor (recon_present now, temporal_resolve later).
+        // Reduced-resolution march + reconstruction/present upscale. The
+        // interactive shell uses a stateless spatial compute pass; the
+        // compositor's COMPUTE backend uses TemporalReconstructor
+        // (recon_present now, temporal_resolve later).
         // Perf overlay: correct to omit (offscreen/goldens march at 1.0 by
         // contract; the fragment backend scales the drawable itself).
         RenderFeature(

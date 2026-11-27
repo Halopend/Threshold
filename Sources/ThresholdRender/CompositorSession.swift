@@ -14,9 +14,11 @@
 //   compute-writes) stay open; the feature table tracks both paths.
 // - Full immersion only; the progressive-immersion portal pass (drawable
 //   render context + stencil mask) is a follow-up slot.
-// - Built-in DEs only: the raster pipeline links the built-in set. A scene
-//   with an embedded DE still applies (params, palette, warps); its DE
-//   renders once external programs grow a raster pipeline.
+// - External DEs: both backends dispatch an active external DE through the
+//   program's own lazily-built variant pipelines (ExternalDE.swift) — no
+//   cone prepass/specialization for external content, same as the
+//   interactive compute path. A variant-construction failure keeps the
+//   standing drop-frame behavior.
 
 #if os(visionOS)
 
@@ -72,8 +74,13 @@ public final class CompositorSession: @unchecked Sendable {
 
     // MARK: Lifecycle state (joinable teardown — parity with InteractiveSession)
 
-    private enum Phase { case idle, running, stopped }
-    private let phase = Mutex<Phase>(.idle)
+    private let phase = Mutex(CompositorSessionLifecycle())
+    // Accessed only by successive, non-overlapping render loops. Preserve the
+    // scene, parameter lanes, animation and bindings across immersive layers.
+    private var retainedCore: SessionCore?
+    /// Called on the render thread after a layer exits. Set before start;
+    /// UI clients must hop to MainActor. A natural exit permits reopening.
+    public var onRenderLoopEnded: (@Sendable () -> Void)?
     /// Signaled by the render loop on EVERY exit path (`defer` at loop entry),
     /// so `stop()` can join it. Bounded wait — the loop may be parked in
     /// `waitUntilRunning()` / `Clock().wait(until:)` when the stop lands and
@@ -257,15 +264,16 @@ public final class CompositorSession: @unchecked Sendable {
     /// Spawn the render thread against a live LayerRenderer. Called from the
     /// CompositorLayer content closure when the immersive space opens.
     @MainActor public func start(_ layerRenderer: LayerRenderer) {
-        // Idempotent: only idle→running spawns. A stopped session does not
-        // restart (open the immersive space again for a fresh one).
-        let shouldStart = phase.withLock { p -> Bool in
-            guard p == .idle else { return false }
-            p = .running
-            return true
+        // Natural layer invalidation permits a new layer; explicit stop is terminal.
+        // Reset the stop flag under the same lock as begin(): a stop() landing
+        // between the two would otherwise be overwritten and ignored.
+        let shouldStart = phase.withLock { phase in
+            let begin = phase.begin()
+            if begin { stopRequested.store(false, ordering: .releasing) }
+            return begin
         }
         guard shouldStart else { return }
-        stopRequested.store(false, ordering: .releasing)
+        _ = finished.wait(timeout: .now()) // consume the previous loop completion
         // World grab input: system pinches arrive through the layer's
         // spatial-event channel (the BorgVR pattern). Installed
         // unconditionally — the session gates on its Settings toggle per
@@ -289,17 +297,14 @@ public final class CompositorSession: @unchecked Sendable {
     /// returns immediately. Idempotent: only the first call after `start()`
     /// joins; a never-started or already-stopped session returns at once.
     public func stop() {
-        let shouldJoin = phase.withLock { p -> Bool in
-            switch p {
-            case .idle: p = .stopped; return false  // never started
-            case .running: p = .stopped; return true
-            case .stopped: return false
-            }
+        let shouldJoin = phase.withLock { phase in
+            let join = phase.requestStop()
+            if join { stopRequested.store(true, ordering: .releasing) }
+            return join
         }
         guard shouldJoin else { return }
 
         ThresholdLog.session.notice("compositor session stop requested")
-        stopRequested.store(true, ordering: .releasing)
         // BOUNDED join: the loop may be parked in the compositor's
         // waitUntilRunning()/Clock().wait(until:) and won't observe the flag
         // until it returns. On timeout, say so and abandon the join — the
@@ -322,14 +327,21 @@ public final class CompositorSession: @unchecked Sendable {
         // Signal the join on EVERY exit path — dead-on-arrival returns, layer
         // invalidation, and stop-requested alike — so stop() never waits the
         // full timeout on a loop that already exited.
-        defer { finished.signal() }
-        // Render-thread-confined state comes to life HERE (ADR-004).
-        let core = SessionCore(
+        defer {
+            phase.withLock {
+                $0.end()
+                finished.signal()
+            }
+            onRenderLoopEnded?()
+        }
+        // Render-thread-confined state survives immersive-space reopening.
+        let core = retainedCore ?? SessionCore(
             layout: layout,
             signals: signals,
             laneMailbox: laneMailbox,
             commands: commands,
             initialScene: initialScene)
+        retainedCore = core
 
         guard let queue = context.device.makeCommandQueue() else {
             ThresholdLog.session.fault(
@@ -343,16 +355,20 @@ public final class CompositorSession: @unchecked Sendable {
         // the experimental per-view compute march. Exactly one encoder exists.
         let backend = Self.selectedBackend
         var raster: ViewPassEncoder? = nil
+        var rasterPost: PostProcessor? = nil
         var computeGPU: ViewComputeEncoder? = nil
         var computeRecon: TemporalReconstructor? = nil
         switch backend {
         case .fragment:
             do {
-                raster = try ViewPassEncoder(
+                let builtRaster = try ViewPassEncoder(
                     context: context,
                     colorFormat: layer.configuration.colorFormat,
                     depthFormat: layer.configuration.depthFormat,
                     maxViewCount: layered ? 2 : 1)
+                let builtPost = try PostProcessor(context: context)
+                raster = builtRaster
+                rasterPost = builtPost
             } catch {
                 ThresholdLog.session.fault(
                     """
@@ -414,8 +430,10 @@ public final class CompositorSession: @unchecked Sendable {
         // reprojection; the eye poses derive from it.
         let arSession = ARKitSession()
         let worldTracking = WorldTrackingProvider()
-        Task {
+        let trackingTask = Task {
+            defer { if Task.isCancelled { arSession.stop() } }
             do {
+                try Task.checkCancellation()
                 try await arSession.run([worldTracking])
             } catch {
                 // Non-fatal but very visible in use: no head anchor means the
@@ -428,9 +446,15 @@ public final class CompositorSession: @unchecked Sendable {
             }
         }
 
+        defer {
+            trackingTask.cancel()
+            arSession.stop()
+        }
+
         /// Head room-position at first tracked frame — the room point mapped
         /// onto the session camera (CompositorViewMath.viewUniforms doc).
         var anchorPosition: SIMD3<Float>?
+        var lastGrabWasIdentity = true
         /// The previous frame's SESSION-clock time — what inputs stamp their
         /// signals with so binding/staleness math compares like with like
         /// (one frame stale, well inside every freshness tolerance).
@@ -550,7 +574,7 @@ public final class CompositorSession: @unchecked Sendable {
                 now: now,
                 width: colorTexture.width,
                 height: colorTexture.height,
-                gpuMilliseconds: stats.gpuMilliseconds)
+                gpuMilliseconds: stats.governorMilliseconds)
             sp.endInterval("core.step", stepState)
             let stepMs = Mono.ms(stepStart, Mono.now())
             sessionTime = sessionFrame.time
@@ -594,12 +618,22 @@ public final class CompositorSession: @unchecked Sendable {
                     originFromDevice.columns.3.y,
                     originFromDevice.columns.3.z)
             }
+            // World Grab: read once per frame and fold into BOTH the eyes and
+            // the hand stamping so they agree. A jump back to identity (reset,
+            // toggle off, scene load) is a teleport — drop temporal history.
+            let grab = worldGrab.current()
+            if grab.isIdentity, !lastGrabWasIdentity,
+               let recon = computeRecon, recon.mode != .off {
+                recon.requestHistoryReset()
+            }
+            lastGrabWasIdentity = grab.isIdentity
             let views = drawable.views.indices.map { i in
                 CompositorViewMath.viewUniforms(
                     projection: drawable.computeProjection(viewIndex: i),
                     eyeToRoom: originFromDevice * drawable.views[i].transform,
                     anchorPosition: anchorPosition ?? .zero,
-                    base: sessionFrame.request.uniforms)
+                    base: sessionFrame.request.uniforms,
+                    grab: grab)
             }
 
             // Spatial hand path (plan §4.3): drive-flagged ops get their
@@ -607,7 +641,7 @@ public final class CompositorSession: @unchecked Sendable {
             // room→fractal map as the eyes.
             let request = stampHandOps(
                 sessionFrame.request, now: sessionFrame.time,
-                anchorPosition: anchorPosition ?? .zero)
+                anchorPosition: anchorPosition ?? .zero, grab: grab)
 
             // "encode" phase: CPU cost of building + committing the command
             // buffer (the GPU work itself lands in gpuMilliseconds, next frame).
@@ -615,18 +649,36 @@ public final class CompositorSession: @unchecked Sendable {
             let encodeState = sp.beginInterval("encode")
             if let commandBuffer = CommandBufferHealth.makeCommandBuffer(on: queue) {
                 commandBuffer.label = "compositor frame"
+                let marched: Bool
                 if let raster {
-                    encode(
+                    marched = encode(
                         request, views: views, drawable: drawable,
-                        layered: layered, gpu: raster, commandBuffer: commandBuffer)
+                        layered: layered, gpu: raster,
+                        postProcessor: rasterPost,
+                        program: sessionFrame.externalProgram,
+                        commandBuffer: commandBuffer)
                 } else if let computeGPU {
-                    encodeCompute(
+                    marched = encodeCompute(
                         request, views: views, drawable: drawable,
                         layered: layered, gpu: computeGPU,
+                        program: sessionFrame.externalProgram,
                         recon: computeRecon,
                         prevViews: previousViews,
                         commandBuffer: commandBuffer)
                     previousViews = views
+                } else {
+                    marched = false
+                }
+                // A skipped march must STILL present a defined image: mixed
+                // immersion composites the drawable over passthrough, so an
+                // unwritten texture is undefined content (a garbage flash) —
+                // exactly what the frames between a scene apply and its
+                // external-DE variant compile would show. Clear to
+                // transparent-black (the miss color) instead.
+                if !marched {
+                    clearDrawable(
+                        drawable, viewCount: drawable.views.count,
+                        layered: layered, commandBuffer: commandBuffer)
                 }
                 drawable.encodePresent(commandBuffer: commandBuffer)
                 commandBuffer.commit()
@@ -663,11 +715,14 @@ public final class CompositorSession: @unchecked Sendable {
             } else {
                 scale = 1
             }
+            let pipeline: RenderDiagnostics.Pipeline =
+                sessionFrame.externalProgram != nil ? .external
+                    : (backend == .compute ? .viewCompute : .raster)
             snapshots.publish(sessionFrame.snapshot(
                 gpuMilliseconds: stats.gpuMilliseconds,
                 totalSteps: stats.totalSteps,
                 diagnostics: RenderDiagnostics(
-                    pipeline: backend == .compute ? .viewCompute : .raster,
+                    pipeline: pipeline,
                     renderScale: scale,
                     upscaling: scale < 0.999,
                     reconstruction: {
@@ -682,14 +737,19 @@ public final class CompositorSession: @unchecked Sendable {
 
     /// One pass (layered: amplified across both views) or one per view
     /// (dedicated: the views buffer slides by one entry per pass).
+    /// `program` is the active external DE (nil = built-in set) — both
+    /// backends render external DE scenes by dispatching the program's own
+    /// variant pipelines (ExternalDE.swift).
     private func encode(
         _ request: RenderRequest,
         views: [ThreshViewUniforms],
         drawable: LayerRenderer.Drawable,
         layered: Bool,
         gpu: ViewPassEncoder,
+        postProcessor: PostProcessor?,
+        program: ExternalDEProgram?,
         commandBuffer: MTLCommandBuffer
-    ) {
+    ) -> Bool {
         func pass(colorIndex: Int) -> MTLRenderPassDescriptor {
             let desc = MTLRenderPassDescriptor()
             desc.colorAttachments[0].texture = drawable.colorTextures[colorIndex]
@@ -707,19 +767,91 @@ public final class CompositorSession: @unchecked Sendable {
         if layered {
             let desc = pass(colorIndex: 0)
             desc.renderTargetArrayLength = drawable.views.count
-            gpu.encode(
+            let marched = gpu.encode(
                 request, views: views, renderPass: desc,
                 commandBuffer: commandBuffer,
-                amplificationCount: drawable.views.count)
+                amplificationCount: drawable.views.count,
+                program: program)
+            if marched {
+                encodePostProcess(
+                    request, texture: drawable.colorTextures[0],
+                    postProcessor: postProcessor, commandBuffer: commandBuffer)
+            }
+            return marched
         } else {
+            var marched = false
             for (i, _) in views.enumerated()
             where drawable.colorTextures.indices.contains(i) {
-                gpu.encode(
+                let encoded = gpu.encode(
                     request, views: views,
                     viewsByteOffset: i * MemoryLayout<ThreshViewUniforms>.stride,
                     renderPass: pass(colorIndex: i),
-                    commandBuffer: commandBuffer)
+                    commandBuffer: commandBuffer,
+                    program: program)
+                marched = marched || encoded
+                if encoded {
+                    encodePostProcess(
+                        request, texture: drawable.colorTextures[i],
+                        postProcessor: postProcessor, commandBuffer: commandBuffer)
+                }
             }
+            return marched
+        }
+    }
+
+    /// A no-march frame: clear every drawable attachment to the miss color
+    /// (transparent black) + far depth, so the composited frame is defined
+    /// passthrough rather than undefined texture content. Layered: one array
+    /// attachment (renderTargetArrayLength) covers both views; dedicated:
+    /// one clear pass per view texture.
+    private func clearDrawable(
+        _ drawable: LayerRenderer.Drawable, viewCount: Int, layered: Bool,
+        commandBuffer: MTLCommandBuffer
+    ) {
+        let views = max(1, layered ? 1 : min(viewCount, drawable.colorTextures.count))
+        for i in 0..<views {
+            let desc = MTLRenderPassDescriptor()
+            desc.colorAttachments[0].texture = drawable.colorTextures[i]
+            desc.colorAttachments[0].loadAction = .clear
+            desc.colorAttachments[0].storeAction = .store
+            desc.colorAttachments[0].clearColor =
+                MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            if drawable.depthTextures.indices.contains(i) {
+                desc.depthAttachment.texture = drawable.depthTextures[i]
+                desc.depthAttachment.loadAction = .clear
+                desc.depthAttachment.storeAction = .store
+                desc.depthAttachment.clearDepth = 1.0
+            }
+            if layered {
+                desc.renderTargetArrayLength = max(1, viewCount)
+            }
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(
+                descriptor: desc) else { return }
+            encoder.label = "compositor clear-on-drop"
+            encoder.endEncoding()
+        }
+    }
+
+    /// Raster-compositor post stage. System drawable textures are commonly
+    /// blit-capable but not shader-readable; PostProcessor detects that and
+    /// inserts a private input copy before the ordered HDR ping-pong passes.
+    private func encodePostProcess(
+        _ request: RenderRequest,
+        texture: MTLTexture,
+        postProcessor: PostProcessor?,
+        commandBuffer: MTLCommandBuffer
+    ) {
+        guard let postProcessor else { return }
+        do {
+            try postProcessor.encode(
+                commandBuffer: commandBuffer,
+                source: texture,
+                destination: texture,
+                stack: request.postProcessStack,
+                time: request.uniforms.scaleCtx.x)
+        } catch {
+            ThresholdLog.render.error(
+                "compositor raster post-processing failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -732,10 +864,11 @@ public final class CompositorSession: @unchecked Sendable {
         drawable: LayerRenderer.Drawable,
         layered: Bool,
         gpu: ViewComputeEncoder,
+        program: ExternalDEProgram?,
         recon: TemporalReconstructor?,
         prevViews: [ThreshViewUniforms]?,
         commandBuffer: MTLCommandBuffer
-    ) {
+    ) -> Bool {
         var colorTargets: [(texture: MTLTexture, slice: Int)] = []
         var depthTargets: [(texture: MTLTexture, slice: Int)] = []
         if layered {
@@ -750,10 +883,11 @@ public final class CompositorSession: @unchecked Sendable {
                 depthTargets.append((drawable.depthTextures[i], 0))
             }
         }
-        gpu.encode(
+        return gpu.encode(
             request, views: views,
             colorTargets: colorTargets, depthTargets: depthTargets,
-            commandBuffer: commandBuffer, recon: recon, prevViews: prevViews)
+            commandBuffer: commandBuffer, program: program,
+            recon: recon, prevViews: prevViews)
     }
 
     // MARK: Hand-driven ops
@@ -763,7 +897,8 @@ public final class CompositorSession: @unchecked Sendable {
     private static let handSignalFreshness = 0.25
 
     private func stampHandOps(
-        _ request: RenderRequest, now: Double, anchorPosition: SIMD3<Float>
+        _ request: RenderRequest, now: Double, anchorPosition: SIMD3<Float>,
+        grab: WorldGrabTransform
     ) -> RenderRequest {
         guard request.ops.contains(where: {
             WarpFlags(rawValue: $0.flags)
@@ -791,14 +926,17 @@ public final class CompositorSession: @unchecked Sendable {
             params: request.params,
             ops: HandOpStamper.stamp(
                 request.ops, right: right, left: left,
-                base: request.uniforms, anchorPosition: anchorPosition),
+                base: request.uniforms, anchorPosition: anchorPosition,
+                grab: grab),
             palette: request.palette,
+            postProcessStack: request.postProcessStack,
             width: request.width,
             height: request.height,
             // Preserve the render-pipeline tuning (specialization + cone
             // prepass) and scale — the raster encoder consults request.tuning.
             renderScale: request.renderScale,
-            tuning: request.tuning)
+            tuning: request.tuning,
+            worldVolatility: request.worldVolatility)
     }
 
     // MARK: Clock

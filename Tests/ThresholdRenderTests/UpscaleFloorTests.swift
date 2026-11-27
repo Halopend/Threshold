@@ -1,14 +1,7 @@
-// UpscaleFloorTests.swift — guards the Render-Quality-below-~33% footgun.
-//
-// MetalFX temporal scaling caps at `maxScaleFactor`× (3×) upscale with a 32px
-// min input edge. A requested render scale below that floor used to fail
-// `TemporalUpscaler.prepare`'s ratio guard and fall through to a FULL-RESOLUTION
-// direct render — GPU cost spiking exactly when the user asked for LESS, which
-// can saturate the GPU and stall the UI. `minimumInputSize(forOutput:)` is the
-// clamp that keeps the march input inside MetalFX's supported range. These
-// tests assert the clamped size ALWAYS satisfies the same guards `prepare`
-// enforces, across a spread of resolutions — so low quality never disengages
-// the upscaler. Pure arithmetic; no GPU.
+// UpscaleFloorTests.swift — guards the retained, non-shipping MetalFX
+// experiment's input arithmetic. MetalFX caps at `maxScaleFactor`× (3×) with
+// a 32px minimum input edge; these pure tests keep its clamp and acceptance
+// conditions aligned without exercising it in the live renderer.
 
 #if os(macOS) || os(iOS)
 

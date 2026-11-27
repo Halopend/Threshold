@@ -57,6 +57,8 @@ public final class ParameterMirror {
     public private(set) var deKey: String = ""
     /// The AUTHORED warp stack (pre-simplification) — what editors display.
     public private(set) var warpStack: [WarpOpDTO] = []
+    /// The AUTHORED post-processing stack in sequential execution order.
+    public private(set) var postProcessStack: [PostProcessFilterDTO] = []
     public private(set) var paused: Bool = false
     /// The active gradient palette — what the gradient editor displays.
     public private(set) var palette: Palette = Palette(stops: [])
@@ -106,6 +108,10 @@ public final class ParameterMirror {
     @ObservationIgnored internal private(set) var refreshGeneration: UInt64 = 0
     /// Last distinct (frameIndex, time) pair seen — the fps-estimate baseline.
     @ObservationIgnored private var lastSample: (frameIndex: UInt64, time: Double)?
+    /// Bumped by structural edits made outside a scene load (fractal picker,
+    /// warp recipe, map/clip open). SceneLoadCoordinator drops a compile that
+    /// finishes after one of these, so a slow scene cannot overwrite them.
+    @ObservationIgnored public private(set) var structuralEditRevision: UInt64 = 0
     /// Slots with an active beginEdit…endEdit interaction.
     @ObservationIgnored private var editingSlots: Set<Int> = []
     /// Consecutive `refresh()` polls since a slot's last `beginEdit`/`updateEdit`
@@ -221,6 +227,10 @@ public final class ParameterMirror {
             warpStack = snapshot.warpStack
             changed = true
         }
+        if snapshot.postProcessStack != postProcessStack {
+            postProcessStack = snapshot.postProcessStack
+            changed = true
+        }
         if snapshot.paused != paused {
             paused = snapshot.paused
             changed = true
@@ -332,22 +342,62 @@ public final class ParameterMirror {
     // between publish and the render thread's drain may briefly show the
     // previous value — accepted for phase 4.)
 
-    public func setWarpStack(_ stack: [WarpOpDTO]) {
+    /// Returns false when the bounded structural-command mailbox rejected the
+    /// change. On rejection the optimistic UI copy is deliberately left
+    /// untouched so it cannot claim a recipe/edit reached the renderer.
+    @discardableResult
+    public func setWarpStack(_ stack: [WarpOpDTO]) -> Bool {
+        guard commands.publish(.setWarpStack(stack)) else { return false }
         warpStack = stack
-        commands.publish(.setWarpStack(stack))
+        structuralEditRevision &+= 1
+        return true
+    }
+
+    @discardableResult
+    public func setPostProcessStack(_ stack: [PostProcessFilterDTO]) -> Bool {
+        guard commands.publish(.setPostProcessStack(stack)) else { return false }
+        postProcessStack = stack
+        return true
     }
 
     public func setDE(key: String) {
         deKey = key
+        structuralEditRevision &+= 1
         commands.publish(.setDE(key: key))
+    }
+
+    /// Mark a structural change (e.g. opening a map or clip file) that should
+    /// win over any scene still compiling.
+    public func noteStructuralEdit() {
+        structuralEditRevision &+= 1
     }
 
     /// Apply a scene. UI-triggered loads TWEEN by default (ADR-005, the
     /// legacy "Same Scene Transition Time" feel); pass `transition: nil` to
     /// snap (e.g. restoring state at launch).
+    @discardableResult
     public func applyScene(
         _ scene: SceneEnvelope, transition: SceneTransition? = .default
-    ) {
+    ) -> Bool {
+        guard commands.publish(.applyScene(scene, transition: transition)) else { return false }
+        seedSceneEditors(scene)
+        return true
+    }
+
+    /// Submit prepared content as one transaction, then echo accepted state.
+    @discardableResult
+    public func applyPreparedScene(
+        _ scene: SceneEnvelope, externalProgram: ExternalDEProgram?,
+        transition: SceneTransition? = .default
+    ) -> Bool {
+        guard commands.publish(.applyPreparedScene(
+            scene, externalProgram: externalProgram, transition: transition))
+        else { return false }
+        seedSceneEditors(scene)
+        return true
+    }
+
+    private func seedSceneEditors(_ scene: SceneEnvelope) {
         // Seed the editors from the loaded scene: the render side installs the
         // same bindings/LFOs on apply, so the UI source of truth stays in sync
         // with the engine (see the `bindings`/`lfos` docs). The Focus Band is
@@ -356,7 +406,7 @@ public final class ParameterMirror {
         bindings = scene.bindings
         lfos = scene.lfos
         focusBand = scene.focusBand ?? .default
-        commands.publish(.applyScene(scene, transition: transition))
+        postProcessStack = scene.postProcessStack
     }
 
     /// Seed the reactive editors without applying a scene (startup, when the
