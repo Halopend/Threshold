@@ -70,6 +70,15 @@ public struct Palette: Sendable, Equatable, Codable, Hashable {
         self.stops = Palette.sanitized(stops)
     }
 
+    private enum CodingKeys: String, CodingKey { case stops }
+
+    /// Decoded palettes get the same sort/clamp/cap guarantees as `init(stops:)`
+    /// (an empty or unsorted file would otherwise reach the GPU sampler as-is).
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.stops = Palette.sanitized(try c.decode([GradientStop].self, forKey: .stops))
+    }
+
     /// Replace the stops, re-sanitizing (sort/clamp/cap).
     public mutating func setStops(_ newStops: [GradientStop]) {
         stops = Palette.sanitized(newStops)

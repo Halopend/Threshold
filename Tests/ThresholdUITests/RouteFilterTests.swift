@@ -31,3 +31,36 @@ import ThresholdCore
     let activeIdx = titles.firstIndex { $0 != "General" }
     #expect(sections[activeIdx!].targets.first?.fractalKey == "mandelbox")
 }
+
+@Test func targetPickerRespectsMusicBindableDeclaration() throws {
+    // Availability is the catalog's declaration: params that never declared
+    // bindability (engine knobs) no longer surface in the Routes picker,
+    // while the declared DE/camera/color vocabulary does.
+    let catalog = Catalog.withEngineDefaults()
+    // Stand-in for a DE's registered param (same capabilities the registry
+    // declares; the registry itself lives in ThresholdShaderIR).
+    try catalog.register(ParamSpec(
+        key: ParamKey.de("testbulb", "power"), label: "Power",
+        range: 0...8, default: 4,
+        capabilities: [.musicBindable, .gestureBindable, .animatable],
+        group: .shape))
+    try catalog.register(ParamSpec(
+        key: ParamKey("engine.undeclared"), label: "Undeclared",
+        range: 1...4096, default: 256, group: .performance))
+    let layout = catalog.freeze()
+
+    let targets = BindTarget.all(layout: layout, dynamic: [])
+    let keys = Set(targets.map(\.key))
+
+    // Declared → offered.
+    #expect(keys.contains(.colorSaturation))
+    #expect(keys.contains(.atmosphereBloomStrength))
+    #expect(keys.contains(.cameraDolly))
+    #expect(keys.contains(ParamKey.de("testbulb", "power")))
+
+    // Never declared or discrete → excluded.
+    #expect(!keys.contains(ParamKey("engine.undeclared")))
+    #expect(!keys.contains(.engineMaxSteps))
+    #expect(!keys.contains(.engineMaxDist))
+    #expect(!keys.contains(.colorMapMode))  // discrete kind, declared nowhere
+}

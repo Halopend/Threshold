@@ -1,9 +1,9 @@
-// TemporalUpscaler.swift — MetalFX temporal upscaling for the live Mac/iOS
-// path (perf block 5). The march renders color + depth + motion at reduced
-// resolution with a jittered projection (RaymarchCore's THRESH_AUX variant);
-// the scaler reconstructs a full-resolution frame from accumulated history.
-// This is the Mac counterpart of the visionOS compositor renderQuality lever
-// — one governor renderScale signal, two platform mechanisms.
+// TemporalUpscaler.swift — retained MetalFX experiment; it is deliberately
+// NOT used by the shipping Mac/iOS live path. A real app soak isolated GPU
+// command-queue timeouts to this cross-engine temporal pass: the UI remained
+// responsive while presentation stopped. InteractiveSession now uses a
+// stateless spatial compute upscale. This implementation remains available
+// for isolated experiments and its arithmetic regression tests only.
 //
 // Ported from the original app's MacTemporalUpscaler, keeping its two
 // hard-won details — the size-keyed LRU pool and the reset-before-textures
@@ -121,8 +121,7 @@ final class TemporalUpscaler: Sendable {
     /// ~5–10 s at 60–120 fps before an in-flight build is reported stalled.
     private static let stalledBuildFrameLimit = 600
 
-    /// nil when this device can't do MetalFX temporal scaling — the caller
-    /// renders at full resolution instead (the governor's scale is moot).
+    /// nil when this device can't do MetalFX temporal scaling.
     init?(device: MTLDevice, colorFormat: MTLPixelFormat) {
         guard MTLFXTemporalScalerDescriptor.supportsDevice(device) else { return nil }
         self.device = device

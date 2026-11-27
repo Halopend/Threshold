@@ -63,7 +63,7 @@ public enum SessionSubmissionError: Error, Sendable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .commandMailboxFull:
-            return "render command mailbox is full; scene was not submitted"
+            return "render command mailbox is full; change was not submitted"
         }
     }
 }
@@ -86,20 +86,264 @@ public final class ExternalDEProgram: @unchecked Sendable {
     let marchDETable: MTLVisibleFunctionTable?
     let evalDEPipeline: MTLComputePipelineState
     let evalDETable: MTLVisibleFunctionTable?
+    /// The external's own `de_main` function, retained from the source
+    /// library — the platform-variant builders (raster fragment, per-view
+    /// compute) link it into their pipelines. `[[visible]]`-attributed, same
+    /// as the built-ins it sits after in the table order (Invariant 5).
+    let externalFunction: MTLFunction
     /// builtin count + 1 — bounds check for meta.y.
     public let deFunctionCount: Int
 
     init(descriptor: DEDescriptor, sourceHash: String,
          marchPipeline: MTLComputePipelineState, marchDETable: MTLVisibleFunctionTable?,
          evalDEPipeline: MTLComputePipelineState, evalDETable: MTLVisibleFunctionTable?,
-         deFunctionCount: Int) {
+         externalFunction: MTLFunction, deFunctionCount: Int) {
         self.descriptor = descriptor
         self.sourceHash = sourceHash
         self.marchPipeline = marchPipeline
         self.marchDETable = marchDETable
         self.evalDEPipeline = evalDEPipeline
         self.evalDETable = evalDETable
+        self.externalFunction = externalFunction
         self.deFunctionCount = deFunctionCount
+    }
+
+    // Platform-variant caches (the extension below builds; these own storage —
+    // Swift extensions cannot hold stored properties).
+    private enum RasterCell {
+        case ready(ExternalRasterVariant)
+        case failed(String)
+    }
+    private enum ViewComputeCell {
+        case ready(ExternalViewComputeVariant)
+        case failed(String)
+    }
+    /// Per-key build lifecycle: `cells[key]` nil = never scheduled;
+    /// `inFlight` = a build is running (frames drop until it lands);
+    /// terminal cells replace the miss.
+    private struct RasterCache: Sendable {
+        var cells: [String: RasterCell] = [:]
+        var inFlight: Set<String> = []
+        /// True = this caller must run the build (exactly one).
+        mutating func schedule(key: String) -> Bool {
+            inFlight.insert(key).inserted
+        }
+        mutating func clearFlight(key: String) {
+            inFlight.remove(key)
+        }
+    }
+    private struct ViewComputeCache: Sendable {
+        var cells: [String: ViewComputeCell] = [:]
+        var inFlight: Set<String> = []
+        mutating func schedule(key: String) -> Bool {
+            inFlight.insert(key).inserted
+        }
+        mutating func clearFlight(key: String) {
+            inFlight.remove(key)
+        }
+    }
+    private let rasterVariants = Mutex<RasterCache>(RasterCache())
+    private let viewComputeVariants = Mutex<ViewComputeCache>(ViewComputeCache())
+    /// Shared off-thread builder for both variant kinds (utility QoS — never
+    /// contends with the render/UI threads for anything hot).
+    private let variantBuildQueue = DispatchQueue(
+        label: "com.polinate.threshold.external-variant-build", qos: .utility)
+}
+
+// MARK: - Platform-variant pipelines (raster / view-compute)
+
+/// The fragment (raster) dispatch variant of an external DE — what
+/// `ViewPassEncoder` consumes: a render pipeline whose fragment links the
+/// built-in set + the external, plus the matching fragment-stage visible
+/// function table (index builtin.count = the external).
+/// AUDIT — @unchecked: immutable Metal objects, the SpecializedRaster precedent.
+struct ExternalRasterVariant: @unchecked Sendable {
+    let pipeline: MTLRenderPipelineState
+    let deTable: MTLVisibleFunctionTable
+}
+
+/// The per-view compute dispatch variant of an external DE — what
+/// `ViewComputeEncoder` consumes (plain / aux / aux+seed, per temporal state).
+/// AUDIT — @unchecked: immutable Metal objects, same precedent.
+struct ExternalViewComputeVariant: @unchecked Sendable {
+    let pipeline: MTLComputePipelineState
+    let deTable: MTLVisibleFunctionTable?
+}
+
+extension ExternalDEProgram {
+    /// The raster (fragment) variant for the given target formats. Built
+    /// OFF-THREAD on first use and memoized — a fragment PSO with linked
+    /// functions can run tens of ms, so it must never land on the render
+    /// thread; the frames before it lands DROP (2–3 at the compositor's rate,
+    /// invisible during the scene transition that led here). A construction
+    /// failure is memoized as a negative cache so a broken DE cannot cause a
+    /// compile storm; the caller then keeps its standing drop-frame behavior.
+    ///
+    /// Static dispatch (the Simulator) has no visible-function machinery —
+    /// this returns nil there (terminal), as on the compute paths today.
+    func rasterVariant(
+        context: GPUContext, colorFormat: MTLPixelFormat,
+        depthFormat: MTLPixelFormat, maxViewCount: Int
+    ) -> ExternalRasterVariant? {
+        let key = "\(colorFormat.rawValue)/\(depthFormat.rawValue)/\(maxViewCount)"
+        switch rasterVariants.withLock({ $0.cells[key] }) {
+        case .ready(let variant): return variant
+        case .failed: return nil
+        case nil: break
+        }
+        // Case `nil` is the only fallthrough: schedule ONE off-thread build.
+        guard rasterVariants.withLock({ $0.schedule(key: key) }) else { return nil }
+        let program = self
+        let args = (context, colorFormat, depthFormat, maxViewCount)
+        variantBuildQueue.async {
+            do {
+                let variant = try program.buildRasterVariant(
+                    context: args.0, colorFormat: args.1,
+                    depthFormat: args.2, maxViewCount: args.3)
+                program.rasterVariants.withLock {
+                    $0.cells[key] = .ready(variant); $0.clearFlight(key: key)
+                }
+            } catch {
+                let message = String(describing: error)
+                program.rasterVariants.withLock {
+                    $0.cells[key] = .failed(message); $0.clearFlight(key: key)
+                }
+                ThresholdLog.render.error(
+                    """
+                    external DE \(program.descriptor.key, privacy: .public) has no \
+                    raster variant: \(message, privacy: .public); \
+                    it will not render on fragment shells
+                    """)
+            }
+        }
+        return nil
+    }
+
+    /// The per-view compute variant for `march_view_compute`. `aux`/`seed`
+    /// select the temporal twins, mirroring ViewComputeEncoder's own
+    /// init-built plain/aux/aux+seed trio (built lazily here — the loader is
+    /// shell-agnostic and the temporal path only exists on the compute
+    /// backend). Same off-thread + negative-cache contract as
+    /// `rasterVariant`; nil under static dispatch.
+    func viewComputeVariant(
+        context: GPUContext, aux: Bool, seed: Bool
+    ) -> ExternalViewComputeVariant? {
+        let key = aux ? (seed ? "auxSeed" : "aux") : "plain"
+        switch viewComputeVariants.withLock({ $0.cells[key] }) {
+        case .ready(let variant): return variant
+        case .failed: return nil
+        case nil: break
+        }
+        guard viewComputeVariants.withLock({ $0.schedule(key: key) }) else { return nil }
+        let program = self
+        variantBuildQueue.async {
+            do {
+                let variant = try program.buildViewComputeVariant(
+                    context: context, aux: aux, seed: seed)
+                program.viewComputeVariants.withLock {
+                    $0.cells[key] = .ready(variant); $0.clearFlight(key: key)
+                }
+            } catch {
+                let message = String(describing: error)
+                program.viewComputeVariants.withLock {
+                    $0.cells[key] = .failed(message); $0.clearFlight(key: key)
+                }
+                ThresholdLog.render.error(
+                    """
+                    external DE \(program.descriptor.key, privacy: .public) has no \
+                    view-compute variant [aux=\(aux) seed=\(seed)]: \
+                    \(message, privacy: .public); \
+                    it will not render on compute shells
+                    """)
+            }
+        }
+        return nil
+    }
+
+    private func buildRasterVariant(
+        context: GPUContext, colorFormat: MTLPixelFormat,
+        depthFormat: MTLPixelFormat, maxViewCount: Int
+    ) throws -> ExternalRasterVariant {
+        guard !context.staticDEDispatch else {
+            throw RenderError.functionTableCreationFailed(
+                "external raster variant: static dispatch cannot link external DEs")
+        }
+        let device = context.device
+        // Same construction contract as ViewPassEncoder's generic pipeline:
+        // fullscreen vertex from the core library, fragment through the
+        // constant-values path (empty values eliminate the THRESH_CONE
+        // argument), linked fragment functions = built-ins + the external so
+        // the table indexes line up with meta.y.
+        guard let vertex = context.library.makeFunction(name: "thresh_fullscreen_vertex")
+        else { throw RenderError.missingFunction("thresh_fullscreen_vertex") }
+        let fragment: MTLFunction
+        do {
+            fragment = try context.library.makeFunction(
+                name: "thresh_march_fragment",
+                constantValues: MTLFunctionConstantValues())
+        } catch {
+            throw RenderError.missingFunction(
+                "thresh_march_fragment: \(String(describing: error))")
+        }
+        let functions = context.builtinDEFunctions + [externalFunction]
+        let desc = MTLRenderPipelineDescriptor()
+        desc.label = "thresh_march_raster external \(descriptor.key)"
+        desc.vertexFunction = vertex
+        desc.fragmentFunction = fragment
+        desc.colorAttachments[0].pixelFormat = colorFormat
+        desc.depthAttachmentPixelFormat = depthFormat
+        desc.inputPrimitiveTopology = .triangle
+        if maxViewCount > 1, device.supportsVertexAmplificationCount(maxViewCount) {
+            desc.maxVertexAmplificationCount = maxViewCount
+        }
+        let linked = MTLLinkedFunctions()
+        linked.functions = functions
+        desc.fragmentLinkedFunctions = linked
+        let pipeline: MTLRenderPipelineState
+        do {
+            pipeline = try device.makeRenderPipelineState(descriptor: desc)
+        } catch {
+            throw RenderError.pipelineCreationFailed(
+                "external raster: \(String(describing: error))")
+        }
+        let tableDesc = MTLVisibleFunctionTableDescriptor()
+        tableDesc.functionCount = functions.count
+        guard let table = pipeline.makeVisibleFunctionTable(
+            descriptor: tableDesc, stage: .fragment)
+        else {
+            throw RenderError.functionTableCreationFailed(
+                "external raster DE table \(descriptor.key)")
+        }
+        for (index, function) in functions.enumerated() {
+            guard let handle = pipeline.functionHandle(function: function, stage: .fragment)
+            else {
+                throw RenderError.functionTableCreationFailed(
+                    "external raster DE table \(descriptor.key): no handle for \(function.name)")
+            }
+            table.setFunction(handle, index: index)
+        }
+        return ExternalRasterVariant(pipeline: pipeline, deTable: table)
+    }
+
+    private func buildViewComputeVariant(
+        context: GPUContext, aux: Bool, seed: Bool
+    ) throws -> ExternalViewComputeVariant {
+        guard !context.staticDEDispatch else {
+            throw RenderError.functionTableCreationFailed(
+                "external view-compute variant: static dispatch cannot link external DEs")
+        }
+        let functions = context.builtinDEFunctions + [externalFunction]
+        // Cross-library linking — the kernel lives in the core library, the
+        // external in its own; the same shape the interactive compute path
+        // builds for `march_offscreen`.
+        let pipeline = try GPUContext.makeLinkedPipeline(
+            device: context.device, library: context.library,
+            kernelName: "march_view_compute", deFunctions: functions,
+            auxOutputs: aux, seed: seed)
+        let table = try GPUContext.makeDETable(
+            pipeline, functions: functions,
+            label: "external view-compute DE table \(descriptor.key) aux=\(aux) seed=\(seed)")
+        return ExternalViewComputeVariant(pipeline: pipeline, deTable: table)
     }
 }
 
@@ -276,7 +520,7 @@ public final class ExternalDELoader: @unchecked Sendable {
             descriptor: descriptor, sourceHash: hash,
             marchPipeline: marchPipeline, marchDETable: marchTable,
             evalDEPipeline: evalPipeline, evalDETable: evalTable,
-            deFunctionCount: index + 1)
+            externalFunction: external, deFunctionCount: index + 1)
 
         // --- probe (plan §7.2: never trust-and-crash) ------------------------
         try probe(program)

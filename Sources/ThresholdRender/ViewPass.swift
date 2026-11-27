@@ -38,8 +38,19 @@ public enum CompositorViewMath {
         eyeToRoom: simd_float4x4,
         anchorPosition: SIMD3<Float>,
         base: ThreshFrameUniforms,
-        roomScale: Float = 1
+        roomScale: Float = 1,
+        grab: WorldGrabTransform = .identity
     ) -> ThreshViewUniforms {
+        // World Grab re-expresses the OBSERVER (WorldGrab.swift header):
+        // identity skips the fold so un-grabbed uniforms stay bit-identical.
+        var eyeToRoom = eyeToRoom
+        var anchorPosition = anchorPosition
+        var roomScale = roomScale
+        if !grab.isIdentity {
+            eyeToRoom = grab.observerMatrix * eyeToRoom
+            (anchorPosition, roomScale) = grab.observerMap(
+                anchorPosition: anchorPosition, roomScale: roomScale)
+        }
         let baseRot = baseRotation(base)
         let eyePos = SIMD3(
             eyeToRoom.columns.3.x, eyeToRoom.columns.3.y, eyeToRoom.columns.3.z)
@@ -115,6 +126,11 @@ public enum CompositorViewMath {
 /// but encodes a render pass per drawable instead of a compute dispatch.
 final class ViewPassEncoder {
     private let context: GPUContext
+    /// The target formats this encoder was built for — external-DE variant
+    /// pipelines must match them (PSOs are format-locked).
+    private let colorFormat: MTLPixelFormat
+    private let depthFormat: MTLPixelFormat
+    private let maxViewCount: Int
     private let pipeline: MTLRenderPipelineState
     /// nil under static dispatch (the fragment has no table argument there).
     private let deTable: MTLVisibleFunctionTable?
@@ -154,6 +170,9 @@ final class ViewPassEncoder {
         maxViewCount: Int
     ) throws {
         self.context = context
+        self.colorFormat = colorFormat
+        self.depthFormat = depthFormat
+        self.maxViewCount = maxViewCount
         self.specializations = RasterSpecializationCache(
             context: context, colorFormat: colorFormat,
             depthFormat: depthFormat, maxViewCount: maxViewCount)
@@ -245,7 +264,7 @@ final class ViewPassEncoder {
 
     /// Stats of the most recently COMPLETED frame (zeros until one finishes).
     func lastCompleted() -> FrameStatsSlot.Stats {
-        statsSlot.load()
+        statsSlot.loadForControl()
     }
 
     /// Encode the march into `renderPass` (caller-configured attachments —
@@ -253,9 +272,9 @@ final class ViewPassEncoder {
     ///
     /// `views` carries one ThreshViewUniforms per amplification;
     /// `viewsByteOffset` selects the slice for dedicated-layout passes.
-    /// Returns false (encoding skipped) on a malformed request or an external
-    /// DE index — the raster path links built-ins only for now (spike scope;
-    /// external DEs render on the compute shells).
+    /// Returns false (encoding skipped) on a malformed request, or when the
+    /// external DE (if any) has no raster variant — the spike-scope fallback.
+    /// `program` is the active external DE's program; nil renders a built-in.
     /// `overrideSpecialized` injects a specific specialized variant instead of
     /// consulting the async cache — the deterministic test seam (production
     /// callers leave it nil and let the cache land the variant off-thread).
@@ -267,14 +286,16 @@ final class ViewPassEncoder {
         renderPass: MTLRenderPassDescriptor,
         commandBuffer: MTLCommandBuffer,
         amplificationCount: Int = 1,
+        program: ExternalDEProgram? = nil,
         overrideSpecialized: SpecializedRaster? = nil
     ) -> Bool {
-        // Raster links built-ins only (external DEs render on the compute
-        // shells), so the shared contract's deFunctionCount is the built-in set.
+        // The active external program widens the DE table beyond the built-in
+        // set — its count drives the shared contract (ExternalRasterVariant).
         guard !views.isEmpty else { return false }
         let uniforms: ThreshFrameUniforms
         switch EncodePreamble.validatedUniforms(
-            request, deFunctionCount: context.deFunctionCount) {
+            request,
+            deFunctionCount: program?.deFunctionCount ?? context.deFunctionCount) {
         case .success(let u): uniforms = u
         case .failure: return false
         }
@@ -287,20 +308,32 @@ final class ViewPassEncoder {
         // Pipeline choice: the specialized (direct-call inlined DE) raster
         // variant once it has compiled and tuning enables it — else generic
         // (the always-correct fallback that renders while the variant builds
-        // off-thread). Built-ins only; external DEs render on the compute
-        // shells (guarded above by deFunctionCount / spike scope).
+        // off-thread). An external DE renders through its own lazy fragment
+        // variant (built-ins linked + de_main; no cone prepass, matching the
+        // interactive compute path's external treatment), and drops the frame
+        // when the variant can't build on this shell (static dispatch).
         var chosenPipeline = pipeline
         var chosenTable = deTable
         var specialized: SpecializedRaster? = overrideSpecialized
-        let deIndex = Int(uniforms.meta.y)
-        if overrideSpecialized == nil,
-           let plan = EncodePreamble.specializationPlan(for: request, deIndex: deIndex) {
-            specialized = specializations.lookup(
-                deFunctionName: plan.deFunctionName, spec: plan.spec)
-        }
-        if let s = specialized {
-            chosenPipeline = s.pipeline
-            chosenTable = s.deTable
+        if let program {
+            guard let variant = program.rasterVariant(
+                context: context, colorFormat: colorFormat,
+                depthFormat: depthFormat, maxViewCount: maxViewCount)
+            else { return false }
+            chosenPipeline = variant.pipeline
+            chosenTable = variant.deTable
+            specialized = nil
+        } else {
+            let deIndex = Int(uniforms.meta.y)
+            if overrideSpecialized == nil,
+               let plan = EncodePreamble.specializationPlan(for: request, deIndex: deIndex) {
+                specialized = specializations.lookup(
+                    deFunctionName: plan.deFunctionName, spec: plan.spec)
+            }
+            if let s = specialized {
+                chosenPipeline = s.pipeline
+                chosenTable = s.deTable
+            }
         }
 
         let ringSlot = ringCursor

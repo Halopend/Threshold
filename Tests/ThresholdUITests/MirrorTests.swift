@@ -2,6 +2,7 @@
 // fps-estimate math. All time is synthetic snapshot time; refresh() is driven
 // manually (no timers in tests).
 
+import Foundation
 import Testing
 @testable import ThresholdCore
 import ThresholdRender
@@ -73,18 +74,21 @@ struct MirrorDiffingTests {
         #expect(mirror.resolvedValues[16] == 0.75)
     }
 
-    @Test("deKey / warpStack / paused changes are applied")
+    @Test("Structural state changes are applied")
     func structuralEcho() {
         let (mirror, snapshots, _) = makeMirror()
         let values = [Float](repeating: 0, count: mirror.layout.slotCount)
         let stack = [dto(kind: 1, strength: 1), dto(kind: 5, strength: 0.5)]
+        let post = [postFilter(.invert, suffix: 1)]
         snapshots.publish(makeSnapshot(
-            values: values, deKey: "mandelbulb", warpStack: stack, paused: true))
+            values: values, deKey: "mandelbulb", warpStack: stack,
+            postProcessStack: post, paused: true))
 
         mirror.refresh()
 
         #expect(mirror.deKey == "mandelbulb")
         #expect(mirror.warpStack == stack)
+        #expect(mirror.postProcessStack == post)
         #expect(mirror.paused)
     }
 
@@ -222,12 +226,47 @@ struct MirrorCommandTests {
         #expect(sent == stack)
     }
 
+    @Test("setWarpStack rejects cleanly when the command mailbox is saturated")
+    func setWarpStackBackpressure() {
+        let snapshots = SnapshotSlot()
+        let commands = CommandMailbox<SessionCommand>(capacity: 1, maxCapacity: 1)
+        let mirror = ParameterMirror(
+            layout: makeTestLayout(), snapshots: snapshots, commands: commands)
+        #expect(commands.publish(.setPaused(true)))
+
+        let stack = [dto(kind: 7, strength: 1)]
+        #expect(!mirror.setWarpStack(stack))
+        #expect(mirror.warpStack.isEmpty,
+                "a rejected command must not be echoed as applied")
+        #expect(commands.drain().count == 1,
+                "the rejected stack must not displace the queued command")
+    }
+
+    @Test("setPostProcessStack publishes the ordered stack and echoes it locally")
+    func setPostProcessStackRouting() {
+        let (mirror, _, commands) = makeMirror()
+        let stack = [postFilter(.vignette, suffix: 1), postFilter(.bloom, suffix: 2)]
+
+        mirror.setPostProcessStack(stack)
+
+        #expect(mirror.postProcessStack == stack)
+        let drained = commands.drain()
+        #expect(drained.count == 1)
+        guard case .setPostProcessStack(let sent) = drained.first else {
+            Issue.record("expected .setPostProcessStack, got \(String(describing: drained.first))")
+            return
+        }
+        #expect(sent == stack)
+    }
+
     @Test("setDE / setPaused / setBindings / applyScene route to their commands")
     func structuralRouting() {
         let (mirror, _, commands) = makeMirror()
         let binding = ThresholdCore.Binding(
             signal: .audioRMS, param: ParamKey("test.alpha"), lane: .music)
-        let scene = SceneEnvelope(version: 1, fractalTypeKey: "mandelbulb")
+        let post = [postFilter(.posterize, suffix: 3)]
+        let scene = SceneEnvelope(
+            version: 1, fractalTypeKey: "mandelbulb", postProcessStack: post)
 
         mirror.setDE(key: "mandelbulb")
         mirror.setPaused(true)
@@ -236,6 +275,8 @@ struct MirrorCommandTests {
 
         #expect(mirror.deKey == "mandelbulb")
         #expect(mirror.paused)
+        #expect(mirror.postProcessStack == post,
+                "applyScene seeds the structural editor before snapshot echo")
 
         let drained = commands.drain()
         #expect(drained.count == 4)

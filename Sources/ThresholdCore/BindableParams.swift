@@ -64,6 +64,16 @@ public struct BindableParams: Sendable, Equatable {
             groups: Vec3Group.autoDetect(from: entries))
     }
 
+    /// The gesture editor's target list: exactly the catalog's declared
+    /// gesture vocabulary. Availability is a DECLARATION the catalog owns —
+    /// `.gestureBindable` on the spec — intersected here with the same kind
+    /// rules as `derive`. Without the declaration filter, engine-reserved
+    /// params (march steps, max distance, …) surfaced in the editor even
+    /// though their capability flags never declared them gesture targets.
+    public static func gestureTargets(from entries: [CatalogEntry]) -> BindableParams {
+        derive(from: entries.filter { $0.spec.capabilities.contains(.gestureBindable) })
+    }
+
     /// The item for a key, if bindable (either list).
     public func item(for key: ParamKey) -> Item? {
         vectors.first { $0.key == key } ?? scalars.first { $0.key == key }

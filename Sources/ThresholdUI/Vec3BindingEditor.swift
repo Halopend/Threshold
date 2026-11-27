@@ -150,7 +150,7 @@ public struct Vec3BindingEditor: View {
         }
         .font(.caption2)
 
-        coreMenu
+        unsupportedAction
     }
 
     private func isNative(_ key: ParamKey) -> Bool {
@@ -204,7 +204,7 @@ public struct Vec3BindingEditor: View {
             }
         }
         .frame(minHeight: RowMetrics.height)
-        coreMenu
+        unsupportedAction
     }
 
     private var scalarMenuLabel: String {
@@ -212,26 +212,14 @@ public struct Vec3BindingEditor: View {
         return "Choose…"
     }
 
-    // MARK: Core actions
-
-    private var coreMenu: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            RowLabel(icon: "bolt", label: "Action", labelWidth: 56)
-            Menu {
-                Button("None") { if case .core = binding { assign(nil) } }
-                ForEach(CoreGestureAction.allCases, id: \.self) { action in
-                    Button(action.displayName) { assign(.core(action)) }
-                }
-            } label: {
-                MenuLabel(text: coreMenuLabel)
-            }
+    // Preserve legacy action assignments on disk without offering inert actions.
+    @ViewBuilder private var unsupportedAction: some View {
+        if case let .core(action) = binding {
+            Text("\(action.displayName) is unavailable as a finger assignment. Use the window's reset control or World Grab in Settings.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button("Clear unavailable action") { assign(nil) }
         }
-        .frame(minHeight: RowMetrics.height)
-    }
-
-    private var coreMenuLabel: String {
-        if case let .core(action) = binding { return action.displayName }
-        return "—"
     }
 
     // MARK: Write

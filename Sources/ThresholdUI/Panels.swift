@@ -58,6 +58,7 @@ public enum ControlTab: String, CaseIterable, Sendable {
                 SubTab("palette", "Palette", "paintpalette.fill"),
                 SubTab("mapping", "Mapping", "swatchpalette.fill"),
                 SubTab("grading", "Grading", "camera.filters"),
+                SubTab("effects", "Effects", "square.stack.3d.down.right.fill"),
                 SubTab("atmosphere", "Atmosphere", "cloud.fog.fill"),
             ]
         case .motion:
@@ -117,6 +118,9 @@ public struct ControlSidebar: View {
     /// Clip-library verbs from the shell; nil drops the clip list from the
     /// Motion ▸ Animate sub-tab (transport still shows).
     let animationActions: AnimationActions?
+    /// Saved warp-stack verbs from the shell; nil keeps only the direct stack
+    /// editor (the lightweight SwiftPM dev shell uses that configuration).
+    let transformationActions: TransformationActions?
 
     @AppStorage("threshold.ui.controlTab")
     private var storedTab = ControlTab.fractal.rawValue
@@ -146,6 +150,7 @@ public struct ControlSidebar: View {
         mirror: ParameterMirror, layout: CatalogLayout,
         sceneActions: SceneActions? = nil,
         animationActions: AnimationActions? = nil,
+        transformationActions: TransformationActions? = nil,
         audioActions: AudioActions? = nil,
         gestureStore: GestureBindingStore? = nil,
         resetView: (() -> Void)? = nil
@@ -154,6 +159,7 @@ public struct ControlSidebar: View {
         self.layout = layout
         self.sceneActions = sceneActions
         self.animationActions = animationActions
+        self.transformationActions = transformationActions
         self.audioActions = audioActions
         self.injectedStore = gestureStore
         self.resetView = resetView
@@ -281,6 +287,9 @@ public struct ControlSidebar: View {
             #if os(visionOS)
             HandsSection(mirror: mirror)
             #endif
+            if let transformationActions {
+                TransformationLibrarySection(actions: transformationActions)
+            }
             WarpStackSection(mirror: mirror)
         case .color:
             switch subtab {
@@ -294,6 +303,8 @@ public struct ControlSidebar: View {
                         .colorBrightness, .colorGamma, .colorTonemap,
                     ],
                     mirror: mirror, layout: layout)
+            case "effects":
+                PostProcessStackSection(mirror: mirror)
             case "atmosphere":
                 AtmosphereSection(mirror: mirror, layout: layout)
             default:
@@ -339,7 +350,9 @@ public struct ControlSidebar: View {
             #if os(visionOS)
             case "gestures":
                 HandConstellationPanel(
-                    params: BindableParams.derive(from: layout.entries + mirror.dynamicEntries),
+                    // Declared gesture targets only (capability-filtered
+                    // derive) — engine/quality params never enter the menu.
+                    params: BindableParams.gestureTargets(from: layout.entries + mirror.dynamicEntries),
                     fractal: mirror.deKey,
                     store: gestureStore)
             #endif
@@ -823,8 +836,8 @@ public struct StatsSection: View {
                 }
             // Render Quality: the USER'S CEILING (ADR-003). With Auto Quality
             // on, the governor adapts below it to hold fps; off, this is the
-            // exact render scale. Mac: caps the MetalFX input scale; Vision
-            // Pro: caps the compositor renderQuality.
+            // exact render scale. Mac/iPad: caps the spatial-upscale input;
+            // Vision Pro: caps the compositor renderQuality.
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("Render Quality")
@@ -1398,7 +1411,7 @@ public struct AtmosphereSection: View {
 
             effect(enabled: .atmosphereGlowEnabled, label: "Glow",
                    intensity: .atmosphereGlowIntensity)
-            effect(enabled: .atmosphereBloomEnabled, label: "Bloom",
+            effect(enabled: .atmosphereBloomEnabled, label: "Legacy Bloom",
                    intensity: .atmosphereBloomStrength)
             effect(enabled: .atmosphereFogEnabled, label: "Fog",
                    intensity: .atmosphereFogIntensity) {
@@ -1413,6 +1426,10 @@ public struct AtmosphereSection: View {
                     }
                 }
             }
+            Text("Legacy Bloom is the original ray-local highlight boost. Use Color ▸ Effects ▸ Bloom for a spatial, sequential full-frame pass.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .moduleCard(.orange)
     }

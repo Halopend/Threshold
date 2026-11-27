@@ -139,6 +139,40 @@ struct HandFrameSeamTests {
 
 @Suite("HandGestureEngine")
 struct HandGestureEngineTests {
+    @Test("Reset clears published camera offsets even with no tracked hands")
+    func resetClearsCamera() throws {
+        var rig = Rig()
+        let slot = try #require(rig.layout.slot(for: .cameraOrbitYaw))
+        let base = SIMD3<Float>(0.2, 1, -0.4)
+        rig.warmup(right: rightHand(base: base, gap: 0.01))
+        for _ in 0..<60 { rig.step(right: rightHand(base: base + SIMD3(0.1, 0, 0), gap: 0.01)) }
+        #expect(rig.mod.resolvedValue(slot: slot) > 0.1)
+        rig.hands.reset()
+        #expect(abs(rig.step().values[slot]) < 0.001)
+    }
+
+    @Test("Rebinding releases the old parameter without transferring held displacement")
+    func rebindReleasesOldTarget() throws {
+        var rig = Rig()
+        let x = ParamKey("de.t.warpx"), y = ParamKey("de.t.warpy")
+        let xSlot = try #require(rig.layout.slot(for: x))
+        let ySlot = try #require(rig.layout.slot(for: y))
+        let source = GestureSource.tapThumb(hand: .right, finger: .index)
+        var table = GestureBindingTable()
+        table.setBinding(.scalarAxis(x, .x), for: source)
+        rig.hands.setBindings(table)
+        let base = SIMD3<Float>(0.2, 1, -0.4)
+        rig.warmup(right: rightHand(base: base, gap: 0.01))
+        let moved = rightHand(base: base + SIMD3(0.1, 0, 0), gap: 0.01)
+        for _ in 0..<60 { rig.step(right: moved) }
+        #expect(rig.mod.resolvedValue(slot: xSlot) > 0.1)
+        table.setBinding(.scalarAxis(y, .x), for: source)
+        rig.hands.setBindings(table)
+        for _ in 0..<30 { rig.step(right: moved) }
+        #expect(abs(rig.mod.resolvedValue(slot: xSlot)) < 0.001)
+        #expect(abs(rig.mod.resolvedValue(slot: ySlot)) < 0.001)
+    }
+
     @Test("Silence invariant: no hands ⇒ resolve stays at authored defaults")
     func silenceWhenUntracked() {
         var rig = Rig()
@@ -367,6 +401,15 @@ struct HandGestureSwipeSuppressionTests {
         var (rig, slot) = try rigBoundToSwipe()
         rig.warmup(right: rightHand(base: SIMD3(-0.3, 1, -0.4), gap: 0.01))
         #expect(sweep(&rig, slot: slot, speed: 1.5, pinched: true) < 0.02)
+    }
+
+    @Test("Momentary swipe releases its parameter after tracking ends")
+    func swipeReleases() throws {
+        var (rig, slot) = try rigBoundToSwipe()
+        rig.warmup(right: rightHand(base: SIMD3(-0.3, 1, -0.4), gap: gap(forStrength: 0)))
+        #expect(sweep(&rig, slot: slot, speed: 1.5, pinched: false) > 0.02)
+        for _ in 0..<30 { rig.step() }
+        #expect(abs(rig.mod.resolvedValue(slot: slot)) < 0.001)
     }
 
     @Test("Grab-active suppresses skeleton drives (cross-stack arbiter)")

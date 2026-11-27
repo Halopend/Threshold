@@ -137,7 +137,8 @@ public final class AnimationPlayer {
     private var pendingClearSlots: [Range<Int>] = []
 
     private func scheduleLaneClear() {
-        pendingClearSlots = cache.map { $0.slot..<($0.slot + $0.width) }
+        // Append: two unloads in one command batch must both clear their slots.
+        pendingClearSlots += cache.map { $0.slot..<($0.slot + $0.width) }
     }
 
     // MARK: - Frame

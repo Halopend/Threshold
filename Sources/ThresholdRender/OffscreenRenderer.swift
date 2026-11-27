@@ -25,6 +25,7 @@ import ThresholdShaderABI
 public final class OffscreenRenderer: @unchecked Sendable {
     private let context: GPUContext
     private let queue: MTLCommandQueue
+    private let postProcessor: PostProcessor
 
     // Size-keyed caches (perf round 16 — CPU side): the bench loop renders a
     // fixed size, so re-creating a 16 MiB output texture (plus cone/stats
@@ -50,6 +51,7 @@ public final class OffscreenRenderer: @unchecked Sendable {
         }
         self.context = context
         self.queue = queue
+        self.postProcessor = try PostProcessor(context: context)
     }
 
     /// Render one request. Pass `program` to dispatch an external DE — its
@@ -89,7 +91,7 @@ public final class OffscreenRenderer: @unchecked Sendable {
             let textureDesc = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .rgba8Unorm,
                 width: request.width, height: request.height, mipmapped: false)
-            textureDesc.usage = [.shaderWrite]
+            textureDesc.usage = [.shaderWrite, .shaderRead]
             textureDesc.storageMode = .shared
             guard let fresh = device.makeTexture(descriptor: textureDesc) else {
                 throw RenderError.allocationFailed("output texture")
@@ -230,6 +232,16 @@ public final class OffscreenRenderer: @unchecked Sendable {
                              depth: 1)
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerGroup)
         encoder.endEncoding()
+
+        // Full-frame effects run after the march, in exact authored order.
+        // `source === destination` is intentional: PostProcessor writes HDR
+        // ping-pong intermediates before blitting the completed image back.
+        try postProcessor.encode(
+            commandBuffer: commandBuffer,
+            source: texture,
+            destination: texture,
+            stack: request.postProcessStack,
+            time: uniforms.scaleCtx.x)
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()

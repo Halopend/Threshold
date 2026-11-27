@@ -99,11 +99,25 @@ public struct LaneWrite: Sendable, Hashable {
     public let lane: Lane
     public let slot: Int
     public let value: Float
+    public let isClear: Bool
 
     public init(lane: Lane, slot: Int, value: Float) {
         self.lane = lane
         self.slot = slot
         self.value = value
+        self.isClear = false
+    }
+
+    /// Unset a slot, including replace-composition slots with no numeric neutral.
+    public static func clear(lane: Lane, slot: Int) -> LaneWrite {
+        LaneWrite(lane: lane, slot: slot)
+    }
+
+    private init(lane: Lane, slot: Int) {
+        self.lane = lane
+        self.slot = slot
+        self.value = 0
+        self.isClear = true
     }
 }
 
@@ -202,7 +216,11 @@ public final class LaneMailbox: Sendable {
             guard w.slot >= 0, w.slot < slotCount else {
                 continue
             }
-            engine.write(lane: w.lane, slot: w.slot, value: w.value)
+            if w.isClear {
+                engine.clearLane(w.lane, slot: w.slot)
+            } else {
+                engine.write(lane: w.lane, slot: w.slot, value: w.value)
+            }
         }
     }
 

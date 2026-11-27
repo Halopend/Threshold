@@ -14,6 +14,9 @@
 #if os(visionOS)
 import CompositorServices
 #endif
+#if os(macOS)
+import AppKit
+#endif
 import ImageIO
 import os
 import SwiftUI
@@ -109,6 +112,7 @@ final class AppModel {
     /// Compiles + probes embedded DEs OFF the render thread (plan §7.2);
     /// programs land via the setExternalDE command.
     @ObservationIgnored let loader: ExternalDELoader
+    @ObservationIgnored lazy var sceneLoads = SceneLoadCoordinator(mirror: mirror, loader: loader)
     /// The last file-open failure, shown as an alert (compile diagnostics
     /// surface verbatim — plan §7.2 "never trust-and-crash").
     var lastOpenError: String?
@@ -118,9 +122,15 @@ final class AppModel {
     @ObservationIgnored let sceneLibrary = SceneLibrary()
     /// The on-disk clip library behind the Motion ▸ Animate sub-tab.
     @ObservationIgnored let animationLibrary = AnimationLibrary()
+    /// Reusable warp-stack recipes behind the Warps tab.
+    @ObservationIgnored let transformationLibrary = TransformationLibrary()
     #if os(macOS)
     /// Arrow-key / WASD camera control (Settings ▸ Input toggles it).
     @ObservationIgnored let keyboardNav = KeyboardCameraNav()
+    /// Opt-in, Debug-only live-path soak task. It drives the same public
+    /// camera and quality APIs as the controls, while the real app window and
+    /// CAMetalDisplayLink remain active (`THRESHOLD_SOAK_SECONDS=<seconds>`).
+    @ObservationIgnored private var soakTask: Task<Void, Never>?
     #endif
 
     init() throws {
@@ -162,17 +172,113 @@ final class AppModel {
         mirror.setQualityGovernor(.platformDefault)
         #if os(macOS)
         keyboardNav.install(surface: surface, camera: camera)
+        startDebugSoakIfRequested()
         #endif
     }
 
     func stop() {
         #if os(macOS)
+        soakTask?.cancel()
         keyboardNav.remove()
         #endif
         audio.stop()
         mirror.stopPolling()
         session.stop()
     }
+
+    #if DEBUG && os(macOS)
+    /// Scripted liveness/stress seam for the actual app shell. Accessibility
+    /// automation is often unavailable in CI/agent sessions, so this asks the
+    /// app to exercise its own UI-facing command surfaces instead of creating
+    /// a parallel renderer test harness.
+    private func startDebugSoakIfRequested() {
+        guard let raw = ProcessInfo.processInfo.environment["THRESHOLD_SOAK_SECONDS"],
+              let seconds = Double(raw), seconds > 0
+        else { return }
+
+        NSApp.activate(ignoringOtherApps: true)
+        mirror.setQualityGovernor(nil)
+        let scales: [Float] = [0.20, 0.35, 0.50, 0.75, 1.00, 0.30, 0.90, 0.45]
+        let startFrame = session.snapshots.latest?.frameIndex ?? 0
+        let deadline = Date().addingTimeInterval(seconds)
+
+        soakTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var phase = 0
+            var previousFrame = startFrame
+            var consecutiveStaticSamples = 0
+            var maximumStaticSamples = 0
+            var sawSpatial = false
+            var sawNative = false
+            var lastSnapshot: RenderSnapshot?
+
+            while Date() < deadline, !Task.isCancelled {
+                var tuning = mirror.renderTuning
+                tuning.manualRenderScale = scales[phase % scales.count]
+                mirror.setRenderTuning(tuning)
+
+                // Deliberately change pose while resolution buckets churn:
+                // this is the user interaction pattern that exposed the old
+                // temporal-scaler queue wedge.
+                let direction: Float = phase.isMultiple(of: 2) ? 1 : -1
+                camera.nudgeOrbit(
+                    yawDelta: 0.09 * direction,
+                    pitchDelta: 0.025 * Float((phase % 3) - 1))
+                if phase.isMultiple(of: 3) {
+                    camera.nudgeDolly(logStep: 0.025 * direction)
+                }
+
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let snapshot = session.snapshots.latest else {
+                    consecutiveStaticSamples += 1
+                    maximumStaticSamples = max(
+                        maximumStaticSamples, consecutiveStaticSamples)
+                    phase += 1
+                    continue
+                }
+                lastSnapshot = snapshot
+                sawSpatial = sawSpatial || snapshot.diagnostics.upscaling
+                sawNative = sawNative || !snapshot.diagnostics.upscaling
+                if snapshot.frameIndex > previousFrame {
+                    consecutiveStaticSamples = 0
+                } else {
+                    consecutiveStaticSamples += 1
+                    maximumStaticSamples = max(
+                        maximumStaticSamples, consecutiveStaticSamples)
+                }
+                previousFrame = snapshot.frameIndex
+
+                if phase.isMultiple(of: 4) {
+                    print(String(
+                        format: "SOAK tick frame=%llu gpu=%.2fms scale=%.2f spatial=%@ steps=%llu",
+                        snapshot.frameIndex,
+                        snapshot.gpuMilliseconds,
+                        snapshot.diagnostics.renderScale,
+                        snapshot.diagnostics.upscaling ? "yes" : "no",
+                        snapshot.totalSteps))
+                    fflush(stdout)
+                }
+                phase += 1
+            }
+
+            let endFrame = lastSnapshot?.frameIndex ?? startFrame
+            let advanced = endFrame > startFrame
+            let didGPUWork = (lastSnapshot?.gpuMilliseconds ?? 0) > 0
+                && (lastSnapshot?.totalSteps ?? 0) > 0
+            let remainedLive = maximumStaticSamples < 8 // <2 seconds at 4 Hz
+            let passed = advanced && didGPUWork && remainedLive
+                && sawSpatial && sawNative
+            print(
+                "SOAK \(passed ? "OK" : "FAIL"): frames=\(startFrame)→\(endFrame) "
+                + "maxStatic=\(maximumStaticSamples) spatial=\(sawSpatial) "
+                + "native=\(sawNative)")
+            fflush(stdout)
+            exit(passed ? 0 : 1)
+        }
+    }
+    #elseif os(macOS)
+    private func startDebugSoakIfRequested() {}
+    #endif
 
     /// Whether the mic is feeding the audio.* signals (Motion ▸ Music toggle).
     var audioEnabled = false
@@ -209,9 +315,10 @@ final class AppModel {
 
     // MARK: File open (plan §7.4)
 
-    /// Open a .threshscene / .threshanim from a security-scoped URL.
+    /// Open a Threshold scene, clip, binding map, or transformation recipe
+    /// from a security-scoped URL.
     /// Decode is synchronous (files are small); an embedded DE compiles on a
-    /// background task, and BOTH commands publish together after it passes —
+    /// background task, and one prepared-scene command publishes after it passes —
     /// a rejected DE means the scene does not half-apply (ExternalDE.swift).
     func open(url: URL) {
         let secured = url.startAccessingSecurityScopedResource()
@@ -227,10 +334,16 @@ final class AppModel {
                     // Legacy files carry no display name — the filename is it.
                     clip.name = url.deletingPathExtension().lastPathComponent
                 }
+                mirror.noteStructuralEdit()
                 mirror.setAnimationClip(clip)
                 mirror.animationTransport(.play)
             case .bindings(let envelope):
+                mirror.noteStructuralEdit()
                 mirror.setBindings(envelope.bindings)
+            case .warpRecipe(let envelope):
+                guard mirror.setWarpStack(envelope.warpStack) else {
+                    throw SessionSubmissionError.commandMailboxFull
+                }
             }
         } catch {
             lastOpenError = "\(url.lastPathComponent): \(error)"
@@ -284,6 +397,18 @@ final class AppModel {
         return true
     }
 
+    /// Persist exactly the authored warp stack currently shown by the editor.
+    /// No render-thread capture is needed: structural commands echo into the
+    /// mirror immediately and snapshots keep it authoritative.
+    func saveCurrentTransformation(named name: String) -> Bool {
+        let recipe = WarpRecipeEnvelope(name: name, warpStack: mirror.warpStack)
+        guard transformationLibrary.save(recipe, name: name) != nil else {
+            lastOpenError = transformationLibrary.lastError
+            return false
+        }
+        return true
+    }
+
     /// Render the current frame offscreen at export size → PNG bytes.
     /// The render thread services the capture on its next frame; large
     /// exports legitimately take a few seconds of polling.
@@ -325,30 +450,11 @@ final class AppModel {
     }
 
     private func apply(scene envelope: SceneEnvelope, from filename: String) {
-        // Focus Band is app-shell/analyzer state — push it to the mic + UI for
-        // BOTH the embedded and non-embedded paths (mirror.applyScene seeds the
-        // observable in the non-embedded path, but the analyzer needs it either
-        // way and the embedded path skips applyScene).
-        setFocusBand(envelope.focusBand ?? .default)
-        guard envelope.embeddedDE != nil else {
-            mirror.applyScene(envelope)
-            return
-        }
-        // Compile off the main actor; loader + mailbox are Sendable. The
-        // cache makes reopening the same DE instant.
-        let commands = session.commands
-        let loader = loader
-        Task.detached(priority: .userInitiated) {
-            do {
-                let program = try envelope.embeddedDE.map { try loader.load($0) }
-                guard commands.publish(.applyPreparedScene(
-                    envelope, externalProgram: program, transition: .default))
-                else { throw SessionSubmissionError.commandMailboxFull }
-            } catch {
-                let message = "\(filename): \(error)"
-                await MainActor.run { self.lastOpenError = message }
-            }
-        }
+        sceneLoads.load(envelope, onSubmitted: { [weak self] in
+            self?.setFocusBand(envelope.focusBand ?? .default)
+        }, onFailure: { [weak self] error in
+            self?.lastOpenError = "\(filename): \(error)"
+        })
     }
 
 }
@@ -444,6 +550,10 @@ struct MainView: View {
                     animationActions: AnimationActions(
                         library: model.animationLibrary,
                         load: { model.open(url: $0) }),
+                    transformationActions: TransformationActions(
+                        library: model.transformationLibrary,
+                        load: { model.open(url: $0) },
+                        saveCurrent: { model.saveCurrentTransformation(named: $0) }),
                     audioActions: AudioActions(
                         isEnabled: { model.audioEnabled },
                         setEnabled: { model.setAudioEnabled($0) },
@@ -527,14 +637,32 @@ final class VisionAppModel {
     @ObservationIgnored let session: CompositorSession
     @ObservationIgnored let mirror: ParameterMirror
     @ObservationIgnored let loader: ExternalDELoader
+    @ObservationIgnored lazy var sceneLoads = SceneLoadCoordinator(mirror: mirror, loader: loader)
     @ObservationIgnored let audio: AudioAnalyzer
     @ObservationIgnored let hands: HandTracker
     @ObservationIgnored let sceneLibrary = SceneLibrary()
     @ObservationIgnored let animationLibrary = AnimationLibrary()
+    @ObservationIgnored let transformationLibrary = TransformationLibrary()
     /// Device-local gesture bindings, shared with the sidebar's Gestures tab
     /// and pushed into the HandTracker on edit / fractal change.
     @ObservationIgnored let gestureStore = GestureBindingStore()
+    var handControlsPaused = false
+
+    func setHandControlsPaused(_ paused: Bool) {
+        handControlsPaused = paused
+        hands.setUISuppressed(paused)
+        session.worldGrab.setSuppressed(paused)
+    }
+
+    func resetHandControls() {
+        hands.reset()
+        session.worldGrab.reset()
+    }
+
     var lastOpenError: String?
+    enum ImmersionState { case closed, opening, open, closing }
+    var immersionState: ImmersionState = .closed
+    var immersionError: String?
 
     /// Install the current fractal's gesture bindings into the tracker. Called
     /// when the user edits a binding (store.onChange) and when the fractal
@@ -578,6 +706,16 @@ final class VisionAppModel {
             layout: layout, snapshots: session.snapshots, commands: session.commands)
         self.audio = AudioAnalyzer(signals: signals)
 
+        session.onRenderLoopEnded = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.hands.stop()
+                self.hands.reset()
+                self.session.worldGrab.reset()
+                self.immersionState = .closed
+            }
+        }
+
         // Push binding edits straight into the render-thread tracker.
         gestureStore.onChange = { [weak self] in self?.refreshGestureBindings() }
     }
@@ -586,8 +724,12 @@ final class VisionAppModel {
     /// space opens: spin up the render thread + hand tracking, and arm the
     /// quality governor that drives the compositor's renderQuality lever.
     func attach(_ layerRenderer: LayerRenderer) {
+        hands.reset()
+        session.worldGrab.reset()
+        refreshGestureBindings()
         session.start(layerRenderer)
         hands.start()
+        immersionState = .open
         // governorDefault drops the resolution floor to 0.35 when temporal
         // reconstruction is armed (it holds quality there — the point).
         mirror.setQualityGovernor(CompositorSession.governorDefault)
@@ -630,41 +772,29 @@ final class VisionAppModel {
             let data = try Data(contentsOf: url)
             switch try ThresholdFile.decode(data, filename: url.lastPathComponent) {
             case .scene(let envelope):
-                // Focus Band → mic + UI for both the embedded and non-embedded
-                // paths (see the desktop shell's apply(scene:)).
-                setFocusBand(envelope.focusBand ?? .default)
-                // Drop in-flight camera/grab state so the new scene starts from
-                // its authored pose, not the previous scene's orbit/grab (the
-                // "gesture lane persists after scene load" footgun).
-                hands.reset()
-                session.worldGrab.reset()
-                guard envelope.embeddedDE != nil else {
-                    mirror.applyScene(envelope)
-                    return
-                }
-                let commands = session.commands
-                let loader = loader
-                let filename = url.lastPathComponent
-                Task.detached(priority: .userInitiated) {
-                    do {
-                        let program = try envelope.embeddedDE.map { try loader.load($0) }
-                        guard commands.publish(.applyPreparedScene(
-                            envelope, externalProgram: program, transition: .default))
-                        else { throw SessionSubmissionError.commandMailboxFull }
-                    } catch {
-                        let message = "\(filename): \(error)"
-                        await MainActor.run { self.lastOpenError = message }
-                    }
-                }
+                sceneLoads.load(envelope, onSubmitted: { [weak self] in
+                    guard let self else { return }
+                    self.setFocusBand(envelope.focusBand ?? .default)
+                    self.hands.reset()
+                    self.session.worldGrab.reset()
+                }, onFailure: { [weak self] error in
+                    self?.lastOpenError = "\(url.lastPathComponent): \(error)"
+                })
             case .animation(let envelope):
                 var clip = envelope.clip
                 if clip.name == nil {
                     clip.name = url.deletingPathExtension().lastPathComponent
                 }
+                mirror.noteStructuralEdit()
                 mirror.setAnimationClip(clip)
                 mirror.animationTransport(.play)
             case .bindings(let envelope):
+                mirror.noteStructuralEdit()
                 mirror.setBindings(envelope.bindings)
+            case .warpRecipe(let envelope):
+                guard mirror.setWarpStack(envelope.warpStack) else {
+                    throw SessionSubmissionError.commandMailboxFull
+                }
             }
         } catch {
             lastOpenError = "\(url.lastPathComponent): \(error)"
@@ -702,6 +832,15 @@ final class VisionAppModel {
         }
         return true
     }
+
+    func saveCurrentTransformation(named name: String) -> Bool {
+        let recipe = WarpRecipeEnvelope(name: name, warpStack: mirror.warpStack)
+        guard transformationLibrary.save(recipe, name: name) != nil else {
+            lastOpenError = transformationLibrary.lastError
+            return false
+        }
+        return true
+    }
 }
 
 // MARK: - Main view (visionOS)
@@ -710,7 +849,6 @@ struct VisionMainView: View {
     @Bindable var model: VisionAppModel
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
-    @State private var immersed = false
     @State private var importing = false
     @State private var exporting = false
     @State private var exportDocument: SceneFileDocument?
@@ -718,45 +856,36 @@ struct VisionMainView: View {
     var body: some View {
         // The sidebar scrolls itself (tab strip stays fixed on top).
         VStack(spacing: 0) {
-            Toggle(isOn: $immersed) {
+            Button {
+                Task { await toggleImmersion() }
+            } label: {
                 Label(
-                    immersed ? "Leave the Fractal" : "Enter the Fractal",
+                    model.immersionState == .open ? "Leave the Fractal" : "Enter the Fractal",
                     systemImage: "visionpro")
             }
-            .toggleStyle(.button)
-            .onChange(of: immersed) { _, on in
-                Task {
-                    if on {
-                        switch await openImmersiveSpace(id: ThresholdApp.immersiveSpaceID) {
-                        case .opened: break
-                        default: immersed = false
-                        }
-                    } else {
-                        await dismissImmersiveSpace()
-                    }
-                }
-            }
+            .disabled(model.immersionState == .opening || model.immersionState == .closing)
             .task {
-                // Headless-capture seam (fps-testing "Path B" autopilot,
-                // step 1): open the immersive space on launch so simulator/
-                // device profiling runs need no UI interaction. Env-gated,
-                // inert otherwise. Retries because a launch-time open can
-                // race scene activation (the toggle's onChange reverts
-                // `immersed` on failure — that revert is the retry signal).
                 guard ProcessInfo.processInfo.environment["THRESHOLD_AUTO_IMMERSIVE"] == "1"
                 else { return }
-                for attempt in 0..<5 where !immersed {
-                    try? await Task.sleep(for: .seconds(attempt == 0 ? 1 : 2))
-                    if !immersed {
-                        ThresholdLog.session.notice(
-                            "auto-immersive: opening (attempt \(attempt + 1))")
-                        immersed = true
-                        try? await Task.sleep(for: .seconds(1))
-                    }
+                for attempt in 0..<5 {
+                    guard model.immersionState == .closed else { return }
+                    do {
+                        try await Task.sleep(for: .seconds(attempt == 0 ? 1 : 2))
+                    } catch { return }
+                    guard model.immersionState == .closed else { return }
+                    await toggleImmersion()
                 }
             }
             .padding(.horizontal)
             .padding(.top, 8)
+            .alert("Could not open immersive space", isPresented: SwiftUI.Binding(
+                get: { model.immersionError != nil },
+                set: { if !$0 { model.immersionError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(model.immersionError ?? "")
+            }
 
             HStack {
                 Button("Open…") { importing = true }
@@ -772,6 +901,14 @@ struct VisionMainView: View {
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
+            HStack {
+                Toggle("Pause Gestures", isOn: SwiftUI.Binding(
+                    get: { model.handControlsPaused },
+                    set: { model.setHandControlsPaused($0) }))
+                Button("Reset Hand Adjustments") { model.resetHandControls() }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
             Divider()
             ControlSidebar(
                 mirror: model.mirror, layout: model.layout,
@@ -782,6 +919,10 @@ struct VisionMainView: View {
                 animationActions: AnimationActions(
                     library: model.animationLibrary,
                     load: { model.open(url: $0) }),
+                transformationActions: TransformationActions(
+                    library: model.transformationLibrary,
+                    load: { model.open(url: $0) },
+                    saveCurrent: { model.saveCurrentTransformation(named: $0) }),
                 audioActions: AudioActions(
                     isEnabled: { model.audioEnabled },
                     setEnabled: { model.setAudioEnabled($0) },
@@ -819,6 +960,34 @@ struct VisionMainView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.lastOpenError ?? "")
+        }
+    }
+
+    @MainActor
+    private func toggleImmersion() async {
+        switch model.immersionState {
+        case .closed:
+            model.immersionError = nil
+            model.immersionState = .opening
+            switch await openImmersiveSpace(id: ThresholdApp.immersiveSpaceID) {
+            case .opened:
+                break // attach(_:) confirms the live renderer.
+            case .userCancelled:
+                model.immersionState = .closed
+            case .error:
+                model.immersionState = .closed
+                model.immersionError = "Vision Pro could not open the immersive space. Please try again."
+            @unknown default:
+                model.immersionState = .closed
+                model.immersionError = "The immersive space is unavailable."
+            }
+        case .open:
+            model.immersionState = .closing
+            await dismissImmersiveSpace()
+            // Render-loop completion closes the state after teardown, so a
+            // second tap cannot attach a layer while the old loop is alive.
+        case .opening, .closing:
+            break
         }
     }
 

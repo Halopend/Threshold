@@ -155,6 +155,9 @@ public struct SceneEnvelope: Sendable, Equatable {
     /// image; 0 (the default, omitted on encode) for never-rebased scenes.
     public var scaleOctave: Int32
     public var warpStack: [WarpOpDTO]
+    /// Ordered post-processing filters. Array order is render order; unknown
+    /// raw kinds remain in place so newer scene content round-trips safely.
+    public var postProcessStack: [PostProcessFilterDTO]
     public var camera: CameraDTO
     /// Scene palette (gradient stops). `nil` means "no authored palette" — the
     /// renderer falls back to its default palette (plan §5.5).
@@ -186,6 +189,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         integratorPhases: [String: Float] = [:],
         scaleOctave: Int32 = 0,
         warpStack: [WarpOpDTO] = [],
+        postProcessStack: [PostProcessFilterDTO] = [],
         camera: CameraDTO = .default,
         palette: Palette? = nil,
         bindings: [Binding] = [],
@@ -204,6 +208,7 @@ public struct SceneEnvelope: Sendable, Equatable {
         self.integratorPhases = integratorPhases
         self.scaleOctave = scaleOctave
         self.warpStack = warpStack
+        self.postProcessStack = postProcessStack
         self.camera = camera
         self.palette = palette
         self.bindings = bindings
@@ -230,7 +235,8 @@ extension SceneEnvelope: Codable {
     private static let knownKeys: Set<String> = [
         "version", "abiVersion", "name", "tags", "fractalTypeKey",
         "embeddedDE", "params", "integratorPhases", "scaleOctave",
-        "warpStack", "camera", "palette", "bindings", "lfos", "focusBand",
+        "warpStack", "postProcessStack", "camera", "palette", "bindings",
+        "lfos", "focusBand",
     ]
 
     public init(from decoder: any Decoder) throws {
@@ -253,6 +259,16 @@ extension SceneEnvelope: Codable {
             try c.decodeIfPresent([String: Float].self, forKey: key("integratorPhases")) ?? [:]
         scaleOctave = try c.decodeIfPresent(Int32.self, forKey: key("scaleOctave")) ?? 0
         warpStack = try c.decodeIfPresent([WarpOpDTO].self, forKey: key("warpStack")) ?? []
+        // Filter ids key UI identity and edits; a hand-edited file with a
+        // repeated id would make the duplicate uneditable, so re-id repeats.
+        var seenFilterIDs = Set<UUID>()
+        postProcessStack = (try c.decodeIfPresent(
+            [PostProcessFilterDTO].self, forKey: key("postProcessStack")) ?? []
+        ).map { filter in
+            var filter = filter
+            if !seenFilterIDs.insert(filter.id).inserted { filter.id = UUID() }
+            return filter
+        }
         camera = try c.decodeIfPresent(CameraDTO.self, forKey: key("camera")) ?? .default
         palette = try c.decodeIfPresent(Palette.self, forKey: key("palette"))
         bindings = try c.decodeIfPresent([Binding].self, forKey: key("bindings")) ?? []
@@ -308,6 +324,7 @@ extension SceneEnvelope: Codable {
         }
         if scaleOctave != 0 { try c.encode(scaleOctave, forKey: key("scaleOctave")) }
         try c.encode(warpStack, forKey: key("warpStack"))
+        try c.encode(postProcessStack, forKey: key("postProcessStack"))
         try c.encode(camera, forKey: key("camera"))
         try c.encodeIfPresent(palette, forKey: key("palette"))
         if !bindings.isEmpty { try c.encode(bindings, forKey: key("bindings")) }

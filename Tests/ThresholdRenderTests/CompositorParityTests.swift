@@ -74,10 +74,12 @@ struct CompositorParityTests {
     /// Render `request` through the raster path (single view, pinhole
     /// projection matching the request's camera) into offscreen textures.
     /// `specialized` injects a specific variant (cone/specialization path);
-    /// nil renders the generic pipeline.
+    /// nil renders the generic pipeline. `program` sets an active external DE
+    /// whose lazily-built fragment variant must render the same image.
     private func rasterRender(
         _ request: RenderRequest, context: GPUContext,
-        specialized: SpecializedRaster? = nil
+        specialized: SpecializedRaster? = nil,
+        program: ExternalDEProgram? = nil
     ) throws -> [UInt8] {
         let device = context.device
         let encoder = try ViewPassEncoder(
@@ -119,7 +121,7 @@ struct CompositorParityTests {
         let commandBuffer = try #require(queue.makeCommandBuffer())
         let encoded = encoder.encode(
             request, views: [view], renderPass: pass, commandBuffer: commandBuffer,
-            overrideSpecialized: specialized)
+            program: program, overrideSpecialized: specialized)
         #expect(encoded, "raster encode must accept the parity request")
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -507,5 +509,239 @@ struct CompositorParityTests {
                           from: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0)
         }
         #expect(out == pattern, "depth blit round trip must be bit-exact")
+    }
+
+    // MARK: External DEs on the compositor paths
+    //
+    // The raster + view-compute encoders must render scenes whose DE is an
+    // embedded external program (the majority of the legacy scene library).
+    // On-device this happens at real drawable formats; here the same external
+    // program goes through BOTH shells off-device and must agree.
+
+    /// A well-formed external DE: a unit sphere at the origin (same shape the
+    /// External DE suite probes; constant trap channel).
+    private static let externalSphereSource = """
+        [[visible]] float2 de_main(float3 p, thread const ThreshDEContext& ctx)
+        {
+            return float2(length(p) - ctx.params[0], 0.5f);
+        }
+        """
+
+    /// The offscreen external request both shells render: the sphere at a
+    /// radius param, camera on +Z, no ops.
+    private func externalSphereRequest(
+        context: GPUContext, program: ExternalDEProgram
+    ) throws -> (request: RenderRequest, paramCount: Int) {
+        let (params, deParamOffset) = ParamTableLayout.build(
+            engine: EngineParams(),
+            deParams: program.descriptor.paramLayout.map(\.default))
+        var uniforms = ThreshFrameUniforms()
+        uniforms.camPosFov = SIMD4(0, 0, 3, tan(Float.pi / 6))
+        uniforms.camQuat = SIMD4(0, 0, 0, 1)
+        uniforms.scaleCtx = SIMD4(0, 1e-3, 1, 1)
+        uniforms.meta = SIMD4(0, program.descriptor.index,
+                              UInt32(params.count), UInt32(deParamOffset))
+        return (RenderRequest(
+            uniforms: uniforms, params: params, ops: [],
+            palette: PaletteWire.defaultStops, width: 96, height: 96),
+                params.count)
+    }
+
+    @Test(.enabled(if: GPU.available))
+    func externalDERasterMatchesCompute() throws {
+        let ctx = try GPU.ctx()
+        let loader = try ExternalDELoader(context: ctx)
+        let program = try loader.load(EmbeddedDE(
+            source: Self.externalSphereSource,
+            abiVersion: Int(THRESHOLD_ABI_VERSION),
+            hash: ExternalDELoader.sourceHash(Self.externalSphereSource),
+            params: [.init(name: "radius", defaultValue: 1, min: 0.1, max: 4)]))
+        let pair = try externalSphereRequest(context: ctx, program: program)
+
+        // The fragment variant builds OFF-THREAD on first use (a linked
+        // fragment PSO must never compile on the render thread) — poll until
+        // it lands, then the encode path is a pure cache hit.
+        var landed = false
+        for _ in 0..<1000 {
+            if program.rasterVariant(
+                context: ctx, colorFormat: .rgba8Unorm,
+                depthFormat: .depth32Float, maxViewCount: 1) != nil {
+                landed = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(landed, "external raster variant must compile off-thread")
+
+        let compute = try OffscreenRenderer(context: ctx).render(
+            pair.request, program: program)
+        let raster = try rasterRender(pair.request, context: ctx, program: program)
+
+        // Same parity contract as the built-in test: silhouette-confined
+        // outliers, no systematic divergence.
+        var outliers = 0
+        var totalDiff = 0
+        var compared = 0
+        for i in stride(from: 0, to: raster.count, by: 4) {
+            for c in i..<(i + 3) {
+                let diff = abs(Int(raster[c]) - Int(compute.rgba8[c]))
+                totalDiff += diff
+                compared += 1
+                if diff > 3 { outliers += 1 }
+            }
+        }
+        #expect(Double(outliers) / Double(compared) < 0.005,
+                Comment(rawValue: "external raster≡compute outliers"))
+        #expect(Double(totalDiff) / Double(compared) < 0.5,
+                Comment(rawValue: "external mean diff"))
+
+        // And it actually marched the sphere: center pixel non-black on
+        // raster, corner pixel the transparent miss.
+        let center = (48 * 96 + 48) * 4
+        #expect(raster[center] > 0 || raster[center + 1] > 0 || raster[center + 2] > 0,
+                "sphere must be visible through the raster external path")
+        #expect(compute.stats.totalSteps > 0)
+    }
+
+    @Test(.enabled(if: GPU.available))
+    func externalDEComputeBackendStillValidates() throws {
+        // The view-compute backend must now accept the external index it used
+        // to reject outright (validatedUniforms ran against builtin count).
+        let ctx = try GPU.ctx()
+        let loader = try ExternalDELoader(context: ctx)
+        let program = try loader.load(EmbeddedDE(
+            source: Self.externalSphereSource,
+            abiVersion: Int(THRESHOLD_ABI_VERSION),
+            hash: ExternalDELoader.sourceHash(Self.externalSphereSource),
+            params: [.init(name: "radius", defaultValue: 1, min: 0.1, max: 4)]))
+        let pair = try externalSphereRequest(context: ctx, program: program)
+
+        let encoder = try ViewComputeEncoder(
+            context: ctx, colorFormat: .rgba8Unorm)
+        // Same async-first-use contract for the view-compute variant.
+        var landed = false
+        for _ in 0..<1000 {
+            if program.viewComputeVariant(context: ctx, aux: false, seed: false) != nil {
+                landed = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(landed, "external view-compute variant must compile off-thread")
+        let device = ctx.device
+        let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: 96, height: 96, mipmapped: false)
+        colorDesc.usage = [.renderTarget, .shaderRead]
+        colorDesc.storageMode = .shared
+        let depthDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r32Float, width: 96, height: 96, mipmapped: false)
+        depthDesc.usage = [.shaderWrite, .shaderRead]
+        depthDesc.storageMode = .private
+        let color = try #require(device.makeTexture(descriptor: colorDesc))
+        let depth = try #require(device.makeTexture(descriptor: depthDesc))
+
+        let view = CompositorViewMath.viewUniforms(
+            projection: CompositorViewMath.pinholeProjection(
+                fovTan: pair.request.uniforms.camPosFov.w, aspect: 1),
+            eyeToRoom: matrix_identity_float4x4,
+            anchorPosition: .zero, base: pair.request.uniforms)
+        let queue = try #require(device.makeCommandQueue())
+        let commandBuffer = try #require(queue.makeCommandBuffer())
+        let encoded = encoder.encode(
+            pair.request, views: [view],
+            colorTargets: [(color, 0)], depthTargets: [(depth, 0)],
+            commandBuffer: commandBuffer, program: program)
+        #expect(encoded, "view-compute must accept an external-DE request now")
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        try #require(commandBuffer.error == nil)
+
+        var rgba = [UInt8](repeating: 0, count: 96 * 96 * 4)
+        rgba.withUnsafeMutableBytes { raw in
+            color.getBytes(
+                raw.baseAddress!, bytesPerRow: 96 * 4,
+                from: MTLRegionMake2D(0, 0, 96, 96), mipmapLevel: 0)
+        }
+        #expect(rgba.contains { $0 > 8 }, "blank proves nothing")
+    }
+
+    @Test(.enabled(if: GPU.available))
+    func externalDETemporalPathRenders() throws {
+        // The compute backend's temporal mode (aux/aux+seed twins) must also
+        // work for an active external DE: its lazily-built aux variant
+        // replaces the built-in aux pipeline, and the recon's resolve/present
+        // run between the march and the blit. This is the path an in-headset
+        // user hits with compute + reconstruction + a custom scene.
+        let ctx = try GPU.ctx()
+        let loader = try ExternalDELoader(context: ctx)
+        let program = try loader.load(EmbeddedDE(
+            source: Self.externalSphereSource,
+            abiVersion: Int(THRESHOLD_ABI_VERSION),
+            hash: ExternalDELoader.sourceHash(Self.externalSphereSource),
+            params: [.init(name: "radius", defaultValue: 1, min: 0.1, max: 4)]))
+        let pair = try externalSphereRequest(context: ctx, program: program)
+        // Reduce march scale so the recon's lever engages (aux selects).
+        var request = pair.request
+        request.renderScale = 0.5
+
+        let recon = try TemporalReconstructor(context: ctx, colorFormat: .rgba8Unorm)
+        recon.mode = .stabilize
+
+        let encoder = try ViewComputeEncoder(context: ctx, colorFormat: .rgba8Unorm)
+        // Frame 0 (no history) takes the PLAIN variant; frame 1+ takes the
+        // aux twin. Warm both off-thread before encoding.
+        var landed = [false, false]
+        for _ in 0..<1000 {
+            landed[0] = program.viewComputeVariant(
+                context: ctx, aux: false, seed: false) != nil
+            landed[1] = program.viewComputeVariant(
+                context: ctx, aux: true, seed: false) != nil
+            if landed[0], landed[1] { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(landed == [true, true],
+                "external plain + aux variants must compile off-thread")
+
+        let device = ctx.device
+        func target(_ fmt: MTLPixelFormat, usage: MTLTextureUsage) throws -> MTLTexture {
+            let d = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: fmt, width: 96, height: 96, mipmapped: false)
+            d.usage = usage
+            d.storageMode = .shared
+            return try #require(device.makeTexture(descriptor: d))
+        }
+        let color = try target(.rgba8Unorm, usage: [.renderTarget, .shaderRead])
+        let depth = try target(.r32Float, usage: [.shaderWrite, .shaderRead])
+        let view = CompositorViewMath.viewUniforms(
+            projection: CompositorViewMath.pinholeProjection(
+                fovTan: request.uniforms.camPosFov.w, aspect: 1),
+            eyeToRoom: matrix_identity_float4x4,
+            anchorPosition: .zero, base: request.uniforms)
+        let queue = try #require(device.makeCommandQueue())
+
+        // Two frames: frame 1 has no history (phase-0 path), frame 2 resolves
+        // temporal — both must encode cleanly through the external aux path.
+        var encodedFrames = 0
+        for frame in 0..<2 {
+            let commandBuffer = try #require(queue.makeCommandBuffer())
+            let encoded = encoder.encode(
+                request, views: [view],
+                colorTargets: [(color, 0)], depthTargets: [(depth, 0)],
+                commandBuffer: commandBuffer, program: program,
+                recon: recon, prevViews: frame > 0 ? [view] : nil)
+            #expect(encoded, "temporal external frame \(frame) must encode")
+            if encoded { encodedFrames += 1 }
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            try #require(commandBuffer.error == nil)
+        }
+        #expect(encodedFrames == 2)
+
+        var rgba = [UInt8](repeating: 0, count: 96 * 96 * 4)
+        rgba.withUnsafeMutableBytes { raw in
+            color.getBytes(raw.baseAddress!, bytesPerRow: 96 * 4,
+                           from: MTLRegionMake2D(0, 0, 96, 96), mipmapLevel: 0)
+        }
+        #expect(rgba.contains { $0 > 8 }, "temporal external render is not blank")
     }
 }

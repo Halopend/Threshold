@@ -97,6 +97,16 @@ private struct Harness {
     }
 }
 
+private func postFilter(
+    _ kind: PostProcessKind, suffix: Int, strength: Float = 1
+) -> PostProcessFilterDTO {
+    let tail = String(format: "%012X", suffix)
+    return PostProcessFilterDTO(
+        id: UUID(uuidString: "30000000-0000-0000-0000-\(tail)")!,
+        kind: kind, enabled: true, strength: strength,
+        a: [0, 0, 0, 0], b: [0, 0, 0, 0])
+}
+
 // MARK: - Tests
 
 @Suite("Interactive session core")
@@ -104,7 +114,7 @@ struct SessionCoreTests {
 
     // MARK: applyScene
 
-    @Test func applySceneChangesResolvedValuesDEAndWarpStack() {
+    @Test func applySceneChangesResolvedValuesDEAndStructuralStacks() {
         var h = Harness()
         let baseline = h.step()
         #expect(baseline.deKey == "mandelbulb", "default DE before any scene")
@@ -112,6 +122,7 @@ struct SessionCoreTests {
         let authored = [
             WarpOpDTO(kind: WK.twist, strength: 0.5, a: [0, 1, 0, 0], b: [0, 0, 0, 0])
         ]
+        let post = [postFilter(.vignette, suffix: 1), postFilter(.bloom, suffix: 2)]
         let scene = SceneEnvelope(
             version: SceneCodec.currentVersion,
             fractalTypeKey: "mandelbox",
@@ -119,7 +130,8 @@ struct SessionCoreTests {
                 TK.add.rawValue: [3.5],
                 ParamKey.de("mandelbox", "scale").rawValue: [2.5],
             ],
-            warpStack: authored)
+            warpStack: authored,
+            postProcessStack: post)
         h.commands.publish(.applyScene(scene, transition: nil))
         let frame = h.step()
 
@@ -127,12 +139,16 @@ struct SessionCoreTests {
         #expect(frame.request.uniforms.meta.y == 0, "mandelbox function-table index")
         #expect(frame.warpStack == authored, "snapshot carries the AUTHORED stack")
         #expect(frame.request.ops.count == 1)
+        #expect(frame.postProcessStack == post)
+        #expect(frame.request.postProcessStack == post,
+                "the renderer receives filters in authored execution order")
         #expect(abs(frame.resolved.values[h.slot(TK.add)] - 3.5) < 1e-5)
         #expect(abs(frame.resolved.values[h.slot(.de("mandelbox", "scale"))] - 2.5) < 1e-5)
 
         let snapshot = frame.snapshot(gpuMilliseconds: 1.25, totalSteps: 7)
         #expect(snapshot.deKey == "mandelbox")
         #expect(snapshot.warpStack == authored)
+        #expect(snapshot.postProcessStack == post)
         #expect(snapshot.gpuMilliseconds == 1.25 && snapshot.totalSteps == 7)
     }
 
@@ -147,6 +163,23 @@ struct SessionCoreTests {
         let frame = h.step()
         #expect(frame.warpStack == authored, "authored stack survives verbatim")
         #expect(frame.request.ops.count == 1, "zero-strength op simplified away for the GPU")
+    }
+
+    @Test func setPostProcessStackPreservesOrderIDsAndDuplicateKinds() {
+        var h = Harness()
+        h.step()
+        let authored = [
+            postFilter(.invert, suffix: 1, strength: 0.25),
+            postFilter(.vignette, suffix: 2, strength: 0.5),
+            postFilter(.invert, suffix: 3, strength: 0.75),
+        ]
+
+        h.commands.publish(.setPostProcessStack(authored))
+        let frame = h.step()
+
+        #expect(frame.postProcessStack == authored)
+        #expect(frame.request.postProcessStack == authored)
+        #expect(frame.snapshot(gpuMilliseconds: 0, totalSteps: 0).postProcessStack == authored)
     }
 
     // MARK: setDE
@@ -465,6 +498,36 @@ struct SessionCoreTests {
     }
 
     @Test(.enabled(if: GPU.available))
+    func externalDEParamsSurviveSceneCapture() throws {
+        let ctx = try GPU.ctx()
+        let loader = try ExternalDELoader(context: ctx)
+        let source = ExternalDETests.sphereSource
+        let embedded = EmbeddedDE(
+            source: source, abiVersion: Int(THRESHOLD_ABI_VERSION),
+            hash: ExternalDELoader.sourceHash(source),
+            params: [EmbeddedDEParam(name: "radius", defaultValue: 1, min: 0.1, max: 2)])
+        let program = try loader.load(embedded)
+
+        var h = Harness()
+        h.step()
+        var scene = SceneEnvelope(
+            version: SceneCodec.currentVersion, fractalTypeKey: "external")
+        scene.embeddedDE = embedded
+        scene.params["de.external.radius"] = [1.5]
+        h.commands.publish(.applyPreparedScene(
+            scene, externalProgram: program, transition: nil))
+        h.step()
+
+        let slot = SceneCaptureSlot()
+        h.commands.publish(.captureScene(into: slot))
+        h.step()
+        let captured = try #require(slot.take())
+        #expect(captured.params["de.external.radius"] == [1.5],
+                "saving a custom-formula scene keeps its authored params")
+        #expect(captured.embeddedDE == embedded)
+    }
+
+    @Test(.enabled(if: GPU.available))
     func externalDEParamsRegisterIntoTheArenaAndRecycle() throws {
         let ctx = try GPU.ctx()
         let loader = try ExternalDELoader(context: ctx)
@@ -556,6 +619,10 @@ struct SessionCoreTests {
         scene.params[ParamKey.engineAOStrength.rawValue] = [1.25]
         scene.warpStack = [WarpOpDTO(kind: WK.twist, strength: 0.5,
                                      a: [0, 1, 0, 0], b: [0, 0, 0, 0])]
+        scene.postProcessStack = [
+            postFilter(.gaussianBlur, suffix: 11, strength: 0.2),
+            postFilter(.sharpen, suffix: 12, strength: 0.4),
+        ]
         scene.palette = Palette(stops: [
             GradientStop(position: 0, red: 1, green: 0, blue: 0),
             GradientStop(position: 1, red: 0, green: 0, blue: 1),
@@ -577,6 +644,7 @@ struct SessionCoreTests {
         #expect(captured.params[ParamKey.engineAOStrength.rawValue] == [1.25],
                 "the AUTHORED value, not the user-edited resolve")
         #expect(captured.warpStack.count == 1 && captured.warpStack[0].kind == WK.twist)
+        #expect(captured.postProcessStack == scene.postProcessStack)
         #expect(captured.palette?.stops.count == 2)
         #expect(captured.version == SceneCodec.currentVersion)
 
@@ -584,6 +652,7 @@ struct SessionCoreTests {
         let data = try SceneCodec.encode(captured)
         let reopened = try SceneCodec.decode(data)
         #expect(reopened.params[ParamKey.engineAOStrength.rawValue] == [1.25])
+        #expect(reopened.postProcessStack == scene.postProcessStack)
     }
 
     @Test func imageCapturesQueueInCommandOrderAndReportTerminalFailure() throws {
@@ -683,6 +752,54 @@ struct SessionCoreTests {
         for _ in 0..<900 { h.step(gpuMilliseconds: 2) }
         #expect(h.step().request.renderScale > 0.7,
                 "recovery is bounded only by the (raised) ceiling")
+    }
+
+    // MARK: Step-budget rescue (visionOS opt-in)
+
+    @Test func stepBudgetRescueEngagesOnlyWhenPinnedAndOverBudget() {
+        var h = Harness()
+        h.step()
+        let maxStepsSlot = Int(THRESH_SLOT_MAX_STEPS)
+        let authoredSteps = h.step().resolved.values[maxStepsSlot]
+
+        // visionOS-shaped config: rescue armed.
+        h.commands.publish(.setQualityGovernor(QualityGovernorConfig(
+            targetMilliseconds: 8, minRenderScale: 0.5, stepBudgetRescue: true)))
+
+        // Sustained 5× overrun: resolution drops to the floor, and once it is
+        // PINNED there the step cap sheds within a few frames.
+        var pinned: SessionFrame? = nil
+        for _ in 0..<60 {
+            let frame = h.step(gpuMilliseconds: 40)
+            if frame.request.renderScale <= 0.5 + 1e-5,
+               frame.resolved.values[maxStepsSlot] < authoredSteps {
+                pinned = frame
+                break
+            }
+        }
+        #expect(pinned != nil, "pinned at floor + over budget → the step cap sheds")
+        #expect(pinned!.request.renderScale <= 0.5 + 1e-5,
+                "the shed only ever runs past the resolution lever's own floor")
+
+        // Under budget again: the shed relaxes back to the authored cap.
+        for _ in 0..<120 { h.step(gpuMilliseconds: 2) }
+        let relaxed = h.step()
+        #expect(relaxed.resolved.values[maxStepsSlot] == authoredSteps,
+                "under-budget frames recover the step cap")
+    }
+
+    @Test func stepBudgetRescueStaysOffWithoutOptIn() {
+        var h = Harness()
+        h.step()
+        let maxStepsSlot = Int(THRESH_SLOT_MAX_STEPS)
+        let authoredSteps = h.step().resolved.values[maxStepsSlot]
+        // The Mac-shaped default: NO rescue, sustained 5× overrun.
+        h.commands.publish(.setQualityGovernor(QualityGovernorConfig(
+            targetMilliseconds: 8, minRenderScale: 0.5)))
+        for _ in 0..<240 { h.step(gpuMilliseconds: 40) }
+        let frame = h.step()
+        #expect(frame.resolved.values[maxStepsSlot] == authoredSteps,
+                "without opt-in the governor must never touch the step cap")
     }
 
     // MARK: Octave rebase (plan §6.3, infinite-zoom phase 2)

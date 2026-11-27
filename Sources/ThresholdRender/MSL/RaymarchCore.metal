@@ -265,7 +265,9 @@ static float3 applyPointOps(float3 p, device const ThreshWarpOp* ops, uint count
 
         case ThreshWarpKindSphereInvert: {             // a.x radius
             float r2 = max(dot(p, p), 1e-12f);
-            float k = mix(1.0f, (op.a.x * op.a.x) / r2, s);
+            // Strength > 1 extrapolates past zero; keep k positive so dScale
+            // stays a valid (positive) conformal factor.
+            float k = max(mix(1.0f, (op.a.x * op.a.x) / r2, s), 1e-3f);
             p *= k;
             dScale *= k;                               // conformal — exact, unclamped
             break;
@@ -315,7 +317,7 @@ static float3 applyPointOps(float3 p, device const ThreshWarpOp* ops, uint count
         }
 
         case ThreshWarpKindScale: {                    // a.x factor > 0
-            float m = mix(1.0f, op.a.x, s);
+            float m = max(mix(1.0f, op.a.x, s), 1e-3f);   // s > 1 can cross zero
             p /= m;
             dScale *= 1.0f / m;                        // conformal — exact, unclamped
             break;
@@ -829,7 +831,7 @@ THRESH_DE_QUAL float2 de_mandelboxSphereProjection(float3 p, thread const Thresh
     // the march crawls without ever hitting — why projection scenes went black.
     const float absScale = fabs(scale);
     const float dist = (length(z) - (absScale - 1.0f)) / dr
-                     - pow(absScale, float(1 - iterations));
+                     - powr(max(absScale, 1e-6f), float(1 - iterations));
     return float2(dist, sqrt(trap2));
 }
 
@@ -999,6 +1001,93 @@ THRESH_DE_QUAL float2 de_mandelbulb_julia(float3 p, thread const ThreshDEContext
     }
     trap = min(trap, length(z));
     return float2(0.5f * log(max(r, 1e-9f)) * r / max(dr, 1e-9f), trap);
+}
+
+// ======================= Theli Pseudo Kleinian hybrid =======================
+
+// The legacy DE_TheliHybridMengerShape (Formulas/TheliPseudoKleinian/
+// TheliPseudoKleinian.h): the Menger-like base shape of the hybrid — abs +
+// descending sort folds with a squashed z-component (1/3, then (1/3)·Mn.z),
+// scaled by MnScale toward MnOffset·(1−MnScale) each iteration (loop breaks
+// past 20 squared length), distance = (z.x − MnOffset.x)·|MnScale|^(−n).
+static inline float theliMengerBaseShape(float3 z, int mnIterations,
+                                         float mnScale, float3 mnOffset)
+{
+    const float kOneThird = 1.0f / 3.0f;
+    float invScalePow = 1.0f;
+    const float invAbsMnScale = 1.0f / max(abs(mnScale), 1e-4f);
+    const float zFold = kOneThird * mnOffset.z;
+    const float3 mnBias = -mnScale * mnOffset + mnOffset;
+
+    // Initial fold
+    z = fabs(z);
+    float sum = z.x + z.y + z.z;
+    float zMax = max(max(z.x, z.y), z.z);
+    float zMin = min(min(z.x, z.y), z.z);
+    z = float3(zMax, sum - (zMax + zMin), kOneThird + fabs(zMin - kOneThird));
+
+    for (int n = 0; n < mnIterations && dot(z, z) < 100.0f; ++n) {
+        z = z * mnScale + mnBias;
+        z = fabs(z);
+        sum = z.x + z.y + z.z;
+        zMax = max(max(z.x, z.y), z.z);
+        zMin = min(min(z.x, z.y), z.z);
+        z = float3(zMax, sum - (zMax + zMin), zFold + fabs(zMin - zFold));
+
+        // |MnScale|^(−n) accumulated without log/exp (legacy safePow).
+        invScalePow = min(invScalePow * invAbsMnScale, 1e12f);   // mnScale≈0: stay finite
+    }
+
+    return (z.x - mnOffset.x) * invScalePow;
+}
+
+// params: [size, cSizeX, cSizeY, cSizeZ, cX, cY, cZ, deOffset, offsetX,
+//          offsetY, offsetZ, mnIterations, mnScale, mnOffsetX, mnOffsetY,
+//          mnOffsetZ] + [iterations]. Theli-at's Scale-1 Julia-box Pseudo
+// Kleinian hybrid — numerically identical to ReferenceDEs.theliPseudoKleinian
+// (= the legacy DE_TheliPseudoKleinian_Dist; the legacy formula rotation is
+// not a DE input here, same choice as kleinian/de_menger).
+THRESH_DE_QUAL float2 de_theli_pseudo_kleinian(float3 p, thread const ThreshDEContext& ctx)
+{
+    const float size = max(ctx.params[0], 0.0f);
+    const float3 cSize = max(float3(ctx.params[1], ctx.params[2], ctx.params[3]),
+                             float3(1e-4f));
+    const float3 c = float3(ctx.params[4], ctx.params[5], ctx.params[6]);
+    const float deOffset = ctx.params[7];
+    const float3 offset = float3(ctx.params[8], ctx.params[9], ctx.params[10]);
+    // Legacy: clamp(int(params[11]), 0, 20) — truncating then clamping is
+    // identical to clamping the in-[0,20] window then truncating, and clamping
+    // first keeps the int() conversion safe for any CPU-sanitized value.
+    const int mnIterations = int(clamp(ctx.params[11], 0.0f, 20.0f));
+    const float mnScale = ctx.params[12];
+    const float3 mnOffset = float3(ctx.params[13], ctx.params[14], ctx.params[15]);
+    const int iterations = threshDEIterations(ctx);
+
+    float3 z = p;
+    float deFactor = 1.0f;      // legacy p.w — accumulated fold derivative
+    float trap2 = dot(z, z);    // squared trap — one sqrt at return (round 9)
+
+    // Legacy escape: Chebyshev norm |z|max < 60, checked before each pass.
+    float rInf = max(max(fabs(z.x), fabs(z.y)), fabs(z.z));
+
+    for (int i = 0; i < iterations && rInf < 60.0f; ++i) {
+        // Scale-1 Julia box fold: clamp+reflect at ±CSize (xyz only).
+        z = clamp(z, -cSize, cSize) * 2.0f - z;
+
+        // One-sided sphere fold ×k, offset +C, derivative ×k — the float4
+        // fma(p, k4, pOff) of the legacy header split into xyz/w lanes.
+        float k = max(size / max(dot(z, z), 1e-6f), 1.0f);
+        z = z * k + c;
+        deFactor *= k;
+
+        rInf = max(max(fabs(z.x), fabs(z.y)), fabs(z.z));
+        trap2 = min(trap2, dot(z, z));
+    }
+
+    // Base shape on the orbit tail; deFactor normalizes the Menger distance.
+    float base = theliMengerBaseShape(z - offset, mnIterations, mnScale, mnOffset);
+    float de = fabs(base * (0.5f / max(deFactor, 1e-6f)) - deOffset);
+    return float2(de, sqrt(trap2));
 }
 
 // ============================== the scene map ===============================

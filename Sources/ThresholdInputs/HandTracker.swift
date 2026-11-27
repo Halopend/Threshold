@@ -13,15 +13,21 @@
 import ARKit
 import Foundation
 import os
+import Synchronization
 import ThresholdCore
 
 public final class HandTracker: @unchecked Sendable {
     private let engine: HandGestureEngine
-    private let arSession = ARKitSession()
-    private let provider = HandTrackingProvider()
+    private struct Tracking: @unchecked Sendable {
+        let session = ARKitSession()
+        let provider = HandTrackingProvider()
+    }
+    private let tracking = Mutex<Tracking?>(nil)
+    @MainActor private var trackingTask: Task<Void, Never>?
     /// Previous frame's session time, for the engine's dt (render-thread
     /// confined, like the rest of `update`).
     private var lastTime: Double?
+    private let resetRequested = Atomic<Bool>(false)
 
     public init(layout: CatalogLayout, mailbox: LaneMailbox, signals: SignalTable) {
         engine = HandGestureEngine(layout: layout, mailbox: mailbox, signals: signals)
@@ -45,13 +51,13 @@ public final class HandTracker: @unchecked Sendable {
 
     /// Drop in-flight gesture state without committing (scene load).
     public func reset() {
-        engine.reset()
-        lastTime = nil
+        resetRequested.store(true, ordering: .releasing)
     }
 
     /// Request authorization + start the provider. Hand tracking denied is
     /// non-fatal: signals stay unpublished and the gesture lane stays quiet.
-    public func start() {
+    @MainActor public func start() {
+        stop()
         // The Simulator has no hand tracking, and running an unsupported
         // provider makes ARKit RAISE an NSException (not throw) — the catch
         // below never sees it and the app dies. Same non-fatal contract as a
@@ -61,9 +67,15 @@ public final class HandTracker: @unchecked Sendable {
                 "hand tracking unsupported here (Simulator?) — gesture lane stays quiet")
             return
         }
-        Task { [arSession, provider] in
+        // ARKit rejects stopped providers; every immersive opening gets fresh ones.
+        let current = Tracking()
+        tracking.withLock { $0 = current }
+        reset()
+        trackingTask = Task {
+            defer { if Task.isCancelled { current.session.stop() } }
             do {
-                try await arSession.run([provider])
+                try Task.checkCancellation()
+                try await current.session.run([current.provider])
                 ThresholdLog.hands.notice("hand tracking running")
             } catch {
                 ThresholdLog.hands.error(
@@ -75,8 +87,16 @@ public final class HandTracker: @unchecked Sendable {
         }
     }
 
-    public func stop() {
-        arSession.stop()
+    @MainActor public func stop() {
+        trackingTask?.cancel()
+        trackingTask = nil
+        let previous = tracking.withLock { value in
+            let previous = value
+            value = nil
+            return previous
+        }
+        previous?.session.stop()
+        reset()
         ThresholdLog.hands.notice("hand tracking stopped")
     }
 
@@ -86,12 +106,17 @@ public final class HandTracker: @unchecked Sendable {
     /// `grabActive` = a two-hand world grab owns motion this frame, so
     /// skeleton drives are suppressed (cross-stack arbiter).
     public func update(sessionTime: Double, grabActive: Bool = false) {
+        if resetRequested.exchange(false, ordering: .acquiringAndReleasing) {
+            engine.reset()
+            lastTime = nil
+        }
         let dt = lastTime.map { max(sessionTime - $0, 1e-4) } ?? (1.0 / 90.0)
         lastTime = sessionTime
-        let anchors = provider.latestAnchors
+        let provider = tracking.withLock { $0?.provider }
+        let anchors = provider?.latestAnchors
         engine.update(
-            left: Self.handFrame(anchors.leftHand),
-            right: Self.handFrame(anchors.rightHand),
+            left: Self.handFrame(anchors?.leftHand),
+            right: Self.handFrame(anchors?.rightHand),
             sessionTime: sessionTime, dt: dt, grabActive: grabActive)
     }
 

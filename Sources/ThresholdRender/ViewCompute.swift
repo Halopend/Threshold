@@ -58,6 +58,9 @@ final class ViewComputeEncoder {
     /// GPU-fault check for completed command buffers (observability phase 1).
     private let health = CommandBufferHealth(shell: "compositor.compute")
     private let specializations: ViewComputeSpecializationCache
+    /// Full-resolution ordered effects, deliberately after reconstruction so
+    /// temporal history contains only scene imagery, never grain/bloom.
+    private let postProcessor: PostProcessor
     /// Intermediate (color, depth) array pairs + cone textures, one per
     /// in-flight slot; rebuilt on size/slice change. Cross-frame slot reuse
     /// is ordered by GPU hazard tracking (tracked .private resources) — a
@@ -85,6 +88,7 @@ final class ViewComputeEncoder {
         self.context = context
         self.colorFormat = colorFormat
         self.specializations = ViewComputeSpecializationCache(context: context)
+        self.postProcessor = try PostProcessor(context: context)
 
         // Generic pipeline: the always-correct fallback while variants build.
         self.pipeline = try GPUContext.makeLinkedPipeline(
@@ -125,15 +129,20 @@ final class ViewComputeEncoder {
 
     /// Stats of the most recently COMPLETED frame (zeros until one finishes).
     func lastCompleted() -> FrameStatsSlot.Stats {
-        statsSlot.load()
+        statsSlot.loadForControl()
     }
 
     /// March every view into intermediates and blit into the drawable's
     /// textures. `colorTargets`/`depthTargets` are per-view destination
     /// (texture, slice) pairs — array textures in the layered layout, distinct
     /// textures (slice 0) in the dedicated layout. Returns false on a
-    /// malformed request / external DE (compute backend links built-ins only,
-    /// same spike scope as the raster path).
+    /// malformed request.
+    ///
+    /// `program` is the active external DE's program; its march goes through
+    /// the lazily-built `March_view_compute` variant (plain/aux/aux+seed per
+    /// temporal state) instead of the built-in pipelines, and no cone prepass
+    /// or specialization runs for it — the compute-side analog of the raster
+    /// path's external treatment.
     ///
     /// `overrideSpecialized` is the deterministic test seam (production
     /// callers leave it nil — the async cache lands variants off-thread).
@@ -144,6 +153,7 @@ final class ViewComputeEncoder {
         colorTargets: [(texture: MTLTexture, slice: Int)],
         depthTargets: [(texture: MTLTexture, slice: Int)],
         commandBuffer: MTLCommandBuffer,
+        program: ExternalDEProgram? = nil,
         overrideSpecialized: SpecializedViewCompute? = nil,
         recon: TemporalReconstructor? = nil,
         prevViews: [ThreshViewUniforms]? = nil
@@ -154,7 +164,8 @@ final class ViewComputeEncoder {
               request.params.count >= Int(THRESH_SLOT_ENGINE_COUNT),
               Int(request.uniforms.meta.z) <= request.params.count,
               request.uniforms.meta.w < request.uniforms.meta.z,
-              Int(request.uniforms.meta.y) < context.deFunctionCount
+              Int(request.uniforms.meta.y) < (program?.deFunctionCount
+                  ?? context.deFunctionCount)
         else { return false }
         let outW = first.texture.width
         let outH = first.texture.height
@@ -180,6 +191,12 @@ final class ViewComputeEncoder {
         // stays the phase-0 path so `off` is structurally identical.
         let temporal = recon != nil && (recon!.mode != .off)
             && marchSize != nil && prevViews?.count == views.count
+        // A frame that skips the resolve leaves history behind the views the
+        // compositor reprojects against next frame — invalidate it so a later
+        // temporal frame starts fresh instead of ghosting stale content.
+        if let recon, recon.mode != .off, !temporal {
+            recon.requestHistoryReset()
+        }
 
         // Temporal seeding (phase A2): the reconstructor hands out its
         // history-aux read side when every gate passes (armed, valid history,
@@ -207,25 +224,38 @@ final class ViewComputeEncoder {
         // generic (renders while the variant builds off-thread). The
         // temporal path selects the aux twins — with-seed or without per the
         // gate above (both init-built, so neither ever waits on a compile).
-        var chosenPipeline = temporal ? (seeding ? auxSeedPipeline : auxPipeline)
-                                      : pipeline
-        var chosenTable = temporal ? (seeding ? auxSeedDETable : auxDETable)
-                                   : deTable
+        // An external DE selects ITS variants (lazy, memoized on the
+        // program) at the same aux/seed positions; when the variant can't
+        // build on this shell the frame drops (the standing contract).
+        var chosenPipeline: MTLComputePipelineState? = nil
+        var chosenTable: MTLVisibleFunctionTable? = nil
         var specialized: SpecializedViewCompute? = overrideSpecialized
-        let deIndex = Int(uniforms.meta.y)
-        if overrideSpecialized == nil,
-           request.tuning.specializationEnabled,
-           DERegistry.builtin.indices.contains(deIndex) {
-            let spec = MarchSpec.from(
-                tuning: request.tuning, params: request.params,
-                opCount: uniforms.meta.x)
-            specialized = specializations.lookup(
-                deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
-                spec: spec, aux: temporal, seed: seeding)
-        }
-        if let s = specialized {
-            chosenPipeline = s.pipeline
-            chosenTable = s.deTable
+        if let program {
+            guard let variant = program.viewComputeVariant(
+                context: context, aux: temporal, seed: seeding)
+            else { return false }
+            chosenPipeline = variant.pipeline
+            chosenTable = variant.deTable
+        } else {
+            chosenPipeline = temporal ? (seeding ? auxSeedPipeline : auxPipeline)
+                                      : pipeline
+            chosenTable = temporal ? (seeding ? auxSeedDETable : auxDETable)
+                                   : deTable
+            let deIndex = Int(uniforms.meta.y)
+            if overrideSpecialized == nil,
+               request.tuning.specializationEnabled,
+               DERegistry.builtin.indices.contains(deIndex) {
+                let spec = MarchSpec.from(
+                    tuning: request.tuning, params: request.params,
+                    opCount: uniforms.meta.x)
+                specialized = specializations.lookup(
+                    deFunctionName: DERegistry.builtin[deIndex].mslFunctionName,
+                    spec: spec, aux: temporal, seed: seeding)
+            }
+            if let s = specialized {
+                chosenPipeline = s.pipeline
+                chosenTable = s.deTable
+            }
         }
 
         let ringSlot = ringCursor
@@ -318,7 +348,9 @@ final class ViewComputeEncoder {
         }
 
         // The march: one compute grid over every view.
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+        guard let encoder = commandBuffer.makeComputeCommandEncoder(),
+              let chosenPipeline
+        else { return false }
         encoder.label = "view-compute march"
         encoder.setComputePipelineState(chosenPipeline)
         withUnsafeBytes(of: uniforms) { raw in
@@ -402,6 +434,20 @@ final class ViewComputeEncoder {
             else { return false }
             blitColor = presented.color
             blitDepth = presented.depth
+        }
+
+        do {
+            try postProcessor.encode(
+                commandBuffer: commandBuffer,
+                source: blitColor,
+                destination: blitColor,
+                stack: request.postProcessStack,
+                time: uniforms.scaleCtx.x,
+                inFlightSlot: ringSlot)
+        } catch {
+            ThresholdLog.render.error(
+                "view-compute post-processing failed: \(String(describing: error), privacy: .public)")
+            return false
         }
 
         // Blit intermediates → drawable textures, one slice per view.

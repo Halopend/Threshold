@@ -47,6 +47,34 @@ struct CatalogTests {
         #expect(values[3] == 12 && values[4] == 0.5 && values[5] == 8)
     }
 
+    @Test("Bindability is a declaration: color/atmosphere lanes declare music+animation, engine knobs do not")
+    func bindabilityDeclarations() {
+        let layout = Catalog.withEngineDefaults().freeze()
+
+        // Declared in the catalog as the design comments promise ("Color
+        // Offset pulsing to the beat", atmosphere intensity scalars, bubble
+        // blend): these are music/animation reaction targets.
+        let bindable: [ParamKey] = [
+            .colorGradientOffset, .colorSaturation, .colorContrast,
+            .colorVibrance, .colorBrightness, .colorGamma, .colorTonemap,
+            .engineBubbleBlend, .atmosphereGlowIntensity,
+            .atmosphereBloomStrength, .atmosphereFogIntensity,
+        ]
+        for key in bindable {
+            let spec = layout.entry(for: key)?.spec
+            #expect(spec != nil, "\(key) missing from defaults catalog")
+            #expect(spec?.capabilities.contains(.musicBindable) == true, "\(key) not music-bindable")
+            #expect(spec?.capabilities.contains(.animatable) == true, "\(key) not animatable")
+        }
+
+        // Engine quality knobs stay out of every binding surface.
+        for key in [ParamKey.engineMaxSteps, .engineMaxDist, .colorMapMode] {
+            let caps = layout.entry(for: key)?.spec.capabilities
+            #expect(caps?.contains(.musicBindable) == false, "\(key)")
+            #expect(caps?.contains(.gestureBindable) == false, "\(key)")
+        }
+    }
+
     @Test("Normal registration starts at the first content slot even with no engine params")
     func registrationStartsAtFirstContentSlot() throws {
         let catalog = Catalog()

@@ -45,9 +45,10 @@ let package = Package(
         .target(
             name: "ThresholdUI",
             dependencies: ["ThresholdCore", "ThresholdShaderIR", "ThresholdRender"],
-            // Bundled scene/animation library shipped read-only alongside the
-            // user's writable folder. Not named "Resources" (that dir name
-            // breaks iOS/visionOS codesign — see build-quirks memory).
+            // Bundled scene/animation/transformation libraries shipped
+            // read-only alongside the user's writable folders. Not named
+            // "Resources" (that dir name breaks iOS/visionOS codesign — see
+            // build-quirks memory).
             resources: [.copy("BundledContent")]
         ),
         // Scene → external-format exporters (Shadertoy GLSL, …). Pure

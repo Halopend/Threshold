@@ -60,7 +60,7 @@ public enum LFOWave: String, Codable, Sendable, Hashable, CaseIterable {
             // Value noise: hash the integer lattice, smoothstep-interpolate the
             // fractional part. Continuous (no clicks), deterministic, period-free.
             let n = phase.rounded(.down)
-            guard n.isFinite else { return 0 }
+            guard n.isFinite, abs(n) < 9.0e18 else { return 0 }   // Int64(n) would trap
             let i = Int64(n)
             let f = phase - n
             let a = LFOWave.hashUnit(seed &+ UInt64(bitPattern: i))

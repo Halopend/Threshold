@@ -149,7 +149,7 @@ struct ReferenceDETests {
 struct DERegistryTests {
     @Test("builtin table: indices, keys, MSL names, layouts")
     func builtinTable() {
-        #expect(DERegistry.builtin.count == 8)
+        #expect(DERegistry.builtin.count == 9)
 
         let box = DERegistry.builtin[0]
         #expect(box.index == 0)
@@ -201,6 +201,22 @@ struct DERegistryTests {
             == ["scale", "minRadius", "fixedRadius", "foldLimit", "projBlend", "projRadius"])
         #expect(DERegistry.descriptor(forKey: "legacyMandelbox")?.paramLayout.map(\.name)
             == ["scale", "minDistance", "sphereRadius", "foldLimit"])
+        // theliPseudoKleinian matches the original app's formulaParamValues
+        // order positionally (LegacyMigration's formula-values copy).
+        #expect(DERegistry.descriptor(forKey: "theliPseudoKleinian")?.paramLayout.map(\.name)
+            == ["size", "cSizeX", "cSizeY", "cSizeZ",
+                "cX", "cY", "cZ", "deOffset",
+                "offsetX", "offsetY", "offsetZ",
+                "mnIterations", "mnScale", "mnOffsetX", "mnOffsetY", "mnOffsetZ"])
+        // Its defaults equal the legacy catalog's (Formulas/catalog.json).
+        let theli = DERegistry.descriptor(forKey: "theliPseudoKleinian")
+        #expect(theli?.paramLayout.map(\.default)
+            == [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 3, 1, 1, 1])
+        #expect(theli?.stepRelaxation == 1.2)
+        #expect(theli?.mslFunctionName == "de_theli_pseudo_kleinian")
+        #expect(theli?.index == 8)
+        #expect(DERegistry.descriptor(forIndex: 8)?.key == "theliPseudoKleinian")
+        #expect(DERegistry.descriptor(forKey: "theliPseudoKleinian") != nil)
 
         // Lookups.
         #expect(DERegistry.descriptor(forKey: "mandelbox")?.index == 0)
@@ -252,6 +268,38 @@ struct DERegistryTests {
         // Duplicate registration throws (recoverable, per Catalog contract).
         #expect(throws: CatalogError.duplicateKey(ParamKey.de("mandelbox", "scale"))) {
             try box.registerParams(into: catalog)
+        }
+    }
+
+    @Test("scalar DE params declare the legacy gesture/music/animation capabilities")
+    func capabilitiesDeclareGestureAndMusic() throws {
+        let catalog = Catalog()
+        let box = DERegistry.descriptor(forKey: "mandelbulb")!
+        _ = try box.registerParams(into: catalog)
+        let layout = catalog.freeze(dynamicArenaSlots: 0)
+        for param in box.paramLayout where param.integratorRate == nil {
+            let spec = layout.entry(for: ParamKey.de(box.key, param.name))!.spec
+            // Gestures drove DE parameters in the legacy app (per-finger
+            // bindings over fractal parameters) — the declaration says so.
+            #expect(spec.capabilities.contains(.gestureBindable),
+                    "\(param.name) should be gesture-bindable")
+            #expect(spec.capabilities.contains(.musicBindable))
+            #expect(spec.capabilities.contains(.animatable))
+        }
+        // Integrator phases stay machine-driven (no gesture/music): use a
+        // descriptor known to carry a phase and assert its rate/phase caps.
+        let withPhase = DERegistry.builtin.first {
+            $0.paramLayout.contains { $0.integratorRate != nil }
+        }
+        if let withPhase {
+            let phaseCatalog = Catalog()
+            _ = try withPhase.registerParams(into: phaseCatalog)
+            let layout2 = phaseCatalog.freeze(dynamicArenaSlots: 0)
+            for param in withPhase.paramLayout where param.integratorRate != nil {
+                let spec = layout2.entry(for: ParamKey.de(withPhase.key, param.name))!.spec
+                #expect(!spec.capabilities.contains(.gestureBindable))
+                #expect(!spec.capabilities.contains(.musicBindable))
+            }
         }
     }
 

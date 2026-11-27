@@ -225,6 +225,44 @@ struct DEEquivalenceTests {
     }
 
     @Test(.enabled(if: GPU.available))
+    func theliPseudoKleinianEquivalence() throws {
+        let ctx = try GPU.ctx()
+        let evaluator = try DEEvaluator(context: ctx)
+        var rng = SplitMix64(seed: 0xDE00_0B6A)
+        let descriptor = try #require(DERegistry.descriptor(forKey: "theliPseudoKleinian"))
+
+        // params: [size, cSizeX, cSizeY, cSizeZ, cX, cY, cZ, deOffset,
+        //          offsetX, offsetY, offsetZ, mnIterations, mnScale,
+        //          mnOffsetX, mnOffsetY, mnOffsetZ] — the legacy
+        // formulaParamValues order. Sets 1–2 are the real scenes
+        // w_35AB0B54 (catalog defaults) and Warp_V2 (mnIterations 0.53
+        // truncates to 0, as the legacy DE renders it).
+        let paramSets: [(params: [Float], iterations: Int)] = [
+            ([1.0, 1.0, 1.0, 1.0, 0, 0, 0, 0, 0, 0, 0, 2, 3.0, 1, 1, 1], 12),
+            ([2.0, 1.1239072, 1.225502, 1.1325724, 0, 0, 0, 0.025867915,
+              0, 0, 0, 0.52917045, 3.0, 1, 1, 1], 7),
+            ([1.5, 1.2, 0.8, 1.1, 0.3, -0.2, 0.1, 0.02, 0.4, -0.3, 0.2,
+              3, 2.5, 1.2, 0.8, 1.0], 10),
+            ([2.0, 1.0, 1.0, 1.0, 0, 0, 0, 0, 0, 0, 0, 0, 3.0, 1, 1, 1], 8),
+        ]
+        for set in paramSets {
+            let points = (0..<50).map { _ in exteriorPoint(&rng, radius: 0.5...4.0) }
+            let gpu = try evaluator.evaluate(points: points,
+                                             deIndex: Int(descriptor.index),
+                                             deParams: set.params,
+                                             iterations: set.iterations)
+            for (i, p) in points.enumerated() {
+                let cpu = ReferenceDEs.theliPseudoKleinian(p, params: set.params,
+                                                           iterations: set.iterations)
+                #expect(relClose(gpu[i].x, cpu.x, rel: 1e-3),
+                        "theli .x GPU \(gpu[i].x) vs CPU \(cpu.x) at \(p), params \(set.params)")
+                #expect(relClose(gpu[i].y, cpu.y, rel: 5e-3),
+                        "theli .y (trap) GPU \(gpu[i].y) vs CPU \(cpu.y) at \(p), params \(set.params)")
+            }
+        }
+    }
+
+    @Test(.enabled(if: GPU.available))
     func quaternionJuliaEquivalence() throws {
         let ctx = try GPU.ctx()
         let evaluator = try DEEvaluator(context: ctx)

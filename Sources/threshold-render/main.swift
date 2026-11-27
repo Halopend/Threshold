@@ -77,7 +77,7 @@ struct Options {
             }
             i += 1
         }
-        guard opts.width > 0, opts.height > 0, opts.frames > 0, opts.step > 0 else {
+        guard opts.width > 0, opts.height > 0, opts.frames > 0, opts.step > 0, opts.step.isFinite else {
             die("width/height/frames/step must be positive")
         }
         return opts
@@ -484,6 +484,7 @@ func renderOneFrame(_ frame: Int, readback: Bool = true) throws -> RenderResult 
     let request = RenderRequest(
         uniforms: uniforms, params: params, ops: ops,
         palette: scene.palette?.stops ?? [],
+        postProcessStack: scene.postProcessStack,
         width: opts.width, height: opts.height)
     return try renderer.render(request, program: program,
                                specialized: specialized, readback: readback,

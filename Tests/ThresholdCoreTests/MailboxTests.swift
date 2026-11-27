@@ -90,6 +90,22 @@ struct CommandMailboxTests {
 
 @Suite("LaneMailbox")
 struct LaneMailboxTests {
+    @Test("Slot clears coalesce in order and preserve other lanes")
+    func clearOrdering() throws {
+        let clock = FixedStepClock(step: 0.05)
+        let engine = try makeEngine([spec("t.a", default: 0)], clock: clock)
+        let slot = firstContentSlot
+        engine.mailbox.publish(LaneWrite(lane: .user, slot: slot, value: 2))
+        engine.mailbox.publish(LaneWrite(lane: .gesture, slot: slot, value: 3))
+        engine.mailbox.publish(.clear(lane: .gesture, slot: slot))
+        clock.advance()
+        #expect(engine.resolve().values[slot] == 2)
+        engine.mailbox.publish(.clear(lane: .gesture, slot: slot))
+        engine.mailbox.publish(LaneWrite(lane: .gesture, slot: slot, value: 1))
+        clock.advance()
+        #expect(engine.resolve().values[slot] == 3)
+    }
+
     @Test("drainInto applies writes to the engine in publish order")
     func drainIntoAppliesInOrder() throws {
         let clock = FixedStepClock(step: 0.05)

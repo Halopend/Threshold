@@ -96,16 +96,20 @@ struct BindTarget: Identifiable, Hashable {
 }
 
 extension BindTarget {
-    /// Every continuous (float/vector) param component in the catalog + arena —
-    /// what the Routes target picker offers. The startup catalog registers ALL
-    /// built-in DEs' params, so this already spans every fractal; the Routes
-    /// filter narrows it to the active one by default. Discrete kinds
+    /// Every music-bindable continuous (float/vector) param component in the
+    /// catalog + arena — what the Routes target picker offers. Availability is
+    /// the catalog's DECLARATION (`.musicBindable` on the spec), intersected
+    /// with the same kind rules as before; engine/quality params that never
+    /// declared bindability no longer surface. The startup catalog registers
+    /// ALL built-in DEs' params, so this already spans every fractal; the
+    /// Routes filter narrows it to the active one by default. Discrete kinds
     /// (bool/enum) are skipped: a continuous modulator on a toggle is rarely
     /// what's wanted.
     static func all(layout: CatalogLayout, dynamic: [CatalogEntry]) -> [BindTarget] {
         var out: [BindTarget] = []
         let axis = ["x", "y", "z", "w"]
         for entry in layout.entries + dynamic {
+            guard entry.spec.capabilities.contains(.musicBindable) else { continue }
             let width: Int
             switch entry.spec.kind {
             case .float: width = 1

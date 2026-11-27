@@ -87,9 +87,30 @@ public enum LegacyScene {
         // Original-app `mandelbox` has legacy parameter semantics distinct
         // from the rebuild's modern Mandelbox. Keep sphere-projection scenes
         // on their dedicated DE; plain legacy Mandelbox goes to
-        // `legacyMandelbox`.
+        // `legacyMandelbox`. Legacy `menger` is the rebuild's `mengerSponge`
+        // under its legacy name — the original's Menger.h documents the DE as
+        // numerically identical to the rebuild's (same scale/offset params),
+        // so this is a pure rename.
+        //
+        // Retired legacy types fall back EXACTLY as the shipping app's own
+        // decoder does (FractalModelType back-compat): `bulatovLimitSet`
+        // (raw 22) and `boxSphereFolder` (raw 20) were removed THERE and
+        // decode as `.mandelbox` — mirror that here (they also carry
+        // mandelbox-shaped top-level fields, so the legacyMandelbox param
+        // mapping below applies). `mandelboxSphereProjection` predates the
+        // removal and has its own rebuild DE. The MAPPED key drives the
+        // per-type param blocks below.
+        var legacyKey: String?
         if case .string(let type)? = tree["fractalType"] {
-            tree["fractalTypeKey"] = .string(type == "mandelbox" ? "legacyMandelbox" : type)
+            let key: String
+            switch type {
+            case "mandelbox", "bulatovLimitSet", "boxSphereFolder":
+                key = "legacyMandelbox"
+            case "menger": key = "mengerSponge"
+            default: key = type
+            }
+            legacyKey = key
+            tree["fractalTypeKey"] = .string(key)
         }
         // `name` carries over verbatim (same key both formats).
 
@@ -129,17 +150,42 @@ public enum LegacyScene {
         // --- formula params (per-type, only where the rebuild DE exists) --
         // kleinian's declared layout deliberately matches the original's
         // formulaParamValues[0...7] (DERegistry.kleinian) so this is a
-        // positional copy. Other types map as their DEs land; unmapped
-        // formulaParamValues stay preserved in `unknown`.
-        if case .string("kleinian")? = tree["fractalType"],
-           case .array(let formula)? = tree["formulaParamValues"], formula.count >= 8 {
-            let names = ["minX", "minY", "minZ", "sphereFold",
-                         "maxX", "maxY", "maxZ", "crossRadius"]
-            for (i, name) in names.enumerated() {
+        // positional copy. theliPseudoKleinian's layout matches
+        // formulaParamValues[0...15] the same way (DERegistry.theliPseudoKleinian;
+        // the legacy DE reads params[11] as the Menger sub-fold loop cap, a
+        // declared DE param there too). menger maps [0...3] into
+        // mengerSponge's scale/offset layout — the legacy app's own Menger.h
+        // documents that DE as numerically identical. Other types map as
+        // their DEs land; unmapped formulaParamValues stay preserved in
+        // `unknown`.
+        /// Copy `formulaParamValues[0..<count]` positionally into
+        /// `de.<key>.<names[i]>` (the layout of the matching rebuild DE).
+        func positionalCopy(_ count: Int, target: String, names: [String]) {
+            guard case .array(let formula)? = tree["formulaParamValues"],
+                  formula.count >= count
+            else { return }
+            for (i, name) in names.prefix(count).enumerated() {
                 if case .number(let n) = formula[i] {
-                    params["de.kleinian.\(name)"] = .array([.number(n)])
+                    params["de.\(target).\(name)"] = .array([.number(n)])
                 }
             }
+        }
+        if case .string("kleinian")? = tree["fractalType"] {
+            positionalCopy(8, target: "kleinian",
+                           names: ["minX", "minY", "minZ", "sphereFold",
+                                   "maxX", "maxY", "maxZ", "crossRadius"])
+        }
+        if case .string("menger")? = tree["fractalType"] {
+            positionalCopy(4, target: "mengerSponge",
+                           names: ["scale", "offsetX", "offsetY", "offsetZ"])
+        }
+        if case .string("theliPseudoKleinian")? = tree["fractalType"] {
+            positionalCopy(16, target: "theliPseudoKleinian",
+                           names: ["size", "cSizeX", "cSizeY", "cSizeZ",
+                                   "cX", "cY", "cZ", "deOffset",
+                                   "offsetX", "offsetY", "offsetZ",
+                                   "mnIterations", "mnScale",
+                                   "mnOffsetX", "mnOffsetY", "mnOffsetZ"])
         }
 
         // --- embedded formulas (fractalType "custom") -----------------------
@@ -174,8 +220,23 @@ public enum LegacyScene {
                 }
             }
             declared.sort { $0.index < $1.index }  // GPU slice order
+            // The shim has 16 legacy slots; a slot claimed twice or out of
+            // range has no faithful meaning — keep the first claim only.
+            var claimed = Set<Int>()
+            declared = declared.filter { (0..<16).contains($0.index) && claimed.insert($0.index).inserted }
             let source = LegacyFormulaShim.adapt(
-                metalSource: metalSource, stem: stem, declaredParams: declared.count)
+                metalSource: metalSource, stem: stem, slotIndices: declared.map(\.index))
+            // Authored values: formulaParamValues is indexed by legacy slot
+            // (the old app wrote values[i] = fp.params[i]); the session reads
+            // `de.external.<name>` onto the scene lane at activation.
+            if case .array(let values)? = tree["formulaParamValues"] {
+                for (index, param) in declared {
+                    guard index < values.count, case .number(let v) = values[index], v.isFinite,
+                          case .object(let p) = param, case .string(let name)? = p["name"]
+                    else { continue }
+                    params["de.external.\(name)"] = .array([.number(v)])
+                }
+            }
             tree["embeddedDE"] = .object([
                 "source": .string(source),
                 "abiVersion": .number(Double(EmbeddedDE.currentABIVersion)),
@@ -192,7 +253,7 @@ public enum LegacyScene {
         // Original app parameters: `fractalScale` is the user-visible scale,
         // `minDistance` participates in the fold scale divisor, `sphereRadius`
         // is the one-radius sphere fold, and `foldingLimit` is the box fold.
-        if case .string("mandelbox")? = tree["fractalType"] {
+        if legacyKey == "legacyMandelbox" {
             copyParam("fractalScale", to: .de("legacyMandelbox", "scale"))
             copyParam("minDistance", to: .de("legacyMandelbox", "minDistance"))
             copyParam("sphereRadius", to: .de("legacyMandelbox", "sphereRadius"))
@@ -211,7 +272,7 @@ public enum LegacyScene {
         // blend/radius come from formulaParamValues[4]/[5]. (The earlier
         // formula[0..3] reading produced a degenerate box — Mono rendered black
         // where the app shows a bright radiating structure.)
-        if case .string("mandelboxSphereProjection")? = tree["fractalType"] {
+        if legacyKey == "mandelboxSphereProjection" {
             let key = "mandelboxSphereProjection"
             copyParam("fractalScale", to: .de(key, "scale"))
             copyParam("foldingLimit", to: .de(key, "foldLimit"))

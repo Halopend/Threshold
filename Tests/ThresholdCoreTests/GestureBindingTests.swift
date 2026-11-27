@@ -231,6 +231,27 @@ private func vec3Entry(_ slot: Int, key: String, label: String) -> CatalogEntry 
     #expect(p.vectors.isEmpty)
 }
 
+// Gesture-target availability (capability contract) --------------------------
+
+@Test func gestureTargetsFiltersByCapabilityDeclaration() {
+    // A camera-like param DECLARES gesture targets; an engine-like param
+    // carries no capability flags and must not surface in the editor list,
+    // even though both are plain `.float` kinds `derive` would accept.
+    let declared = CatalogEntry(slot: firstContentSlot, spec: ParamSpec(
+        key: ParamKey("camera.dolly"), label: "Dolly",
+        range: 0.05...20, default: 1,
+        capabilities: [.musicBindable, .gestureBindable, .animatable]))
+    let undeclared = CatalogEntry(slot: firstContentSlot + 1, spec: ParamSpec(
+        key: ParamKey("engine.maxSteps"), label: "Max March Steps",
+        range: 1...4096, default: 256,
+        capabilities: [.snapOnSceneTransition]))
+    let p = BindableParams.gestureTargets(
+        from: [declared, undeclared, scalarEntry(firstContentSlot + 2, key: "x", label: "X")])
+    #expect(p.scalars.map(\.key) == [ParamKey("camera.dolly")])
+    #expect(p.vectors.isEmpty)
+    #expect(p.groups.isEmpty)
+}
+
 // GestureBindingSet (per-fractal) -------------------------------------------
 
 @Test func setStoresPerFractalAndPrunesEmpty() {

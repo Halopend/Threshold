@@ -26,14 +26,17 @@ struct RenderFeatureTableTests {
         #expect(RenderFeatureTable.features.contains { $0.id == "march.core" })
     }
 
-    /// The compositor shell ships (CompositorSession) — and its one declared
-    /// gap is explicit: external DE programs render on the compute paths only
-    /// until the raster pipeline links them (spike scope, ADR-001).
-    @Test func compositorShipsWithExternalDEsAsTheDeclaredGap() {
+    /// The compositor shell ships (CompositorSession) with external DE
+    /// support: both backends dispatch the program's own variant pipelines
+    /// (fragment-linked raster / per-view compute, ExternalDE.swift). This
+    /// closed the former declared gap — the raster pipeline dropped external
+    /// scenes outright, which on the visionOS default (fragment) backend
+    /// rendered NOTHING for the majority of the legacy library.
+    @Test func compositorShipsWithExternalDEs() {
         #expect(RenderPath.shipping.contains(.compositor))
         let external = RenderFeatureTable.features.first { $0.id == "de.external" }
-        #expect(external?.paths.contains(.compositor) == false)
+        #expect(external?.paths.contains(.compositor) == true)
         #expect(external?.requiredOnAll == false,
-                "the gap must be declared, not silently absent from the table")
+                "support stays optional per shell class (Simulator static dispatch)")
     }
 }

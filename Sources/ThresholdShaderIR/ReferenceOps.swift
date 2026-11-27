@@ -235,7 +235,7 @@ public enum ReferenceOps {
             // Conformal inversion — exact, unclamped.
             let radius = op.a.x
             let r2 = max(dot(p, p), 1e-12)
-            let k = lerpScalar(1, radius * radius / r2, s)
+            let k = max(lerpScalar(1, radius * radius / r2, s), 1e-3)
             dScale *= k
             return p * k
 
@@ -277,7 +277,7 @@ public enum ReferenceOps {
 
         case .scale:
             // Uniform domain scale — conformal, exact, unclamped.
-            let m = lerpScalar(1, op.a.x, s)
+            let m = max(lerpScalar(1, op.a.x, s), 1e-3)
             dScale *= 1 / m
             return p / m
 
